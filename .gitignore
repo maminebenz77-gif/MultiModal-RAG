@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.uv-cache/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Secrets — never commit real API keys / credentials.
+.env
+.env.*
+!.env.example
+
+# Local data artifacts (raw docs, indexes, downloaded models) —
+# keep the folder structure in git via .gitkeep, not the contents.
+data/*
+!data/.gitkeep
+
+# Frontend build output (once frontend/ has real code)
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
