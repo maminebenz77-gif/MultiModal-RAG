@@ -3,7 +3,11 @@ name = "multimodal-rag"
 version = "0.1.0"
 description = "A multimodal technical RAG system, built step by step as a learning project."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "litellm>=1.92.0",
+    "pydantic-settings>=2.14.2",
+    "sentence-transformers>=5.6.0",
+]
 
 [project.scripts]
 multimodal-rag = "multimodal_rag:main"
@@ -34,9 +38,15 @@ testpaths = ["tests"]
 python_version = "3.11"
 mypy_path = "src"
 packages = ["multimodal_rag"]
+plugins = ["pydantic.mypy"]
 # Strict-ish but not punishing: catch real bugs without demanding
 # type annotations everywhere on day one.
 disallow_untyped_defs = false
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = true
+
+# Third-party libs below ship no (or incomplete) type stubs.
+[[tool.mypy.overrides]]
+module = ["litellm.*", "sentence_transformers.*"]
+ignore_missing_imports = true

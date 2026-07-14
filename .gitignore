@@ -20,6 +20,8 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.local.example
+!.env.server.example
 
 # Local data artifacts (raw docs, indexes, downloaded models) —
 # keep the folder structure in git via .gitkeep, not the contents.
