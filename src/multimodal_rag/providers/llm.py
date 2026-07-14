@@ -13,6 +13,11 @@ class LiteLLMProvider(LLMProvider):
     """
 
     def __init__(self, model: str, base_url: str | None = None, api_key: str | None = None) -> None:
+        # LiteLLM defaults to phoning home anonymous usage telemetry,
+        # independent of whatever base_url/model we configured — that's a
+        # network call our privacy guard (which only checks base_url) can't
+        # see. Disable it unconditionally; there's no case where we want it.
+        litellm.telemetry = False
         self._model = model
         self._base_url = base_url
         self._api_key = api_key

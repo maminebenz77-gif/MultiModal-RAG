@@ -1,6 +1,13 @@
+import litellm
 import pytest
 
 from multimodal_rag.providers.llm import InternalServerLLM, LiteLLMProvider
+
+
+def test_litellm_provider_disables_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(litellm, "telemetry", True)
+    LiteLLMProvider(model="gpt-4o-mini")
+    assert litellm.telemetry is False
 
 
 def test_litellm_provider_extracts_text_from_response(monkeypatch: pytest.MonkeyPatch) -> None:
