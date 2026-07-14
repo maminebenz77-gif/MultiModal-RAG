@@ -28,6 +28,10 @@ venv/
 data/*
 !data/.gitkeep
 
+# ...except small synthetic fixtures used to test the ingestion parsers —
+# these are version-controlled on purpose, for reproducibility.
+!data/samples/
+
 # Frontend build output (once frontend/ has real code)
 frontend/node_modules/
 frontend/dist/
