@@ -11,8 +11,10 @@ from multimodal_rag.providers.factory import (
     _is_internal_host,
     get_embedder,
     get_llm,
+    get_vision,
 )
 from multimodal_rag.providers.llm import LiteLLMProvider
+from multimodal_rag.providers.vision import LiteLLMVisionProvider
 
 
 def _make_settings(**overrides: object) -> Settings:
@@ -113,3 +115,55 @@ class TestGetEmbedder:
         settings = _make_settings(embed_provider="api", embed_base_url="http://10.0.0.5:9000")
         provider = get_embedder(settings)
         assert isinstance(provider, APIEmbeddingProvider)
+
+
+class TestGetVision:
+    def test_unconfigured_vision_raises_not_implemented(self) -> None:
+        # Continuity with ingestion's graceful degradation: a profile that
+        # simply never set VISION_PROVIDER must keep raising
+        # NotImplementedError, the exact exception ImageDescriber catches.
+        settings = _make_settings(vision_provider=None)
+        with pytest.raises(NotImplementedError):
+            get_vision(settings)
+
+    def test_blocks_external_vision_on_server_profile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(socket, "gethostbyname", lambda host: "1.2.3.4")
+        settings = _make_settings(
+            vision_provider="litellm",
+            vision_model="internal-vision-model",
+            vision_base_url="https://api.openai.com/v1",
+        )
+        with pytest.raises(ExternalCallBlockedError):
+            get_vision(settings)
+
+    def test_allows_internal_vision_on_server_profile(self) -> None:
+        settings = _make_settings(
+            vision_provider="litellm",
+            vision_model="internal-vision-model",
+            vision_base_url="http://10.0.0.5:8080/v1",
+        )
+        provider = get_vision(settings)
+        assert isinstance(provider, LiteLLMVisionProvider)
+
+    def test_allows_external_vision_on_local_profile(self) -> None:
+        settings = _make_settings(
+            rag_env=RagEnv.LOCAL,
+            allow_external=True,
+            vision_provider="litellm",
+            vision_model="gpt-4o-mini",
+            vision_base_url="https://api.openai.com/v1",
+        )
+        provider = get_vision(settings)
+        assert isinstance(provider, LiteLLMVisionProvider)
+
+    def test_litellm_provider_without_vision_model_raises_value_error(self) -> None:
+        settings = _make_settings(
+            rag_env=RagEnv.LOCAL,
+            allow_external=True,
+            vision_provider="litellm",
+            vision_model=None,
+        )
+        with pytest.raises(ValueError, match="VISION_MODEL"):
+            get_vision(settings)

@@ -25,6 +25,7 @@ from ..device import resolve_device
 from .base import EmbeddingProvider, LLMProvider, Reranker, VisionProvider
 from .embeddings import APIEmbeddingProvider, SentenceTransformerEmbeddingProvider
 from .llm import InternalServerLLM, LiteLLMProvider
+from .vision import InternalServerVisionProvider, LiteLLMVisionProvider
 
 
 class ExternalCallBlockedError(RuntimeError):
@@ -105,7 +106,28 @@ def get_embedder(settings: Settings | None = None) -> EmbeddingProvider:
 
 
 def get_vision(settings: Settings | None = None) -> VisionProvider:
-    raise NotImplementedError("No concrete VisionProvider implemented yet — a future step.")
+    settings = settings or get_settings()
+
+    if settings.vision_provider is None:
+        raise NotImplementedError(
+            "Vision is not configured for this profile — set VISION_PROVIDER in your .env file."
+        )
+
+    _enforce_privacy_guard(settings.vision_base_url, settings.allow_external)
+
+    if settings.vision_provider == "litellm":
+        if settings.vision_model is None:
+            raise ValueError("VISION_MODEL must be set when VISION_PROVIDER=litellm")
+        return LiteLLMVisionProvider(
+            model=settings.vision_model,
+            base_url=settings.vision_base_url,
+            api_key=settings.vision_api_key,
+        )
+    if settings.vision_provider == "internal_server":
+        return InternalServerVisionProvider(
+            base_url=settings.vision_base_url, api_key=settings.vision_api_key
+        )
+    raise ValueError(f"Unknown vision_provider: {settings.vision_provider!r}")
 
 
 def get_reranker(settings: Settings | None = None) -> Reranker:
