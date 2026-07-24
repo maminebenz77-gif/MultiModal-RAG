@@ -17,6 +17,7 @@ import re
 
 from ..ingestion.schema import Element
 from ..providers.factory import get_embedder
+from ..similarity import cosine_similarity
 from .base import Chunker
 from .schema import Chunk, ChunkMetadata
 from .text import flatten_elements
@@ -54,21 +55,12 @@ class SemanticChunker(Chunker):
         if len(sentences) == 1:
             return [sentences]
 
-        vectors = get_embedder().embed(sentences)
+        vectors = [ev.vector for ev in get_embedder().embed(sentences)]
         groups: list[list[str]] = [[sentences[0]]]
         for sentence, vector, previous_vector in zip(
             sentences[1:], vectors[1:], vectors[:-1], strict=True
         ):
-            if _cosine_similarity(vector, previous_vector) < self._threshold:
+            if cosine_similarity(vector, previous_vector) < self._threshold:
                 groups.append([])
             groups[-1].append(sentence)
         return groups
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(dot / (norm_a * norm_b))

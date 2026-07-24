@@ -1,8 +1,9 @@
 import pytest
 
-from multimodal_rag.chunking.semantic import SemanticChunker, _cosine_similarity
+from multimodal_rag.chunking.semantic import SemanticChunker
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
 from multimodal_rag.providers.base import EmbeddingProvider
+from multimodal_rag.providers.schema import EmbeddingVector
 
 
 def _meta(position: int) -> ElementMetadata:
@@ -13,20 +14,11 @@ class FakeEmbeddingProvider(EmbeddingProvider):
     def __init__(self, vectors_by_text: dict[str, list[float]]) -> None:
         self._vectors_by_text = vectors_by_text
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return [self._vectors_by_text[t] for t in texts]
-
-
-def test_cosine_similarity_identical_vectors_is_one() -> None:
-    assert _cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
-
-
-def test_cosine_similarity_orthogonal_vectors_is_zero() -> None:
-    assert _cosine_similarity([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
-
-
-def test_cosine_similarity_zero_vector_is_zero_not_a_division_error() -> None:
-    assert _cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
+    def embed(self, texts: list[str]) -> list[EmbeddingVector]:
+        return [
+            EmbeddingVector(vector=self._vectors_by_text[t], model_id="fake-model", dimension=2)
+            for t in texts
+        ]
 
 
 def test_empty_elements_returns_no_chunks() -> None:

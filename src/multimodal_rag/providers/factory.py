@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from ..config import Settings, get_settings
 from ..device import resolve_device
 from .base import EmbeddingProvider, LLMProvider, Reranker, VisionProvider
-from .embeddings import APIEmbeddingProvider, SentenceTransformerEmbeddingProvider
+from .embeddings import LiteLLMEmbeddingProvider, SentenceTransformerEmbeddingProvider
 from .llm import InternalServerLLM, LiteLLMProvider
 from .vision import InternalServerVisionProvider, LiteLLMVisionProvider
 
@@ -96,8 +96,8 @@ def get_embedder(settings: Settings | None = None) -> EmbeddingProvider:
     if settings.embed_provider == "sentence_transformers":
         device = resolve_device(settings.device)
         return SentenceTransformerEmbeddingProvider(model_name=settings.embed_model, device=device)
-    if settings.embed_provider == "api":
-        return APIEmbeddingProvider(
+    if settings.embed_provider == "litellm":
+        return LiteLLMEmbeddingProvider(
             model=settings.embed_model,
             base_url=settings.embed_base_url,
             api_key=settings.embed_api_key,

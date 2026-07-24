@@ -9,6 +9,8 @@ config, with zero changes to retrieval/generation/etc.
 
 from abc import ABC, abstractmethod
 
+from .schema import EmbeddingVector
+
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -18,8 +20,13 @@ class LLMProvider(ABC):
 
 class EmbeddingProvider(ABC):
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts into vectors, one vector per input text."""
+    def embed(self, texts: list[str]) -> list[EmbeddingVector]:
+        """Embed a batch of texts into vectors, one vector per input text.
+
+        Each EmbeddingVector carries the model_id and dimension that
+        produced it — never just a bare list of floats — since vectors
+        from different models can never be compared or mixed.
+        """
 
 
 class VisionProvider(ABC):

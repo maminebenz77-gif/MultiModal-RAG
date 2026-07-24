@@ -4,7 +4,7 @@ import socket
 import pytest
 
 from multimodal_rag.config import RagEnv, Settings
-from multimodal_rag.providers.embeddings import APIEmbeddingProvider
+from multimodal_rag.providers.embeddings import LiteLLMEmbeddingProvider
 from multimodal_rag.providers.factory import (
     ExternalCallBlockedError,
     _enforce_privacy_guard,
@@ -103,18 +103,20 @@ class TestGetLLM:
 
 
 class TestGetEmbedder:
-    def test_blocks_external_embed_api_on_server_profile(
+    def test_blocks_external_embed_litellm_on_server_profile(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(socket, "gethostbyname", lambda host: "1.2.3.4")
-        settings = _make_settings(embed_provider="api", embed_base_url="https://api.openai.com/v1")
+        settings = _make_settings(
+            embed_provider="litellm", embed_base_url="https://api.openai.com/v1"
+        )
         with pytest.raises(ExternalCallBlockedError):
             get_embedder(settings)
 
-    def test_allows_internal_embed_api_on_server_profile(self) -> None:
-        settings = _make_settings(embed_provider="api", embed_base_url="http://10.0.0.5:9000")
+    def test_allows_internal_embed_litellm_on_server_profile(self) -> None:
+        settings = _make_settings(embed_provider="litellm", embed_base_url="http://10.0.0.5:9000")
         provider = get_embedder(settings)
-        assert isinstance(provider, APIEmbeddingProvider)
+        assert isinstance(provider, LiteLLMEmbeddingProvider)
 
 
 class TestGetVision:
