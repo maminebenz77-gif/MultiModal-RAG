@@ -32,7 +32,10 @@ class VectorStore(ABC):
     def upsert(self, chunks: list[Chunk], vectors: list[EmbeddingVector]) -> None:
         """Insert or update `chunks` with their corresponding `vectors`
         (matched by list position). Refuses to mix vectors from different
-        embedding models in one call."""
+        embedding models in one call. Implementations should retry
+        transient failures and, if a batch fails persistently, keep
+        going with the rest rather than losing already-succeeded work —
+        see qdrant_store.UpsertBatchError for the concrete contract."""
 
     @abstractmethod
     def search(
