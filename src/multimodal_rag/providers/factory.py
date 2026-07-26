@@ -4,79 +4,24 @@ Everything else in the app should call get_llm() / get_embedder() /
 get_vision() / get_reranker() and depend only on the abstract interfaces in
 base.py — never import a concrete provider directly. That single rule is
 what lets the backend change per environment (Mac vs. air-gapped server)
-through config alone, and it's also what makes the privacy guard below
-actually effective: if code could reach around the factory and construct
-`LiteLLMProvider(base_url="https://api.openai.com")` directly, the guard
-would never run.
-
-The privacy guard: when a profile sets allow_external=False (the
-air-gapped server), it must be structurally impossible to construct a
-provider that talks to a non-local host. This is enforced here, not
-trusted to config alone.
+through config alone, and it's also what makes the privacy guard
+(multimodal_rag.privacy_guard) actually effective: if code could reach
+around the factory and construct `LiteLLMProvider(base_url="https://api.openai.com")`
+directly, the guard would never run.
 """
-
-import ipaddress
-import os
-import socket
-from urllib.parse import urlparse
 
 from ..config import Settings, get_settings
 from ..device import resolve_device
+from ..privacy_guard import enforce_privacy_guard
 from .base import EmbeddingProvider, LLMProvider, Reranker, VisionProvider
 from .embeddings import LiteLLMEmbeddingProvider, SentenceTransformerEmbeddingProvider
 from .llm import InternalServerLLM, LiteLLMProvider
 from .vision import InternalServerVisionProvider, LiteLLMVisionProvider
 
 
-class ExternalCallBlockedError(RuntimeError):
-    """Raised when the active profile forbids external calls but a
-    provider would require one."""
-
-
-def _is_internal_host(host: str) -> bool:
-    """True if `host` is loopback or a private-network address.
-
-    Handles both literal IPs and hostnames (resolved via DNS, which is
-    exactly what should succeed for an internal company hostname on the
-    server's own network, and fail closed otherwise).
-    """
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_private
-    except ValueError:
-        pass
-    try:
-        resolved = socket.gethostbyname(host)
-    except socket.gaierror:
-        return False
-    return ipaddress.ip_address(resolved).is_private
-
-
-def _enforce_privacy_guard(base_url: str | None, allow_external: bool) -> None:
-    if allow_external:
-        return
-
-    # Belt-and-suspenders: even if a provider correctly checks base_url,
-    # also force offline mode so a library (e.g. huggingface_hub) can't
-    # silently try to download an uncached model from the internet.
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
-    if base_url is None:
-        return  # no network endpoint at all -> nothing to check
-
-    host = urlparse(base_url).hostname
-    if host is None or not _is_internal_host(host):
-        raise ExternalCallBlockedError(
-            f"Refusing to build a provider pointing at {base_url!r}: "
-            f"allow_external=False and {host!r} is not a local/internal host."
-        )
-
-
 def get_llm(settings: Settings | None = None) -> LLMProvider:
     settings = settings or get_settings()
-    _enforce_privacy_guard(settings.llm_base_url, settings.allow_external)
+    enforce_privacy_guard(settings.llm_base_url, settings.allow_external)
 
     if settings.llm_provider == "litellm":
         return LiteLLMProvider(
@@ -91,7 +36,7 @@ def get_llm(settings: Settings | None = None) -> LLMProvider:
 
 def get_embedder(settings: Settings | None = None) -> EmbeddingProvider:
     settings = settings or get_settings()
-    _enforce_privacy_guard(settings.embed_base_url, settings.allow_external)
+    enforce_privacy_guard(settings.embed_base_url, settings.allow_external)
 
     if settings.embed_provider == "sentence_transformers":
         device = resolve_device(settings.device)
@@ -113,7 +58,7 @@ def get_vision(settings: Settings | None = None) -> VisionProvider:
             "Vision is not configured for this profile — set VISION_PROVIDER in your .env file."
         )
 
-    _enforce_privacy_guard(settings.vision_base_url, settings.allow_external)
+    enforce_privacy_guard(settings.vision_base_url, settings.allow_external)
 
     if settings.vision_provider == "litellm":
         if settings.vision_model is None:
