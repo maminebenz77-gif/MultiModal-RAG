@@ -16,6 +16,7 @@ from ..privacy_guard import enforce_privacy_guard
 from .base import EmbeddingProvider, LLMProvider, Reranker, VisionProvider
 from .embeddings import LiteLLMEmbeddingProvider, SentenceTransformerEmbeddingProvider
 from .llm import InternalServerLLM, LiteLLMProvider
+from .rerank import CrossEncoderReranker
 from .vision import InternalServerVisionProvider, LiteLLMVisionProvider
 
 
@@ -76,4 +77,21 @@ def get_vision(settings: Settings | None = None) -> VisionProvider:
 
 
 def get_reranker(settings: Settings | None = None) -> Reranker:
-    raise NotImplementedError("No concrete Reranker implemented yet — a future step.")
+    settings = settings or get_settings()
+
+    if settings.reranker_provider is None:
+        raise NotImplementedError(
+            "Reranker is not configured for this profile — set RERANKER_PROVIDER "
+            "in your .env file."
+        )
+
+    # Even the fully-local cross_encoder path downloads its model from HF
+    # Hub the first time — same belt-and-suspenders as get_embedder().
+    enforce_privacy_guard(settings.reranker_base_url, settings.allow_external)
+
+    if settings.reranker_provider == "cross_encoder":
+        if settings.reranker_model is None:
+            raise ValueError("RERANKER_MODEL must be set when RERANKER_PROVIDER=cross_encoder")
+        device = resolve_device(settings.device)
+        return CrossEncoderReranker(model_name=settings.reranker_model, device=device)
+    raise ValueError(f"Unknown reranker_provider: {settings.reranker_provider!r}")

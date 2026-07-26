@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     vision_base_url: str | None = None
     vision_api_key: str | None = None
 
+    # Reranker — cross-encoder, applied to an already-retrieved candidate
+    # set, not a first-class provider selected per environment the way
+    # LLM/embed/vision are. Optional until configured.
+    reranker_provider: str | None = None
+    reranker_model: str | None = None
+    reranker_base_url: str | None = None
+    reranker_api_key: str | None = None
+
     # Vector / search stores
     qdrant_url: str
     elastic_url: str
@@ -65,6 +73,10 @@ class Settings(BaseSettings):
         "vision_model",
         "vision_base_url",
         "vision_api_key",
+        "reranker_provider",
+        "reranker_model",
+        "reranker_base_url",
+        "reranker_api_key",
         mode="before",
     )
     @classmethod

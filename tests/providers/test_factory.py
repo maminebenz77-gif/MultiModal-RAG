@@ -5,8 +5,9 @@ import pytest
 from multimodal_rag.config import RagEnv, Settings
 from multimodal_rag.privacy_guard import ExternalCallBlockedError
 from multimodal_rag.providers.embeddings import LiteLLMEmbeddingProvider
-from multimodal_rag.providers.factory import get_embedder, get_llm, get_vision
+from multimodal_rag.providers.factory import get_embedder, get_llm, get_reranker, get_vision
 from multimodal_rag.providers.llm import LiteLLMProvider
+from multimodal_rag.providers.rerank import CrossEncoderReranker
 from multimodal_rag.providers.vision import LiteLLMVisionProvider
 
 
@@ -112,3 +113,42 @@ class TestGetVision:
         )
         with pytest.raises(ValueError, match="VISION_MODEL"):
             get_vision(settings)
+
+
+class TestGetReranker:
+    def test_unconfigured_reranker_raises_not_implemented(self) -> None:
+        settings = _make_settings(reranker_provider=None)
+        with pytest.raises(NotImplementedError):
+            get_reranker(settings)
+
+    def test_cross_encoder_without_model_raises_value_error(self) -> None:
+        settings = _make_settings(
+            rag_env=RagEnv.LOCAL,
+            allow_external=True,
+            reranker_provider="cross_encoder",
+            reranker_model=None,
+        )
+        with pytest.raises(ValueError, match="RERANKER_MODEL"):
+            get_reranker(settings)
+
+    def test_unknown_reranker_provider_raises_value_error(self) -> None:
+        settings = _make_settings(
+            rag_env=RagEnv.LOCAL,
+            allow_external=True,
+            reranker_provider="not-a-real-provider",
+        )
+        with pytest.raises(ValueError, match="Unknown reranker_provider"):
+            get_reranker(settings)
+
+    def test_cross_encoder_is_constructed_locally_regardless_of_allow_external(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "multimodal_rag.providers.rerank.CrossEncoder", lambda model_name, device: object()
+        )
+        settings = _make_settings(
+            reranker_provider="cross_encoder",
+            reranker_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        )
+        reranker = get_reranker(settings)
+        assert isinstance(reranker, CrossEncoderReranker)
