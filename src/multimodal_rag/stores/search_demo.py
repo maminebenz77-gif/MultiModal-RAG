@@ -56,6 +56,7 @@ def main() -> None:
     store = get_vector_store(collection_name=_COLLECTION)
     store.create_collection(dimension=vectors[0].dimension, indexing_threshold=0)
     store.upsert(chunks, vectors)
+    store.publish()
     print(f"Upserted {len(chunks)} chunks into Qdrant collection {_COLLECTION!r}\n")
 
     query_vector = embedder.embed([args.query])[0].vector

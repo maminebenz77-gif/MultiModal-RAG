@@ -50,4 +50,4 @@ class TestGetVectorStore:
         settings = _make_settings(qdrant_url="http://localhost:6333")
         store = get_vector_store(settings, collection_name="custom_collection")
         assert isinstance(store, QdrantStore)
-        assert store._collection_name == "custom_collection"
+        assert store._alias == "custom_collection"

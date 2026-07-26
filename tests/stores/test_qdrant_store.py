@@ -1,8 +1,8 @@
 """Integration tests against the real local Qdrant instance (see
 docker-compose.yml) rather than a mocked client — a vector store is
 mostly a thin wrapper around real network calls, so mocking the client
-would mostly test the mock. Uses a dedicated test collection, torn down
-after each test.
+would mostly test the mock. Uses a dedicated test collection (alias),
+torn down after each test.
 """
 
 from collections.abc import Iterator
@@ -38,18 +38,52 @@ def _vector(values: list[float], model_id: str = "test-model") -> EmbeddingVecto
 def store() -> Iterator[QdrantStore]:
     s = QdrantStore(url="http://localhost:6333", collection_name=_COLLECTION)
     s.create_collection(dimension=4, indexing_threshold=0)
+    s.publish()
     yield s
-    s._client.delete_collection(_COLLECTION)
-
-
-def test_create_collection_is_idempotent(store: QdrantStore) -> None:
-    store.create_collection(dimension=4, indexing_threshold=0)
-    store.create_collection(dimension=4, indexing_threshold=0)
+    physical = s._current_alias_target()
+    if physical is not None:
+        s._client.delete_collection(physical)
 
 
 def test_create_collection_rejects_unknown_distance(store: QdrantStore) -> None:
     with pytest.raises(ValueError, match="Unknown distance"):
         store.create_collection(dimension=4, distance="manhattan")
+
+
+def test_publish_without_pending_collection_raises(store: QdrantStore) -> None:
+    with pytest.raises(RuntimeError, match="No pending collection"):
+        store.publish()
+
+
+def test_create_collection_does_not_affect_a_live_published_version(
+    store: QdrantStore,
+) -> None:
+    # store fixture already published an (empty) v1. Populate it.
+    store.upsert([_chunk("doc.md::a::0", "v1 data")], [_vector([1.0, 0.0, 0.0, 0.0])])
+
+    # Start building v2 but do NOT publish it yet.
+    store.create_collection(dimension=4, indexing_threshold=0)
+    store.upsert([_chunk("doc.md::b::0", "v2 data")], [_vector([0.0, 1.0, 0.0, 0.0])])
+
+    # search() still goes through the alias, which still points at v1.
+    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::a::0"]
+
+
+def test_publish_swaps_atomically_and_removes_the_previous_version(
+    store: QdrantStore,
+) -> None:
+    store.upsert([_chunk("doc.md::a::0", "v1 data")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    old_physical = store._current_alias_target()
+    assert old_physical is not None
+
+    store.create_collection(dimension=4, indexing_threshold=0)
+    store.upsert([_chunk("doc.md::b::0", "v2 data")], [_vector([0.0, 1.0, 0.0, 0.0])])
+    store.publish()
+
+    results = store.search(query_vector=[0.0, 1.0, 0.0, 0.0], top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::b::0"]
+    assert not store._client.collection_exists(old_physical)
 
 
 def test_upsert_and_search_roundtrip(store: QdrantStore) -> None:
