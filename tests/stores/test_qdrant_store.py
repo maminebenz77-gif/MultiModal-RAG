@@ -123,6 +123,18 @@ def test_search_on_empty_collection_does_not_raise_model_mismatch(store: QdrantS
     assert results == []
 
 
+def test_search_omits_vector_by_default(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+    assert results[0].vector is None
+
+
+def test_search_with_vectors_populates_vector(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1, with_vectors=True)
+    assert results[0].vector == [1.0, 0.0, 0.0, 0.0]
+
+
 def test_upsert_rejects_mixed_models(store: QdrantStore) -> None:
     chunks = [_chunk("doc.md::a::0", "a"), _chunk("doc.md::a::1", "b")]
     vectors = [_vector([1.0, 0.0, 0.0, 0.0], "model-a"), _vector([0.0, 1.0, 0.0, 0.0], "model-b")]

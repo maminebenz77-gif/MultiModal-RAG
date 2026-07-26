@@ -15,3 +15,9 @@ class SearchResult(BaseModel):
     element_types: list[str]
     model_id: str | None = None
     """None for keyword (BM25) results — no embedding model is involved."""
+
+    vector: list[float] | None = None
+    """Only populated when a caller explicitly asks for it (e.g. MMR's
+    diversity computation needs candidate vectors, not just scores) —
+    fetching vectors has a real bandwidth cost, so it's opt-in, not
+    returned by default. Always None for keyword (BM25) results."""

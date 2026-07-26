@@ -223,7 +223,11 @@ class QdrantStore(VectorStore):
         )
 
     def search(
-        self, query_vector: EmbeddingVector, top_k: int = 5, ef_search: int | None = None
+        self,
+        query_vector: EmbeddingVector,
+        top_k: int = 5,
+        ef_search: int | None = None,
+        with_vectors: bool = False,
     ) -> list[SearchResult]:
         stored_model_id = self._stored_model_id()
         if stored_model_id is not None and stored_model_id != query_vector.model_id:
@@ -240,6 +244,7 @@ class QdrantStore(VectorStore):
             limit=top_k,
             search_params=search_params,
             with_payload=True,
+            with_vectors=with_vectors,
         )
         return [
             SearchResult(
@@ -250,6 +255,7 @@ class QdrantStore(VectorStore):
                 doc_id=point.payload["doc_id"],
                 element_types=point.payload["element_types"],
                 model_id=point.payload["model_id"],
+                vector=point.vector if isinstance(point.vector, list) else None,
             )
             for point in response.points
             if point.payload is not None

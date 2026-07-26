@@ -55,7 +55,11 @@ class VectorStore(ABC):
 
     @abstractmethod
     def search(
-        self, query_vector: EmbeddingVector, top_k: int = 5, ef_search: int | None = None
+        self,
+        query_vector: EmbeddingVector,
+        top_k: int = 5,
+        ef_search: int | None = None,
+        with_vectors: bool = False,
     ) -> list[SearchResult]:
         """Find the top_k chunks closest to query_vector, against
         whichever version is currently live. ef_search is the query-time
@@ -69,7 +73,11 @@ class VectorStore(ABC):
         guarantee compatibility: two different models can share a
         dimension count while encoding meaning in incompatible spaces,
         which would silently return confident-looking, meaningless
-        results rather than an error."""
+        results rather than an error.
+
+        with_vectors=True populates SearchResult.vector — needed by MMR's
+        diversity computation, off by default since fetching vectors has
+        a real bandwidth cost most callers don't need to pay."""
 
 
 class KeywordStore(ABC):
