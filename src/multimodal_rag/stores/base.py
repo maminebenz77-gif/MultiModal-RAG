@@ -55,9 +55,18 @@ class VectorStore(ABC):
 
     @abstractmethod
     def search(
-        self, query_vector: list[float], top_k: int = 5, ef_search: int | None = None
+        self, query_vector: EmbeddingVector, top_k: int = 5, ef_search: int | None = None
     ) -> list[SearchResult]:
         """Find the top_k chunks closest to query_vector, against
         whichever version is currently live. ef_search is the query-time
         recall/latency knob — exposed per-call, no rebuild needed to
-        change it."""
+        change it.
+
+        Takes an EmbeddingVector, not a raw list[float], specifically so
+        the caller can't search without declaring which model produced
+        the query vector. Implementations should verify that model_id
+        against what's actually stored — a dimension match alone doesn't
+        guarantee compatibility: two different models can share a
+        dimension count while encoding meaning in incompatible spaces,
+        which would silently return confident-looking, meaningless
+        results rather than an error."""

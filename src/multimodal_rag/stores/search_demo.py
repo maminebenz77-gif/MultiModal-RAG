@@ -59,7 +59,7 @@ def main() -> None:
     store.publish()
     print(f"Upserted {len(chunks)} chunks into Qdrant collection {_COLLECTION!r}\n")
 
-    query_vector = embedder.embed([args.query])[0].vector
+    query_vector = embedder.embed([args.query])[0]
     results = store.search(query_vector, top_k=args.top_k, ef_search=args.ef_search)
 
     print(f'Query: "{args.query}"')

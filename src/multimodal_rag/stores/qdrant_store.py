@@ -64,6 +64,18 @@ class UpsertBatchError(RuntimeError):
         self.failed_chunk_ids = failed_chunk_ids
 
 
+class ModelMismatchError(RuntimeError):
+    """Raised when a query vector's model_id doesn't match the model_id
+    of the vectors actually stored in the collection being searched —
+    the same invariant assert_single_model() enforces on write, now
+    enforced on read too. Dimension matching alone (which Qdrant already
+    enforces) isn't enough: two different models can share a dimension
+    count while encoding meaning in completely incompatible spaces, and
+    a mismatched search would return confident-looking, meaningless
+    results with no error at all otherwise.
+    """
+
+
 class QdrantStore(VectorStore):
     def __init__(
         self,
@@ -211,12 +223,20 @@ class QdrantStore(VectorStore):
         )
 
     def search(
-        self, query_vector: list[float], top_k: int = 5, ef_search: int | None = None
+        self, query_vector: EmbeddingVector, top_k: int = 5, ef_search: int | None = None
     ) -> list[SearchResult]:
+        stored_model_id = self._stored_model_id()
+        if stored_model_id is not None and stored_model_id != query_vector.model_id:
+            raise ModelMismatchError(
+                f"Query vector was produced by {query_vector.model_id!r}, but this "
+                f"collection's stored vectors were produced by {stored_model_id!r}. "
+                "Dimension matching alone doesn't guarantee compatibility."
+            )
+
         search_params = models.SearchParams(hnsw_ef=ef_search) if ef_search is not None else None
         response = self._client.query_points(
             collection_name=self._alias,
-            query=query_vector,
+            query=query_vector.vector,
             limit=top_k,
             search_params=search_params,
             with_payload=True,
@@ -234,3 +254,19 @@ class QdrantStore(VectorStore):
             for point in response.points
             if point.payload is not None
         ]
+
+    def _stored_model_id(self) -> str | None:
+        """Peek at one already-stored point's payload to find which model
+        produced the live collection's vectors. None if the collection
+        doesn't exist yet or has no points — nothing to compare against,
+        so nothing to reject."""
+        try:
+            points, _ = self._client.scroll(
+                collection_name=self._alias, limit=1, with_payload=True
+            )
+        except Exception:
+            return None
+        if not points or points[0].payload is None:
+            return None
+        model_id = points[0].payload.get("model_id")
+        return model_id if isinstance(model_id, str) else None

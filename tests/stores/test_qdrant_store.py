@@ -12,7 +12,7 @@ import pytest
 
 from multimodal_rag.chunking.schema import Chunk, ChunkMetadata
 from multimodal_rag.providers.schema import EmbeddingVector
-from multimodal_rag.stores.qdrant_store import QdrantStore, UpsertBatchError
+from multimodal_rag.stores.qdrant_store import ModelMismatchError, QdrantStore, UpsertBatchError
 
 _COLLECTION = "test_collection"
 
@@ -66,7 +66,7 @@ def test_create_collection_does_not_affect_a_live_published_version(
     store.upsert([_chunk("doc.md::b::0", "v2 data")], [_vector([0.0, 1.0, 0.0, 0.0])])
 
     # search() still goes through the alias, which still points at v1.
-    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=10)
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
     assert [r.chunk_id for r in results] == ["doc.md::a::0"]
 
 
@@ -81,7 +81,7 @@ def test_publish_swaps_atomically_and_removes_the_previous_version(
     store.upsert([_chunk("doc.md::b::0", "v2 data")], [_vector([0.0, 1.0, 0.0, 0.0])])
     store.publish()
 
-    results = store.search(query_vector=[0.0, 1.0, 0.0, 0.0], top_k=10)
+    results = store.search(_vector([0.0, 1.0, 0.0, 0.0]), top_k=10)
     assert [r.chunk_id for r in results] == ["doc.md::b::0"]
     assert not store._client.collection_exists(old_physical)
 
@@ -91,7 +91,7 @@ def test_upsert_and_search_roundtrip(store: QdrantStore) -> None:
     vectors = [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])]
     store.upsert(chunks, vectors)
 
-    results = store.search(query_vector=[0.9, 0.1, 0.0, 0.0], top_k=2)
+    results = store.search(_vector([0.9, 0.1, 0.0, 0.0]), top_k=2)
 
     assert results[0].chunk_id == "doc.md::a::0"
     assert results[0].text == "about GPUs"
@@ -100,6 +100,27 @@ def test_upsert_and_search_roundtrip(store: QdrantStore) -> None:
     assert results[0].element_types == ["title"]
     assert results[0].model_id == "test-model"
     assert results[0].score > results[1].score
+
+
+def test_search_rejects_a_query_vector_from_a_different_model(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0], "model-a")])
+
+    with pytest.raises(ModelMismatchError, match="model-a.*model-b|model-b.*model-a"):
+        store.search(_vector([1.0, 0.0, 0.0, 0.0], "model-b"), top_k=1)
+
+
+def test_search_allows_a_matching_model(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0], "model-a")])
+
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0], "model-a"), top_k=1)
+    assert len(results) == 1
+
+
+def test_search_on_empty_collection_does_not_raise_model_mismatch(store: QdrantStore) -> None:
+    # store fixture publishes an empty collection — nothing to compare
+    # the query vector's model against yet, so nothing should be rejected.
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0], "any-model"), top_k=1)
+    assert results == []
 
 
 def test_upsert_rejects_mixed_models(store: QdrantStore) -> None:
@@ -123,7 +144,7 @@ def test_reupserting_same_chunk_id_updates_rather_than_duplicates(store: QdrantS
     updated = _chunk("doc.md::a::0", "updated text")
     store.upsert([updated], [_vector([1.0, 0.0, 0.0, 0.0])])
 
-    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=10)
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
     assert len(results) == 1
     assert results[0].text == "updated text"
 
@@ -133,7 +154,7 @@ def test_search_accepts_explicit_ef_search(store: QdrantStore) -> None:
     vectors = [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])]
     store.upsert(chunks, vectors)
 
-    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=1, ef_search=64)
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1, ef_search=64)
     assert len(results) == 1
 
 
@@ -177,7 +198,7 @@ def test_upsert_retries_transient_failure_then_succeeds(
     store.upsert([chunk], [_vector([1.0, 0.0, 0.0, 0.0])])
 
     assert attempts["count"] == 3
-    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=1)
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
     assert results[0].chunk_id == "doc.md::a::0"
 
 
@@ -208,5 +229,5 @@ def test_upsert_persistent_batch_failure_raises_but_preserves_others(
     assert error.failed_chunk_ids == ["doc.md::bad::0"]
 
     # The good chunk is durably stored despite the other batch's failure.
-    results = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], top_k=10)
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
     assert any(r.chunk_id == "doc.md::good::0" for r in results)
