@@ -29,11 +29,14 @@ class StructureAwareChunker(Chunker):
         for i, section in enumerate(sections):
             text = "\n\n".join(t for el in section if (t := element_text(el)))
             positions = [el.metadata.position for el in section]
+            types = list(dict.fromkeys(el.type.value for el in section))
             chunks.append(
                 Chunk(
                     id=f"{source_file}::structure::{i}",
                     text=text,
-                    metadata=ChunkMetadata(source_file=source_file, element_positions=positions),
+                    metadata=ChunkMetadata(
+                        source_file=source_file, element_positions=positions, element_types=types
+                    ),
                 )
             )
         return chunks

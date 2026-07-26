@@ -12,6 +12,13 @@ class ChunkMetadata(BaseModel):
     stays empty for them. Strategies that walk the Element list directly
     (structure-aware, parent-child) populate it exactly."""
 
+    element_types: list[str] = []
+    """The ElementType values (as strings) present in this chunk. A
+    structure-aware section chunk can legitimately span several types
+    (TITLE, PARAGRAPH, TABLE, ...) — a single "the type" isn't always
+    well-defined, so this is a list, not one value. Same best-effort
+    rule as element_positions."""
+
 
 class Chunk(BaseModel):
     id: str

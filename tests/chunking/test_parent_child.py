@@ -68,6 +68,16 @@ def test_child_inherits_parent_element_positions() -> None:
     assert child.metadata.element_positions == [5, 6]
 
 
+def test_child_inherits_parent_element_types() -> None:
+    elements = [
+        _el(ElementType.TITLE, 5, "Section A"),
+        _el(ElementType.PARAGRAPH, 6, "Body."),
+    ]
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+    child = next(c for c in chunks if c.parent_id is not None)
+    assert child.metadata.element_types == ["title", "paragraph"]
+
+
 def test_parents_appear_before_their_children_in_result_order() -> None:
     elements = [
         _el(ElementType.TITLE, 0, "Section A"),

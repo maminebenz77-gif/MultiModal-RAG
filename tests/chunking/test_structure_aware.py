@@ -65,3 +65,24 @@ def test_no_titles_at_all_produces_a_single_section() -> None:
     ]
     chunks = StructureAwareChunker().chunk(elements)
     assert len(chunks) == 1
+
+
+def test_element_types_reflects_every_distinct_type_in_the_section() -> None:
+    table_text = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.PARAGRAPH, 1, "Body."),
+        _el(ElementType.TABLE, 2, table_text),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.element_types == ["title", "paragraph", "table"]
+
+
+def test_element_types_has_no_duplicates() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.PARAGRAPH, 1, "First paragraph."),
+        _el(ElementType.PARAGRAPH, 2, "Second paragraph."),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.element_types == ["title", "paragraph"]

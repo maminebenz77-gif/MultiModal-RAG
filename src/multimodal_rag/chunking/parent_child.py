@@ -39,6 +39,7 @@ class ParentChildChunker(Chunker):
                         metadata=ChunkMetadata(
                             source_file=parent.metadata.source_file,
                             element_positions=parent.metadata.element_positions,
+                            element_types=parent.metadata.element_types,
                         ),
                     )
                 )
