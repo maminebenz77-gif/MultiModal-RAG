@@ -15,6 +15,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..ingestion.schema import Element
 from .base import Chunker
+from .ids import chunk_id
 from .schema import Chunk, ChunkMetadata
 from .structure_aware import StructureAwareChunker
 
@@ -33,7 +34,7 @@ class ParentChildChunker(Chunker):
             for j, piece in enumerate(self._child_splitter.split_text(parent.text)):
                 result.append(
                     Chunk(
-                        id=f"{parent.id}::child::{j}",
+                        id=chunk_id(parent.id, "child", j, piece),
                         text=piece,
                         parent_id=parent.id,
                         metadata=ChunkMetadata(

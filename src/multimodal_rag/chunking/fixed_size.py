@@ -11,6 +11,7 @@ from langchain_text_splitters import CharacterTextSplitter
 
 from ..ingestion.schema import Element
 from .base import Chunker
+from .ids import chunk_id
 from .schema import Chunk, ChunkMetadata
 from .text import flatten_elements
 
@@ -28,7 +29,7 @@ class FixedSizeChunker(Chunker):
         pieces = self._splitter.split_text(flatten_elements(elements))
         return [
             Chunk(
-                id=f"{source_file}::fixed::{i}",
+                id=chunk_id(source_file, "fixed", i, piece),
                 text=piece,
                 metadata=ChunkMetadata(source_file=source_file),
             )

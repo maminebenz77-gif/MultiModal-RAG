@@ -8,6 +8,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..ingestion.schema import Element
 from .base import Chunker
+from .ids import chunk_id
 from .schema import Chunk, ChunkMetadata
 from .text import flatten_elements
 
@@ -25,7 +26,7 @@ class RecursiveCharacterChunker(Chunker):
         pieces = self._splitter.split_text(flatten_elements(elements))
         return [
             Chunk(
-                id=f"{source_file}::recursive::{i}",
+                id=chunk_id(source_file, "recursive", i, piece),
                 text=piece,
                 metadata=ChunkMetadata(source_file=source_file),
             )

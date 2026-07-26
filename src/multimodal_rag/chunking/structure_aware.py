@@ -14,6 +14,7 @@ fallback.
 
 from ..ingestion.schema import Element, ElementType
 from .base import Chunker
+from .ids import chunk_id
 from .schema import Chunk, ChunkMetadata
 from .text import element_text
 
@@ -32,7 +33,7 @@ class StructureAwareChunker(Chunker):
             types = list(dict.fromkeys(el.type.value for el in section))
             chunks.append(
                 Chunk(
-                    id=f"{source_file}::structure::{i}",
+                    id=chunk_id(source_file, "structure", i, text),
                     text=text,
                     metadata=ChunkMetadata(
                         source_file=source_file, element_positions=positions, element_types=types

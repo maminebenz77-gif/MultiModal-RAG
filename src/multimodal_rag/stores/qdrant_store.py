@@ -1,11 +1,11 @@
 """Qdrant-backed VectorStore implementation.
 
 Point IDs: Qdrant requires an unsigned integer or a valid UUID — our
-human-readable Chunk.id strings ("doc.md::structure::0") aren't valid as
-one directly. We deterministically hash chunk_id into a UUID5 (same
-input always produces the same UUID, so re-upserting a chunk updates it
-rather than creating a duplicate), and keep the original readable
-chunk_id in the payload for citation/debugging.
+human-readable Chunk.id strings ("doc.md::structure::0::a1b2c3d4e5")
+aren't valid as one directly. We deterministically hash chunk_id into a
+UUID5 (same input always produces the same UUID, so re-upserting a
+chunk updates it rather than creating a duplicate), and keep the
+original readable chunk_id in the payload for citation/debugging.
 """
 
 import uuid

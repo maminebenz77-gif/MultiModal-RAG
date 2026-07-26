@@ -25,10 +25,16 @@ def test_long_text_is_split_into_multiple_uniform_chunks() -> None:
     assert all(len(c.text) <= 20 for c in chunks)
 
 
-def test_chunk_ids_are_sequential_and_stable() -> None:
+def test_chunk_ids_are_content_addressed_and_stable() -> None:
     elements = [Element(type=ElementType.PARAGRAPH, text="A" * 50, metadata=_meta(0))]
     chunks = FixedSizeChunker(chunk_size=20, chunk_overlap=5).chunk(elements)
-    assert [c.id for c in chunks] == [f"doc.md::fixed::{i}" for i in range(len(chunks))]
+
+    # Same input, re-run: identical IDs (content-addressed, not just positional).
+    chunks_again = FixedSizeChunker(chunk_size=20, chunk_overlap=5).chunk(elements)
+    assert [c.id for c in chunks] == [c.id for c in chunks_again]
+
+    for i, c in enumerate(chunks):
+        assert c.id.startswith(f"doc.md::fixed::{i}::")
 
 
 def test_element_positions_not_tracked() -> None:

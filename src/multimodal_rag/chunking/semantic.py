@@ -19,6 +19,7 @@ from ..ingestion.schema import Element
 from ..providers.factory import get_embedder
 from ..similarity import cosine_similarity
 from .base import Chunker
+from .ids import chunk_id
 from .schema import Chunk, ChunkMetadata
 from .text import flatten_elements
 
@@ -38,13 +39,14 @@ class SemanticChunker(Chunker):
             return []
 
         groups = self._group_by_similarity(sentences)
+        texts = [" ".join(group) for group in groups]
         return [
             Chunk(
-                id=f"{source_file}::semantic::{i}",
-                text=" ".join(group),
+                id=chunk_id(source_file, "semantic", i, text),
+                text=text,
                 metadata=ChunkMetadata(source_file=source_file),
             )
-            for i, group in enumerate(groups)
+            for i, text in enumerate(texts)
         ]
 
     @staticmethod
