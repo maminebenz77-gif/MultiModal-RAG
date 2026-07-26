@@ -835,6 +835,36 @@ wheels = [
 ]
 
 [[package]]
+name = "elastic-transport"
+version = "9.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "sniffio" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/be/a719a217ed7f179c9e41821dff9dfd28415b21bc94da9d35fff84f7951b2/elastic_transport-9.4.2.tar.gz", hash = "sha256:366f4614f4544c5fb5d780c82f57af8f30492b44a68ed20750390aa81e20c2ea", size = 79310, upload-time = "2026-06-16T15:27:17.182Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/e4/9b7ef7a8e0bb416e0fe1879c92295041cf81e5a47e3c3110744e89b6eb35/elastic_transport-9.4.2-py3-none-any.whl", hash = "sha256:33dc89bb1855faa8b98ae8b036405a39c562778dbcdbe4a00a2eaf753148556c", size = 66314, upload-time = "2026-06-16T15:27:15.875Z" },
+]
+
+[[package]]
+name = "elasticsearch"
+version = "9.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "elastic-transport" },
+    { name = "python-dateutil" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e0/4b/9b753f0a8f56ae508dced2f7ac87bef7a27ce8f890e349e16812e9f7f4fa/elasticsearch-9.4.1.tar.gz", hash = "sha256:1d78fdfba97a903ec35a5eb5808a74e33392b7c620bd5f742d465a3a26c27d75", size = 908138, upload-time = "2026-05-26T16:28:40.132Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/8e/2c93805e93e724a90156004a9212572ec86473974deede4605a33b8b169a/elasticsearch-9.4.1-py3-none-any.whl", hash = "sha256:71ab71c3d1b20fd88c2922fb82c3277cce7ea03c160686e7b9368b265c2b4cac", size = 993647, upload-time = "2026-05-26T16:28:36.556Z" },
+]
+
+[[package]]
 name = "emoji"
 version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2292,6 +2322,7 @@ name = "multimodal-rag"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "elasticsearch" },
     { name = "langchain-text-splitters" },
     { name = "litellm" },
     { name = "markdown-it-py" },
@@ -2313,6 +2344,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "elasticsearch", specifier = ">=9.4.1" },
     { name = "langchain-text-splitters", specifier = ">=1.1.2" },
     { name = "litellm", specifier = ">=1.92.0" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },

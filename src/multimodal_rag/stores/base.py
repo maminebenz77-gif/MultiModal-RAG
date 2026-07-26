@@ -1,10 +1,10 @@
-"""Abstract VectorStore interface ("port") every backend implements.
+"""Abstract store interfaces ("ports") every backend implements.
 
 Same ports/adapters shape as providers/chunking: downstream code depends
-only on this interface and multimodal_rag.stores.factory.get_vector_store()
-— never on a concrete store class — so the backend (Qdrant today, maybe
-Pinecone/Weaviate/pgvector later) can change without touching anything
-that calls it.
+only on these interfaces and multimodal_rag.stores.factory's
+get_vector_store()/get_keyword_store() — never on a concrete store class
+— so the backend (Qdrant/Elasticsearch today, maybe others later) can
+change without touching anything that calls it.
 """
 
 from abc import ABC, abstractmethod
@@ -70,3 +70,29 @@ class VectorStore(ABC):
         dimension count while encoding meaning in incompatible spaces,
         which would silently return confident-looking, meaningless
         results rather than an error."""
+
+
+class KeywordStore(ABC):
+    """Lexical (BM25) search — the counterpart to VectorStore. No
+    model_id concern exists here at all: there's no embedding model
+    involved, so nothing to mix or verify. Deliberately simpler than
+    VectorStore's blue-green versioning and retry/backoff machinery —
+    those were built in response to specific, demonstrated failure
+    modes for Qdrant; nothing here has earned that complexity yet.
+    """
+
+    @abstractmethod
+    def create_index(self) -> None:
+        """Create (or recreate) the index with a sensible default
+        analyzer for chunk text."""
+
+    @abstractmethod
+    def index_chunks(self, chunks: list[Chunk]) -> None:
+        """Index `chunks` for BM25 search. Re-indexing the same chunk_id
+        updates it in place."""
+
+    @abstractmethod
+    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+        """BM25 keyword search: rank chunks by lexical relevance to
+        `query` (term frequency, inverse document frequency, length
+        normalization) — not semantic similarity."""

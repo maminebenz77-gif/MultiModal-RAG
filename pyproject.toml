@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A multimodal technical RAG system, built step by step as a learning project."
 requires-python = ">=3.11"
 dependencies = [
+    "elasticsearch>=9.4.1",
     "langchain-text-splitters>=1.1.2",
     "litellm>=1.92.0",
     "markdown-it-py>=4.2.0",

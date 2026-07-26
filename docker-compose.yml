@@ -7,5 +7,17 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.1
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # local dev only — a real deployment needs auth/TLS
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
 volumes:
   qdrant_data:
+  elasticsearch_data:
