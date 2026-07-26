@@ -1,9 +1,15 @@
 import pytest
 
 from multimodal_rag.providers.embeddings import (
+    EmbeddingBatchError,
     LiteLLMEmbeddingProvider,
     SentenceTransformerEmbeddingProvider,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("multimodal_rag.retry.time.sleep", lambda seconds: None)
 
 
 class FakeVectors:
@@ -92,3 +98,49 @@ def test_litellm_embedding_provider_chunks_into_batches(monkeypatch: pytest.Monk
 
     assert call_sizes == [3, 3, 1]
     assert len(result) == 7
+
+
+def test_batch_retries_on_transient_failure_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = {"count": 0}
+
+    def flaky_embedding(**kwargs: object) -> FakeEmbeddingResponse:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("transient rate limit")
+        texts = kwargs["input"]
+        assert isinstance(texts, list)
+        return FakeEmbeddingResponse(dimension=2, count=len(texts))
+
+    monkeypatch.setattr("multimodal_rag.providers.embeddings.litellm.embedding", flaky_embedding)
+
+    provider = LiteLLMEmbeddingProvider(model="text-embedding-3-small", max_retries=5)
+    result = provider.embed(["a", "b"])
+
+    assert len(result) == 2
+    assert attempts["count"] == 3
+
+
+def test_persistent_batch_failure_raises_but_preserves_other_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def sometimes_failing_embedding(**kwargs: object) -> FakeEmbeddingResponse:
+        texts = kwargs["input"]
+        assert isinstance(texts, list)
+        if texts == ["bad"]:
+            raise RuntimeError("persistent failure")
+        return FakeEmbeddingResponse(dimension=2, count=len(texts))
+
+    monkeypatch.setattr(
+        "multimodal_rag.providers.embeddings.litellm.embedding", sometimes_failing_embedding
+    )
+
+    provider = LiteLLMEmbeddingProvider(model="text-embedding-3-small", batch_size=1, max_retries=2)
+
+    with pytest.raises(EmbeddingBatchError) as exc_info:
+        provider.embed(["good", "bad"])
+
+    error = exc_info.value
+    assert error.failed_texts == ["bad"]
+    assert len(error.succeeded) == 1
