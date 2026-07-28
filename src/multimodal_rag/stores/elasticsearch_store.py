@@ -24,14 +24,26 @@ from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
 from ..chunking.schema import Chunk
+from ..retry import retry_with_backoff
 from .base import KeywordStore
 from .schema import SearchResult
 
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+
 
 class ElasticsearchStore(KeywordStore):
-    def __init__(self, url: str, index_name: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        index_name: str,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        retry_backoff_seconds: float = _DEFAULT_RETRY_BACKOFF_SECONDS,
+    ) -> None:
         self._client = Elasticsearch(url)
         self._index_name = index_name
+        self._max_retries = max_retries
+        self._retry_backoff_seconds = retry_backoff_seconds
 
     def create_index(self) -> None:
         self._client.indices.delete(index=self._index_name, ignore_unavailable=True)
@@ -64,10 +76,15 @@ class ElasticsearchStore(KeywordStore):
             }
             for chunk in chunks
         ]
-        bulk(self._client, actions)
-        # ES refreshes on its own roughly every 1s; force it so a search
-        # immediately after indexing (demos, tests) sees the new documents.
-        self._client.indices.refresh(index=self._index_name)
+
+        def call() -> None:
+            bulk(self._client, actions)
+            # ES refreshes on its own roughly every 1s; force it so a
+            # search immediately after indexing (demos, tests, the
+            # HybridIndexer) sees the new documents.
+            self._client.indices.refresh(index=self._index_name)
+
+        retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         response = self._client.search(
@@ -85,3 +102,25 @@ class ElasticsearchStore(KeywordStore):
             )
             for hit in response["hits"]["hits"]
         ]
+
+    def list_chunk_ids(self) -> list[str]:
+        if not self._client.indices.exists(index=self._index_name):
+            return []
+
+        chunk_ids: list[str] = []
+        search_after = None
+        while True:
+            response = self._client.search(
+                index=self._index_name,
+                query={"match_all": {}},
+                size=256,
+                sort=[{"chunk_id": "asc"}],
+                source_includes=["chunk_id"],
+                search_after=search_after,
+            )
+            hits = response["hits"]["hits"]
+            if not hits:
+                break
+            chunk_ids.extend(hit["_source"]["chunk_id"] for hit in hits)
+            search_after = hits[-1]["sort"]
+        return chunk_ids

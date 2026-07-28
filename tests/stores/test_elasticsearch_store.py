@@ -5,6 +5,7 @@ real network calls.
 """
 
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,11 @@ from multimodal_rag.chunking.schema import Chunk, ChunkMetadata
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
 
 _INDEX = "test_index"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("multimodal_rag.retry.time.sleep", lambda seconds: None)
 
 
 def _chunk(chunk_id: str, text: str, source: str = "doc.md") -> Chunk:
@@ -80,3 +86,34 @@ def test_search_with_no_matches_returns_empty_list(store: ElasticsearchStore) ->
     store.index_chunks([_chunk("doc.md::a::0", "something about GPUs")])
     results = store.search("nonexistent_term_xyz", top_k=5)
     assert results == []
+
+
+def test_list_chunk_ids_empty_when_nothing_indexed(store: ElasticsearchStore) -> None:
+    assert store.list_chunk_ids() == []
+
+
+def test_list_chunk_ids_returns_all_indexed_ids(store: ElasticsearchStore) -> None:
+    chunks = [_chunk(f"doc.md::a::{i}", f"text {i}") for i in range(5)]
+    store.index_chunks(chunks)
+
+    assert sorted(store.list_chunk_ids()) == sorted(c.id for c in chunks)
+
+
+def test_index_chunks_retries_transient_failure_then_succeeds(
+    store: ElasticsearchStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = {"count": 0}
+    from elasticsearch.helpers import bulk as real_bulk
+
+    def flaky_bulk(client: Any, actions: Any) -> Any:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("transient network blip")
+        return real_bulk(client, actions)
+
+    monkeypatch.setattr("multimodal_rag.stores.elasticsearch_store.bulk", flaky_bulk)
+
+    store.index_chunks([_chunk("doc.md::a::0", "hello")])
+
+    assert attempts["count"] == 3
+    assert store.list_chunk_ids() == ["doc.md::a::0"]

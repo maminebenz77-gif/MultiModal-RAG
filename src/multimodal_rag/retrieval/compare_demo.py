@@ -10,6 +10,7 @@ from ..chunking.structure_aware import StructureAwareChunker
 from ..ingestion import parse_document
 from ..providers.factory import get_embedder, get_reranker
 from ..stores.factory import get_keyword_store, get_vector_store
+from ..stores.indexer import HybridIndexer
 from ..stores.schema import SearchResult
 from .retriever import Retriever
 from .schema import RetrievalMethod
@@ -40,12 +41,11 @@ def main() -> None:
 
     vector_store = get_vector_store(collection_name=_COLLECTION)
     vector_store.create_collection(dimension=vectors[0].dimension, indexing_threshold=0)
-    vector_store.upsert(chunks, vectors)
-    vector_store.publish()
-
     keyword_store = get_keyword_store(index_name=_COLLECTION)
     keyword_store.create_index()
-    keyword_store.index_chunks(chunks)
+
+    HybridIndexer(vector_store, keyword_store).index(chunks, vectors)
+    vector_store.publish()
 
     try:
         reranker = get_reranker()

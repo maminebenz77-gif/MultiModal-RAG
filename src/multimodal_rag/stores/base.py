@@ -79,14 +79,20 @@ class VectorStore(ABC):
         diversity computation, off by default since fetching vectors has
         a real bandwidth cost most callers don't need to pay."""
 
+    @abstractmethod
+    def list_chunk_ids(self) -> list[str]:
+        """All chunk_ids currently in the live collection. Used for
+        cross-store consistency checks (see stores.indexer.HybridIndexer)
+        — not something most retrieval code needs directly."""
+
 
 class KeywordStore(ABC):
     """Lexical (BM25) search — the counterpart to VectorStore. No
     model_id concern exists here at all: there's no embedding model
-    involved, so nothing to mix or verify. Deliberately simpler than
-    VectorStore's blue-green versioning and retry/backoff machinery —
-    those were built in response to specific, demonstrated failure
-    modes for Qdrant; nothing here has earned that complexity yet.
+    involved, so nothing to mix or verify. Still deliberately simpler
+    than VectorStore's blue-green versioning — that responded to a
+    specific, demonstrated failure mode for Qdrant that has no
+    counterpart here.
     """
 
     @abstractmethod
@@ -104,3 +110,8 @@ class KeywordStore(ABC):
         """BM25 keyword search: rank chunks by lexical relevance to
         `query` (term frequency, inverse document frequency, length
         normalization) — not semantic similarity."""
+
+    @abstractmethod
+    def list_chunk_ids(self) -> list[str]:
+        """All chunk_ids currently in the index. Used for cross-store
+        consistency checks (see stores.indexer.HybridIndexer)."""

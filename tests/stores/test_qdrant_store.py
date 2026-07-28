@@ -243,3 +243,15 @@ def test_upsert_persistent_batch_failure_raises_but_preserves_others(
     # The good chunk is durably stored despite the other batch's failure.
     results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
     assert any(r.chunk_id == "doc.md::good::0" for r in results)
+
+
+def test_list_chunk_ids_empty_when_nothing_upserted(store: QdrantStore) -> None:
+    assert store.list_chunk_ids() == []
+
+
+def test_list_chunk_ids_returns_all_upserted_ids(store: QdrantStore) -> None:
+    chunks = [_chunk(f"doc.md::a::{i}", f"text {i}") for i in range(5)]
+    vectors = [_vector([float(i), 0.0, 0.0, 0.0]) for i in range(5)]
+    store.upsert(chunks, vectors)
+
+    assert sorted(store.list_chunk_ids()) == sorted(c.id for c in chunks)

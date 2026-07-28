@@ -276,3 +276,26 @@ class QdrantStore(VectorStore):
             return None
         model_id = points[0].payload.get("model_id")
         return model_id if isinstance(model_id, str) else None
+
+    def list_chunk_ids(self) -> list[str]:
+        if not self._client.collection_exists(self._alias):
+            return []
+
+        chunk_ids: list[str] = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self._alias,
+                limit=256,
+                offset=offset,
+                with_payload=["chunk_id"],
+                with_vectors=False,
+            )
+            chunk_ids.extend(
+                point.payload["chunk_id"]
+                for point in points
+                if point.payload is not None and "chunk_id" in point.payload
+            )
+            if offset is None:
+                break
+        return chunk_ids

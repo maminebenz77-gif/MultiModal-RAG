@@ -13,6 +13,7 @@ from ..chunking.structure_aware import StructureAwareChunker
 from ..ingestion import parse_document
 from ..providers.factory import get_embedder
 from .factory import get_keyword_store, get_vector_store
+from .indexer import HybridIndexer
 from .schema import SearchResult
 
 _DOC = Path(__file__).resolve().parents[3] / "data" / "samples" / "chunking_demo.md"
@@ -45,12 +46,15 @@ def main() -> None:
 
     vector_store = get_vector_store(collection_name=_COLLECTION)
     vector_store.create_collection(dimension=vectors[0].dimension, indexing_threshold=0)
-    vector_store.upsert(chunks, vectors)
-    vector_store.publish()
-
     keyword_store = get_keyword_store(index_name=_COLLECTION)
     keyword_store.create_index()
-    keyword_store.index_chunks(chunks)
+
+    # Coordinated write: if keyword indexing fails after the vector store
+    # write already succeeded, this raises IndexConsistencyError naming
+    # exactly which chunk_ids are now out of sync, instead of leaving the
+    # two stores silently disagreeing.
+    HybridIndexer(vector_store, keyword_store).index(chunks, vectors)
+    vector_store.publish()
 
     for query in _QUERIES:
         print("=" * 70)
