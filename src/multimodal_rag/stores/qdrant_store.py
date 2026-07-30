@@ -217,6 +217,8 @@ class QdrantStore(VectorStore):
                 "source": chunk.metadata.source_file,
                 "doc_id": chunk.metadata.source_file,
                 "element_types": chunk.metadata.element_types,
+                "pages": chunk.metadata.pages,
+                "slides": chunk.metadata.slides,
                 "model_id": vector.model_id,
                 "parent_id": chunk.parent_id,
             },
@@ -254,6 +256,8 @@ class QdrantStore(VectorStore):
                 source=point.payload["source"],
                 doc_id=point.payload["doc_id"],
                 element_types=point.payload["element_types"],
+                pages=point.payload.get("pages", []),
+                slides=point.payload.get("slides", []),
                 model_id=point.payload["model_id"],
                 vector=point.vector if isinstance(point.vector, list) else None,
             )

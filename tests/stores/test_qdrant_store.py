@@ -22,11 +22,18 @@ def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("multimodal_rag.retry.time.sleep", lambda seconds: None)
 
 
-def _chunk(chunk_id: str, text: str, source: str = "doc.md") -> Chunk:
+def _chunk(
+    chunk_id: str, text: str, source: str = "doc.md", pages: list[int] | None = None
+) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
-        metadata=ChunkMetadata(source_file=source, element_positions=[0], element_types=["title"]),
+        metadata=ChunkMetadata(
+            source_file=source,
+            element_positions=[0],
+            element_types=["title"],
+            pages=pages or [],
+        ),
     )
 
 
@@ -255,3 +262,9 @@ def test_list_chunk_ids_returns_all_upserted_ids(store: QdrantStore) -> None:
     store.upsert(chunks, vectors)
 
     assert sorted(store.list_chunk_ids()) == sorted(c.id for c in chunks)
+
+
+def test_pages_round_trip_through_search(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored", pages=[2, 3])], [_vector([1.0, 0.0, 0.0, 0.0])])
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+    assert results[0].pages == [2, 3]

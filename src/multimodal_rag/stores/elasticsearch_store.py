@@ -57,6 +57,8 @@ class ElasticsearchStore(KeywordStore):
                     "source": {"type": "keyword"},
                     "doc_id": {"type": "keyword"},
                     "element_types": {"type": "keyword"},
+                    "pages": {"type": "integer"},
+                    "slides": {"type": "integer"},
                 }
             },
         )
@@ -72,6 +74,8 @@ class ElasticsearchStore(KeywordStore):
                     "source": chunk.metadata.source_file,
                     "doc_id": chunk.metadata.source_file,
                     "element_types": chunk.metadata.element_types,
+                    "pages": chunk.metadata.pages,
+                    "slides": chunk.metadata.slides,
                 },
             }
             for chunk in chunks
@@ -98,6 +102,8 @@ class ElasticsearchStore(KeywordStore):
                 source=hit["_source"]["source"],
                 doc_id=hit["_source"]["doc_id"],
                 element_types=hit["_source"]["element_types"],
+                pages=hit["_source"].get("pages", []),
+                slides=hit["_source"].get("slides", []),
                 model_id=None,
             )
             for hit in response["hits"]["hits"]

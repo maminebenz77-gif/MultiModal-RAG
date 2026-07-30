@@ -19,6 +19,17 @@ class ChunkMetadata(BaseModel):
     well-defined, so this is a list, not one value. Same best-effort
     rule as element_positions."""
 
+    pages: list[int] = []
+    slides: list[int] = []
+    """Page/slide numbers of the elements that fed this chunk — needed
+    for citations (source file + page/slide), which is why this exists.
+    A chunk can span multiple elements on different pages, so these are
+    deduplicated, order-preserving lists, not single values. Same
+    best-effort rule as element_positions/element_types: populated
+    exactly by strategies that walk the Element list directly, empty for
+    the flatten-first strategies. Empty for Markdown/DOCX sources, which
+    have no native page/slide concept at all."""
+
 
 class Chunk(BaseModel):
     id: str

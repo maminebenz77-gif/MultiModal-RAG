@@ -2,9 +2,19 @@ from multimodal_rag.chunking.structure_aware import StructureAwareChunker
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
 
 
-def _el(el_type: ElementType, position: int, text: str | None = None) -> Element:
+def _el(
+    el_type: ElementType,
+    position: int,
+    text: str | None = None,
+    page: int | None = None,
+    slide: int | None = None,
+) -> Element:
     return Element(
-        type=el_type, text=text, metadata=ElementMetadata(source_file="doc.md", position=position)
+        type=el_type,
+        text=text,
+        metadata=ElementMetadata(
+            source_file="doc.md", position=position, page=page, slide=slide
+        ),
     )
 
 
@@ -86,3 +96,29 @@ def test_element_types_has_no_duplicates() -> None:
     ]
     chunks = StructureAwareChunker().chunk(elements)
     assert chunks[0].metadata.element_types == ["title", "paragraph"]
+
+
+def test_pages_reflects_distinct_pages_in_the_section() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A", page=1),
+        _el(ElementType.PARAGRAPH, 1, "Body continues.", page=2),
+        _el(ElementType.PARAGRAPH, 2, "Still page 2.", page=2),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.pages == [1, 2]
+
+
+def test_slides_reflects_distinct_slides_in_the_section() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A", slide=3),
+        _el(ElementType.PARAGRAPH, 1, "Body.", slide=3),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.slides == [3]
+
+
+def test_pages_and_slides_empty_when_source_has_neither() -> None:
+    elements = [_el(ElementType.TITLE, 0, "Section A"), _el(ElementType.PARAGRAPH, 1, "Body.")]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.pages == []
+    assert chunks[0].metadata.slides == []

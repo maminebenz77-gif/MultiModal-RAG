@@ -2,9 +2,13 @@ from multimodal_rag.chunking.parent_child import ParentChildChunker
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
 
 
-def _el(el_type: ElementType, position: int, text: str | None = None) -> Element:
+def _el(
+    el_type: ElementType, position: int, text: str | None = None, page: int | None = None
+) -> Element:
     return Element(
-        type=el_type, text=text, metadata=ElementMetadata(source_file="doc.md", position=position)
+        type=el_type,
+        text=text,
+        metadata=ElementMetadata(source_file="doc.md", position=position, page=page),
     )
 
 
@@ -76,6 +80,16 @@ def test_child_inherits_parent_element_types() -> None:
     chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
     child = next(c for c in chunks if c.parent_id is not None)
     assert child.metadata.element_types == ["title", "paragraph"]
+
+
+def test_child_inherits_parent_pages() -> None:
+    elements = [
+        _el(ElementType.TITLE, 5, "Section A", page=2),
+        _el(ElementType.PARAGRAPH, 6, "Body.", page=2),
+    ]
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+    child = next(c for c in chunks if c.parent_id is not None)
+    assert child.metadata.pages == [2]
 
 
 def test_parents_appear_before_their_children_in_result_order() -> None:

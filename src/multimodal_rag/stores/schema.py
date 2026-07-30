@@ -13,6 +13,12 @@ class SearchResult(BaseModel):
     source: str
     doc_id: str
     element_types: list[str]
+    pages: list[int] = []
+    slides: list[int] = []
+    """Page/slide numbers the chunk came from — needed for citations.
+    Empty when the source chunker couldn't determine them (see
+    ChunkMetadata.pages/slides)."""
+
     model_id: str | None = None
     """None for keyword (BM25) results — no embedding model is involved."""
 

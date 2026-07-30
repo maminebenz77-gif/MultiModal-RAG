@@ -31,12 +31,22 @@ class StructureAwareChunker(Chunker):
             text = "\n\n".join(t for el in section if (t := element_text(el)))
             positions = [el.metadata.position for el in section]
             types = list(dict.fromkeys(el.type.value for el in section))
+            pages = list(
+                dict.fromkeys(el.metadata.page for el in section if el.metadata.page is not None)
+            )
+            slides = list(
+                dict.fromkeys(el.metadata.slide for el in section if el.metadata.slide is not None)
+            )
             chunks.append(
                 Chunk(
                     id=chunk_id(source_file, "structure", i, text),
                     text=text,
                     metadata=ChunkMetadata(
-                        source_file=source_file, element_positions=positions, element_types=types
+                        source_file=source_file,
+                        element_positions=positions,
+                        element_types=types,
+                        pages=pages,
+                        slides=slides,
                     ),
                 )
             )
