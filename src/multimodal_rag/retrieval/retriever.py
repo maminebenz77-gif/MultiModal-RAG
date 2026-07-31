@@ -33,6 +33,7 @@ class Retriever:
         mmr_lambda: float = 0.5,
         rrf_k: int = 60,
         candidate_pool: int = 20,
+        resolve_parent_context: bool = False,
     ) -> list[SearchResult]:
         # Reranking works on a broader candidate set than the final
         # top_k -- the whole point is retrieve-broad-then-rerank-down.
@@ -50,8 +51,36 @@ class Retriever:
             raise ValueError(f"Unknown retrieval method: {method!r}")
 
         if rerank:
+            # Reranking runs on the precise child text (matching the
+            # child against the query is what the cross-encoder is good
+            # at) -- parent context is substituted in afterward, only for
+            # the results that actually made the final cut.
             results = self._rerank(query, results, top_k)
-        return results[:top_k]
+        else:
+            results = results[:top_k]
+
+        if resolve_parent_context:
+            results = self._resolve_parent_context(results)
+        return results
+
+    def _resolve_parent_context(self, results: list[SearchResult]) -> list[SearchResult]:
+        """For each result that's a child chunk (has parent_id set),
+        replace its `text` with the PARENT chunk's fuller text -- more
+        context for the LLM to generate from -- while every other field
+        (chunk_id, source, pages, ...) keeps pointing at the CHILD, so
+        citations still resolve to the small, precise chunk that was
+        actually matched, not the parent's broader text."""
+        resolved = []
+        for result in results:
+            if result.parent_id is None:
+                resolved.append(result)
+                continue
+            parent = self._vector_store.get_by_chunk_id(result.parent_id)
+            if parent is None:
+                resolved.append(result)
+                continue
+            resolved.append(result.model_copy(update={"text": parent.text}))
+        return resolved
 
     def _cosine(self, query: str, top_k: int) -> list[SearchResult]:
         query_vector = self._embedder.embed([query])[0]

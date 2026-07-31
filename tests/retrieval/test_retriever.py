@@ -41,10 +41,11 @@ class FakeReranker(Reranker):
         return self._order
 
 
-def _chunk(chunk_id: str, text: str) -> Chunk:
+def _chunk(chunk_id: str, text: str, parent_id: str | None = None) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
+        parent_id=parent_id,
         metadata=ChunkMetadata(
             source_file="doc.md", element_positions=[0], element_types=["title"]
         ),
@@ -221,3 +222,55 @@ def test_rerank_without_a_reranker_raises(
 
     with pytest.raises(ValueError, match="requires a Reranker"):
         retriever.retrieve("query", method=RetrievalMethod.COSINE, rerank=True)
+
+
+def test_resolve_parent_context_substitutes_parent_text_but_keeps_child_chunk_id(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text, much longer": [0.5, 0.5]}
+    )
+    parent = _chunk("parent", "parent text, much longer")
+    child = _chunk("child", "child text", parent_id="parent")
+    vector_store.upsert([parent, child], embedder.embed([parent.text, child.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=1, resolve_parent_context=True
+    )
+
+    assert results[0].chunk_id == "child"
+    assert results[0].text == "parent text, much longer"
+
+
+def test_resolve_parent_context_leaves_parentless_chunks_unchanged(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "standalone text": [1.0, 0.0]})
+    chunk = _chunk("a", "standalone text")
+    vector_store.upsert([chunk], embedder.embed([chunk.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=1, resolve_parent_context=True
+    )
+
+    assert results[0].chunk_id == "a"
+    assert results[0].text == "standalone text"
+
+
+def test_resolve_parent_context_off_by_default_leaves_child_text_as_is(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text": [0.5, 0.5]}
+    )
+    parent = _chunk("parent", "parent text")
+    child = _chunk("child", "child text", parent_id="parent")
+    vector_store.upsert([parent, child], embedder.embed([parent.text, child.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
+
+    assert results[0].chunk_id == "child"
+    assert results[0].text == "child text"

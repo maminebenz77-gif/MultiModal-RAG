@@ -11,7 +11,7 @@ Run: `uv run python -m multimodal_rag.generation.demo`
 
 from pathlib import Path
 
-from ..chunking.structure_aware import StructureAwareChunker
+from ..chunking.parent_child import ParentChildChunker
 from ..ingestion import parse_document
 from ..providers.factory import get_embedder
 from ..retrieval.retriever import Retriever
@@ -34,8 +34,13 @@ def _print_answer(question: str) -> None:
 
 def main() -> None:
     elements = parse_document(_DOC)
-    chunks = StructureAwareChunker().chunk(elements)
-    print(f"Parsed {len(elements)} elements -> {len(chunks)} chunks from {_DOC.name}")
+    chunks = ParentChildChunker().chunk(elements)
+    num_parents = sum(1 for c in chunks if c.parent_id is None)
+    num_children = len(chunks) - num_parents
+    print(
+        f"Parsed {len(elements)} elements -> {num_parents} parent chunks, "
+        f"{num_children} child chunks from {_DOC.name}"
+    )
 
     embedder = get_embedder()
     vectors = embedder.embed([c.text for c in chunks])
@@ -49,7 +54,11 @@ def main() -> None:
     vector_store.publish()
 
     retriever = Retriever(vector_store, keyword_store, embedder)
-    chain = RagChain(retriever, top_k=3)
+    # resolve_parent_context=True: a matched child chunk (small, precise
+    # -- good for retrieval) has its text swapped for its parent's fuller
+    # text (good for generation) before it reaches the LLM, while the
+    # citation still points at the child, not the broader parent.
+    chain = RagChain(retriever, top_k=3, resolve_parent_context=True)
 
     for question in (_ANSWERABLE_QUESTION, _UNANSWERABLE_QUESTION):
         _print_answer(question)
@@ -62,7 +71,7 @@ def main() -> None:
                 location = ""
                 if citation.pages:
                     location = f", page {', '.join(str(p) for p in citation.pages)}"
-                print(f"  ⟦{citation.marker}⟧ {citation.source}{location}")
+                print(f"  ⟦{citation.marker}⟧ {citation.chunk_id}{location} - {citation.source}")
         print()
 
 

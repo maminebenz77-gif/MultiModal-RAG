@@ -40,7 +40,12 @@ class RetrieverLike(Protocol):
     wrapper, ...), not just Retriever itself."""
 
     def retrieve(
-        self, query: str, method: RetrievalMethod, top_k: int
+        self,
+        query: str,
+        method: RetrievalMethod,
+        top_k: int,
+        *,
+        resolve_parent_context: bool = False,
     ) -> list[SearchResult]: ...
 
 
@@ -51,11 +56,13 @@ class RagChain:
         method: RetrievalMethod = RetrievalMethod.HYBRID_RRF,
         top_k: int = 5,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
+        resolve_parent_context: bool = False,
     ) -> None:
         self._retriever = retriever
         self._method = method
         self._top_k = top_k
         self._token_budget = token_budget
+        self._resolve_parent_context = resolve_parent_context
         self._chain = (
             RunnableLambda(self._rewrite)
             | RunnableLambda(self._retrieve)
@@ -78,7 +85,10 @@ class RagChain:
 
     def _retrieve(self, state: dict[str, Any]) -> dict[str, Any]:
         results = self._retriever.retrieve(
-            state["query"], method=self._method, top_k=self._top_k
+            state["query"],
+            method=self._method,
+            top_k=self._top_k,
+            resolve_parent_context=self._resolve_parent_context,
         )
         context = assemble_context(results, self._token_budget)
         return {**state, "context": context}

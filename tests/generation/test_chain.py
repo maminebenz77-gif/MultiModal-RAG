@@ -22,8 +22,19 @@ class FakeRetriever:
         self._results = results
         self.last_call: dict[str, object] | None = None
 
-    def retrieve(self, query: str, method: RetrievalMethod, top_k: int) -> list[SearchResult]:
-        self.last_call = {"query": query, "method": method, "top_k": top_k}
+    def retrieve(
+        self,
+        query: str,
+        method: RetrievalMethod,
+        top_k: int,
+        resolve_parent_context: bool = False,
+    ) -> list[SearchResult]:
+        self.last_call = {
+            "query": query,
+            "method": method,
+            "top_k": top_k,
+            "resolve_parent_context": resolve_parent_context,
+        }
         return self._results
 
 
@@ -67,7 +78,23 @@ def test_answer_passes_query_method_and_top_k_to_retriever(
         "query": "a question",
         "method": RetrievalMethod.BM25,
         "top_k": 3,
+        "resolve_parent_context": False,
     }
+
+
+def test_resolve_parent_context_is_passed_through_to_retriever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever([_result("a", "text")])
+    chain = RagChain(retriever, resolve_parent_context=True)
+
+    chain.answer("a question")
+
+    assert retriever.last_call is not None
+    assert retriever.last_call["resolve_parent_context"] is True
 
 
 def test_answer_sends_grounded_prompt_containing_chunk_text_to_llm(
