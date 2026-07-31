@@ -108,3 +108,37 @@ def test_no_retrieved_results_still_produces_an_answer(monkeypatch: pytest.Monke
     result = chain.answer("anything")
 
     assert result.refused is True
+
+
+def test_history_triggers_rewrite_and_retrieval_uses_rewritten_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rewrite_llm = FakeLLM("What was gpt-4o-mini's latency?")
+    answer_llm = FakeLLM("The latency was 220ms ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.rewrite.get_llm", lambda: rewrite_llm)
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: answer_llm)
+
+    retriever = FakeRetriever([_result("a", "gpt-4o-mini had 220ms latency")])
+    chain = RagChain(retriever)
+
+    chain.answer("What about that?", history=[("What model was used?", "gpt-4o-mini")])
+
+    assert retriever.last_call is not None
+    assert retriever.last_call["query"] == "What was gpt-4o-mini's latency?"
+
+
+def test_no_history_skips_the_rewrite_llm_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fail_get_llm() -> FakeLLM:
+        raise AssertionError("rewrite must not call get_llm() when there's no history")
+
+    monkeypatch.setattr("multimodal_rag.generation.rewrite.get_llm", _fail_get_llm)
+    answer_llm = FakeLLM("An answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: answer_llm)
+
+    retriever = FakeRetriever([_result("a", "text")])
+    chain = RagChain(retriever)
+
+    chain.answer("a question")
+
+    assert retriever.last_call is not None
+    assert retriever.last_call["query"] == "a question"
