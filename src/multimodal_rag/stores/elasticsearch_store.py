@@ -59,6 +59,7 @@ class ElasticsearchStore(KeywordStore):
                     "element_types": {"type": "keyword"},
                     "pages": {"type": "integer"},
                     "slides": {"type": "integer"},
+                    "parent_id": {"type": "keyword"},
                 }
             },
         )
@@ -76,6 +77,7 @@ class ElasticsearchStore(KeywordStore):
                     "element_types": chunk.metadata.element_types,
                     "pages": chunk.metadata.pages,
                     "slides": chunk.metadata.slides,
+                    "parent_id": chunk.parent_id,
                 },
             }
             for chunk in chunks
@@ -104,6 +106,7 @@ class ElasticsearchStore(KeywordStore):
                 element_types=hit["_source"]["element_types"],
                 pages=hit["_source"].get("pages", []),
                 slides=hit["_source"].get("slides", []),
+                parent_id=hit["_source"].get("parent_id"),
                 model_id=None,
             )
             for hit in response["hits"]["hits"]

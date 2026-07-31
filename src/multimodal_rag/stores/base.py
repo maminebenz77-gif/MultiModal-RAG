@@ -85,6 +85,14 @@ class VectorStore(ABC):
         cross-store consistency checks (see stores.indexer.HybridIndexer)
         — not something most retrieval code needs directly."""
 
+    @abstractmethod
+    def get_by_chunk_id(self, chunk_id: str) -> Chunk | None:
+        """Fetch one specific chunk by its chunk_id, directly — not a
+        similarity search, no score involved. None if no chunk with that
+        ID exists in the live collection. Used to resolve a child chunk's
+        parent for parent-child retrieval (see Retriever's
+        resolve_parent_context)."""
+
 
 class KeywordStore(ABC):
     """Lexical (BM25) search — the counterpart to VectorStore. No

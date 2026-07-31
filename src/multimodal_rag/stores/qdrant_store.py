@@ -29,7 +29,7 @@ import uuid
 
 from qdrant_client import QdrantClient, models
 
-from ..chunking.schema import Chunk
+from ..chunking.schema import Chunk, ChunkMetadata
 from ..providers.schema import EmbeddingVector, assert_single_model
 from ..retry import retry_with_backoff
 from .base import VectorStore
@@ -258,6 +258,7 @@ class QdrantStore(VectorStore):
                 element_types=point.payload["element_types"],
                 pages=point.payload.get("pages", []),
                 slides=point.payload.get("slides", []),
+                parent_id=point.payload.get("parent_id"),
                 model_id=point.payload["model_id"],
                 vector=point.vector if isinstance(point.vector, list) else None,
             )
@@ -303,3 +304,27 @@ class QdrantStore(VectorStore):
             if offset is None:
                 break
         return chunk_ids
+
+    def get_by_chunk_id(self, chunk_id: str) -> Chunk | None:
+        try:
+            points = self._client.retrieve(
+                collection_name=self._alias, ids=[_point_id(chunk_id)], with_payload=True
+            )
+        except Exception:
+            # Collection doesn't exist (or another retrieve-time issue) --
+            # nothing to resolve, same as "not found".
+            return None
+        if not points or points[0].payload is None:
+            return None
+        payload = points[0].payload
+        return Chunk(
+            id=payload["chunk_id"],
+            text=payload["text"],
+            parent_id=payload.get("parent_id"),
+            metadata=ChunkMetadata(
+                source_file=payload["source"],
+                element_types=payload["element_types"],
+                pages=payload.get("pages", []),
+                slides=payload.get("slides", []),
+            ),
+        )

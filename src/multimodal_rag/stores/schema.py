@@ -19,6 +19,12 @@ class SearchResult(BaseModel):
     Empty when the source chunker couldn't determine them (see
     ChunkMetadata.pages/slides)."""
 
+    parent_id: str | None = None
+    """Set only when this chunk was produced by the parent-child chunking
+    strategy and IS a child — lets a caller resolve back to the fuller
+    parent chunk (see Retriever's resolve_parent_context) while still
+    citing this precise child chunk. None for every other chunk."""
+
     model_id: str | None = None
     """None for keyword (BM25) results — no embedding model is involved."""
 

@@ -21,11 +21,16 @@ def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _chunk(
-    chunk_id: str, text: str, source: str = "doc.md", pages: list[int] | None = None
+    chunk_id: str,
+    text: str,
+    source: str = "doc.md",
+    pages: list[int] | None = None,
+    parent_id: str | None = None,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
+        parent_id=parent_id,
         metadata=ChunkMetadata(
             source_file=source,
             element_positions=[0],
@@ -130,3 +135,17 @@ def test_pages_round_trip_through_search(store: ElasticsearchStore) -> None:
     store.index_chunks([_chunk("doc.md::a::0", "stored content", pages=[2, 3])])
     results = store.search("stored content", top_k=1)
     assert results[0].pages == [2, 3]
+
+
+def test_parent_id_round_trips_through_search(store: ElasticsearchStore) -> None:
+    store.index_chunks(
+        [_chunk("doc.md::child::0", "stored content", parent_id="doc.md::parent::0")]
+    )
+    results = store.search("stored content", top_k=1)
+    assert results[0].parent_id == "doc.md::parent::0"
+
+
+def test_parent_id_is_none_when_chunk_has_no_parent(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "stored content")])
+    results = store.search("stored content", top_k=1)
+    assert results[0].parent_id is None
