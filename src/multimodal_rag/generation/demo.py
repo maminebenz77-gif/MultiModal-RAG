@@ -62,7 +62,7 @@ def main() -> None:
                 location = ""
                 if citation.pages:
                     location = f", page {', '.join(str(p) for p in citation.pages)}"
-                print(f"  [{citation.marker}] {citation.source}{location}")
+                print(f"  ⟦{citation.marker}⟧ {citation.source}{location}")
         print()
 
 

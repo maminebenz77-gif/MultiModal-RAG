@@ -39,7 +39,7 @@ def _result(chunk_id: str, text: str, source: str = "doc.md") -> SearchResult:
 
 
 def test_answer_returns_grounded_answer_with_citations(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_llm = FakeLLM("The latency was 220ms [1].")
+    fake_llm = FakeLLM("The latency was 220ms ⟦1⟧.")
     monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
 
     retriever = FakeRetriever([_result("a", "gpt-4o-mini had 220ms latency")])
@@ -47,7 +47,7 @@ def test_answer_returns_grounded_answer_with_citations(monkeypatch: pytest.Monke
 
     result = chain.answer("What was the latency?")
 
-    assert result.answer == "The latency was 220ms [1]."
+    assert result.answer == "The latency was 220ms ⟦1⟧."
     assert result.citations[0].chunk_id == "a"
     assert result.refused is False
 
@@ -55,7 +55,7 @@ def test_answer_returns_grounded_answer_with_citations(monkeypatch: pytest.Monke
 def test_answer_passes_query_method_and_top_k_to_retriever(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_llm = FakeLLM("An answer [1].")
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
     monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
 
     retriever = FakeRetriever([_result("a", "text")])
@@ -73,7 +73,7 @@ def test_answer_passes_query_method_and_top_k_to_retriever(
 def test_answer_sends_grounded_prompt_containing_chunk_text_to_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_llm = FakeLLM("An answer [1].")
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
     monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
 
     retriever = FakeRetriever([_result("a", "some unique chunk text")])

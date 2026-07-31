@@ -36,8 +36,8 @@ def test_user_message_includes_numbered_context_and_question() -> None:
         "What is X?", [_result("a", "chunk one text"), _result("b", "chunk two text")]
     )
     user = messages[1]["content"]
-    assert "[1]" in user
-    assert "[2]" in user
+    assert "⟦1⟧" in user
+    assert "⟦2⟧" in user
     assert "chunk one text" in user
     assert "chunk two text" in user
     assert "Question: What is X?" in user

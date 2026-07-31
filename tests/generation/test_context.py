@@ -49,7 +49,7 @@ def test_assemble_context_empty_input_returns_empty() -> None:
 
 def test_format_context_block_includes_index_source_and_text() -> None:
     block = format_context_block(1, _result("a", "the chunk text"))
-    assert block.startswith("[1] (source: doc.md)")
+    assert block.startswith("⟦1⟧ (source: doc.md)")
     assert "the chunk text" in block
 
 

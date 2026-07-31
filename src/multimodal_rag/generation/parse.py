@@ -1,7 +1,14 @@
-"""Parses a raw LLM answer into a RagAnswer: extracts which [N] markers
-were actually cited and maps them back to real chunk metadata WE
-already have — never trusting the model's own recall of filenames or
+"""Parses a raw LLM answer into a RagAnswer: extracts which citation
+markers were actually cited and maps them back to real chunk metadata
+WE already have — never trusting the model's own recall of filenames or
 page numbers, only which numbered block it referenced.
+
+Markers use double-angled brackets (e.g. "⟦1⟧") instead of plain
+"[1]" — ordinary square-bracketed numbers show up all the time in real
+technical documents (citations, footnotes, array/step indices) and in
+the model's own enumerated lists, and either would be misread as a
+citation by a plain "\\[(\\d+)\\]" regex. The double-angled form is
+distinctive enough that it only appears when WE put it there.
 """
 
 import re
@@ -10,7 +17,7 @@ from ..stores.schema import SearchResult
 from .prompt import REFUSAL_TEXT
 from .schema import Citation, RagAnswer
 
-_CITATION_RE = re.compile(r"\[(\d+)\]")
+_CITATION_RE = re.compile(r"⟦(\d+)⟧")
 
 
 def parse_answer(raw_answer: str, context_results: list[SearchResult]) -> RagAnswer:

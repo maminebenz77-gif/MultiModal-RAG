@@ -37,7 +37,7 @@ def assemble_context(results: list[SearchResult], token_budget: int) -> list[Sea
 
 
 def format_context_block(index: int, result: SearchResult) -> str:
-    return f"[{index}] (source: {result.source}{_format_location(result)})\n{result.text}"
+    return f"⟦{index}⟧ (source: {result.source}{_format_location(result)})\n{result.text}"
 
 
 def _format_location(result: SearchResult) -> str:
