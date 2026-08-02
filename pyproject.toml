@@ -5,16 +5,19 @@ description = "A multimodal technical RAG system, built step by step as a learni
 requires-python = ">=3.11"
 dependencies = [
     "elasticsearch>=9.4.1",
+    "fastapi>=0.141.1",
     "langchain-text-splitters>=1.1.2",
     "litellm>=1.92.0",
     "markdown-it-py>=4.2.0",
     "pydantic-settings>=2.14.2",
     "python-docx>=1.2.0",
     "python-magic>=0.4.27",
+    "python-multipart>=0.0.32",
     "python-pptx>=1.0.2",
     "qdrant-client>=1.18.0",
     "sentence-transformers>=5.6.0",
     "unstructured[pdf]>=0.24.1",
+    "uvicorn[standard]>=0.52.1",
 ]
 
 [project.scripts]
@@ -26,8 +29,10 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mypy>=2.3.0",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.15.21",
 ]
 
@@ -39,8 +44,15 @@ target-version = "py311"
 # Sensible starting rule set: pyflakes, pycodestyle, isort, pyupgrade, bugbear.
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency injection is built around Depends(...) as an
+# argument default -- that's the framework's own idiom, not the mutable-
+# default-argument bug B008 exists to catch.
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.11"
