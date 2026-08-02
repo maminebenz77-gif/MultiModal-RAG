@@ -305,6 +305,19 @@ class QdrantStore(VectorStore):
                 break
         return chunk_ids
 
+    def ensure_ready(self, dimension: int) -> None:
+        if self._current_alias_target() is not None:
+            return
+        self.create_collection(dimension=dimension)
+        self.publish()
+
+    def ping(self) -> bool:
+        try:
+            self._client.get_collections()
+            return True
+        except Exception:
+            return False
+
     def get_by_chunk_id(self, chunk_id: str) -> Chunk | None:
         try:
             points = self._client.retrieve(

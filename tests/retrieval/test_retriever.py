@@ -41,13 +41,15 @@ class FakeReranker(Reranker):
         return self._order
 
 
-def _chunk(chunk_id: str, text: str, parent_id: str | None = None) -> Chunk:
+def _chunk(
+    chunk_id: str, text: str, parent_id: str | None = None, source: str = "doc.md"
+) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
         parent_id=parent_id,
         metadata=ChunkMetadata(
-            source_file="doc.md", element_positions=[0], element_types=["title"]
+            source_file=source, element_positions=[0], element_types=["title"]
         ),
     )
 
@@ -274,3 +276,41 @@ def test_resolve_parent_context_off_by_default_leaves_child_text_as_is(
 
     assert results[0].chunk_id == "child"
     assert results[0].text == "child text"
+
+
+def test_doc_ids_filter_excludes_chunks_from_other_documents(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
+    )
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md")
+    vector_store.upsert(
+        [chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text])
+    )
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=2, doc_ids=["doc-b.md"]
+    )
+
+    assert [r.chunk_id for r in results] == ["b"]
+
+
+def test_doc_ids_none_means_no_filtering(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
+    )
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md")
+    vector_store.upsert(
+        [chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text])
+    )
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
+
+    assert {r.chunk_id for r in results} == {"a", "b"}

@@ -64,6 +64,17 @@ class ElasticsearchStore(KeywordStore):
             },
         )
 
+    def ensure_ready(self) -> None:
+        if self._client.indices.exists(index=self._index_name):
+            return
+        self.create_index()
+
+    def ping(self) -> bool:
+        try:
+            return bool(self._client.ping())
+        except Exception:
+            return False
+
     def index_chunks(self, chunks: list[Chunk]) -> None:
         actions = [
             {

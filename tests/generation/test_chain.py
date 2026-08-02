@@ -28,12 +28,14 @@ class FakeRetriever:
         method: RetrievalMethod,
         top_k: int,
         resolve_parent_context: bool = False,
+        doc_ids: list[str] | None = None,
     ) -> list[SearchResult]:
         self.last_call = {
             "query": query,
             "method": method,
             "top_k": top_k,
             "resolve_parent_context": resolve_parent_context,
+            "doc_ids": doc_ids,
         }
         return self._results
 
@@ -79,7 +81,21 @@ def test_answer_passes_query_method_and_top_k_to_retriever(
         "method": RetrievalMethod.BM25,
         "top_k": 3,
         "resolve_parent_context": False,
+        "doc_ids": None,
     }
+
+
+def test_doc_ids_are_passed_through_to_retriever(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever([_result("a", "text")])
+    chain = RagChain(retriever)
+
+    chain.answer("a question", doc_ids=["doc-a", "doc-b"])
+
+    assert retriever.last_call is not None
+    assert retriever.last_call["doc_ids"] == ["doc-a", "doc-b"]
 
 
 def test_resolve_parent_context_is_passed_through_to_retriever(

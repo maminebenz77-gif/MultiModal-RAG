@@ -93,6 +93,21 @@ class VectorStore(ABC):
         parent for parent-child retrieval (see Retriever's
         resolve_parent_context)."""
 
+    @abstractmethod
+    def ensure_ready(self, dimension: int) -> None:
+        """Idempotently make sure a live collection exists, sized for
+        `dimension`-length vectors: creates and publishes an empty one if
+        none exists yet, otherwise a no-op. Safe to call on every service
+        startup — unlike create_collection(), it never touches an
+        already-live collection, so it can't discard previously ingested
+        data the way blindly recreating on every boot would."""
+
+    @abstractmethod
+    def ping(self) -> bool:
+        """Cheap reachability check — True if the backend responds at
+        all, regardless of whether a live collection exists yet. Used by
+        GET /health; deliberately doesn't touch application data."""
+
 
 class KeywordStore(ABC):
     """Lexical (BM25) search — the counterpart to VectorStore. No
@@ -123,3 +138,17 @@ class KeywordStore(ABC):
     def list_chunk_ids(self) -> list[str]:
         """All chunk_ids currently in the index. Used for cross-store
         consistency checks (see stores.indexer.HybridIndexer)."""
+
+    @abstractmethod
+    def ensure_ready(self) -> None:
+        """Idempotently make sure the index exists: creates it if not,
+        no-op if it does. Safe to call on every service startup —
+        create_index() itself is destructive (drops and recreates), so
+        calling THAT unconditionally on every boot would silently wipe
+        every previously indexed chunk."""
+
+    @abstractmethod
+    def ping(self) -> bool:
+        """Cheap reachability check — True if the backend responds at
+        all, regardless of whether the index exists yet. Used by
+        GET /health; deliberately doesn't touch application data."""

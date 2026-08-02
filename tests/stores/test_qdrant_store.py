@@ -304,3 +304,38 @@ def test_get_by_chunk_id_returns_the_matching_chunk(store: QdrantStore) -> None:
 
 def test_get_by_chunk_id_returns_none_for_unknown_id(store: QdrantStore) -> None:
     assert store.get_by_chunk_id("nonexistent") is None
+
+
+def test_ping_returns_true_when_reachable(store: QdrantStore) -> None:
+    assert store.ping() is True
+
+
+def test_ping_returns_false_when_unreachable() -> None:
+    unreachable = QdrantStore(url="http://localhost:1", collection_name="whatever")
+    assert unreachable.ping() is False
+
+
+def test_ensure_ready_creates_a_live_collection_when_none_exists() -> None:
+    fresh = QdrantStore(url="http://localhost:6333", collection_name="test_ensure_ready")
+    try:
+        assert fresh._current_alias_target() is None
+        fresh.ensure_ready(dimension=4)
+        assert fresh._current_alias_target() is not None
+        fresh.upsert([_chunk("doc.md::a::0", "text")], [_vector([1.0, 0.0, 0.0, 0.0])])
+        results = fresh.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+        assert results[0].chunk_id == "doc.md::a::0"
+    finally:
+        physical = fresh._current_alias_target()
+        if physical is not None:
+            fresh._client.delete_collection(physical)
+
+
+def test_ensure_ready_is_a_no_op_when_a_collection_already_exists(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "text")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    live_before = store._current_alias_target()
+
+    store.ensure_ready(dimension=4)
+
+    assert store._current_alias_target() == live_before
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+    assert results[0].chunk_id == "doc.md::a::0"

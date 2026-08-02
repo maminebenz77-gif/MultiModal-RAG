@@ -46,6 +46,7 @@ class RetrieverLike(Protocol):
         top_k: int,
         *,
         resolve_parent_context: bool = False,
+        doc_ids: list[str] | None = None,
     ) -> list[SearchResult]: ...
 
 
@@ -71,12 +72,20 @@ class RagChain:
             | RunnableLambda(self._parse)
         )
 
-    def answer(self, query: str, history: list[tuple[str, str]] | None = None) -> RagAnswer:
+    def answer(
+        self,
+        query: str,
+        history: list[tuple[str, str]] | None = None,
+        doc_ids: list[str] | None = None,
+    ) -> RagAnswer:
         """`history` is prior (question, answer) turns, oldest first. If
         non-empty, the query is rewritten into a standalone form before
         retrieval — see rewrite.py. Omitted or empty, this behaves exactly
-        like single-turn use."""
-        result: RagAnswer = self._chain.invoke({"query": query, "history": history or []})
+        like single-turn use. `doc_ids`, if given, restricts retrieval to
+        those documents."""
+        result: RagAnswer = self._chain.invoke(
+            {"query": query, "history": history or [], "doc_ids": doc_ids}
+        )
         return result
 
     def _rewrite(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +98,7 @@ class RagChain:
             method=self._method,
             top_k=self._top_k,
             resolve_parent_context=self._resolve_parent_context,
+            doc_ids=state["doc_ids"],
         )
         context = assemble_context(results, self._token_budget)
         return {**state, "context": context}

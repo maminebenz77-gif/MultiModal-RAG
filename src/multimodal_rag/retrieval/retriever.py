@@ -34,10 +34,11 @@ class Retriever:
         rrf_k: int = 60,
         candidate_pool: int = 20,
         resolve_parent_context: bool = False,
+        doc_ids: list[str] | None = None,
     ) -> list[SearchResult]:
-        # Reranking works on a broader candidate set than the final
-        # top_k -- the whole point is retrieve-broad-then-rerank-down.
-        pool_size = candidate_pool if rerank else top_k
+        # Reranking and doc_id filtering both need a broader candidate set
+        # than the final top_k to still have top_k left over afterward.
+        pool_size = candidate_pool if (rerank or doc_ids is not None) else top_k
 
         if method == RetrievalMethod.COSINE:
             results = self._cosine(query, pool_size)
@@ -49,6 +50,13 @@ class Retriever:
             results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool)
         else:
             raise ValueError(f"Unknown retrieval method: {method!r}")
+
+        if doc_ids is not None:
+            # Post-retrieval filter, not a native store query -- fine at
+            # this corpus size, would need real store-level filtering
+            # (Qdrant payload filter / ES bool query) to scale.
+            allowed = set(doc_ids)
+            results = [r for r in results if r.doc_id in allowed]
 
         if rerank:
             # Reranking runs on the precise child text (matching the

@@ -100,6 +100,15 @@ def test_search_with_no_matches_returns_empty_list(store: ElasticsearchStore) ->
     assert results == []
 
 
+def test_ping_returns_true_when_reachable(store: ElasticsearchStore) -> None:
+    assert store.ping() is True
+
+
+def test_ping_returns_false_when_unreachable() -> None:
+    unreachable = ElasticsearchStore(url="http://localhost:1", index_name="whatever")
+    assert unreachable.ping() is False
+
+
 def test_list_chunk_ids_empty_when_nothing_indexed(store: ElasticsearchStore) -> None:
     assert store.list_chunk_ids() == []
 
@@ -149,3 +158,22 @@ def test_parent_id_is_none_when_chunk_has_no_parent(store: ElasticsearchStore) -
     store.index_chunks([_chunk("doc.md::a::0", "stored content")])
     results = store.search("stored content", top_k=1)
     assert results[0].parent_id is None
+
+
+def test_ensure_ready_creates_the_index_when_missing() -> None:
+    fresh = ElasticsearchStore(url="http://localhost:9200", index_name="test_ensure_ready")
+    try:
+        assert not fresh._client.indices.exists(index="test_ensure_ready")
+        fresh.ensure_ready()
+        assert fresh._client.indices.exists(index="test_ensure_ready")
+    finally:
+        fresh._client.indices.delete(index="test_ensure_ready", ignore_unavailable=True)
+
+
+def test_ensure_ready_does_not_wipe_an_existing_index(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "stored content")])
+
+    store.ensure_ready()
+
+    results = store.search("stored content", top_k=1)
+    assert len(results) == 1
