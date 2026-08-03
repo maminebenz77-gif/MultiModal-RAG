@@ -43,6 +43,14 @@ _DISTANCE_MAP = {
 
 _DEFAULT_BATCH_SIZE = 100
 
+# A parent chunk (from parent-child chunking) is meant to be reached only
+# by resolving up from one of its children, never matched directly --
+# this filter enforces that natively, at the store level, rather than
+# relying on every caller to remember to exclude them.
+_EXCLUDE_PARENTS_FILTER = models.Filter(
+    must_not=[models.FieldCondition(key="is_parent", match=models.MatchValue(value=True))]
+)
+
 
 def _point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
@@ -221,6 +229,7 @@ class QdrantStore(VectorStore):
                 "slides": chunk.metadata.slides,
                 "model_id": vector.model_id,
                 "parent_id": chunk.parent_id,
+                "is_parent": chunk.is_parent,
             },
         )
 
@@ -243,6 +252,7 @@ class QdrantStore(VectorStore):
         response = self._client.query_points(
             collection_name=self._alias,
             query=query_vector.vector,
+            query_filter=_EXCLUDE_PARENTS_FILTER,
             limit=top_k,
             search_params=search_params,
             with_payload=True,
@@ -334,6 +344,7 @@ class QdrantStore(VectorStore):
             id=payload["chunk_id"],
             text=payload["text"],
             parent_id=payload.get("parent_id"),
+            is_parent=payload.get("is_parent", False),
             metadata=ChunkMetadata(
                 source_file=payload["source"],
                 element_types=payload["element_types"],

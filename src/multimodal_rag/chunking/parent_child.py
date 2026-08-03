@@ -4,11 +4,13 @@ Not really a distinct boundary-detection algorithm — it's a way of using
 two of the other strategies at two granularities at once. Parents are
 whole sections (StructureAwareChunker); each parent's text is further
 split into smaller children (RecursiveCharacterTextSplitter), linked back
-via parent_id. In a real retrieval step, children would be what's
-searched (precise matching), while their parent is what's actually
-returned to the LLM (full section context) — solving the classic tension
-where small chunks retrieve accurately but lack context, and large
-chunks have context but retrieve imprecisely.
+via parent_id. Children are what's searched (precise matching) — parents
+are marked is_parent=True specifically so VectorStore/KeywordStore.
+search() can exclude them from ever being a direct hit — while a
+matched child's parent is what's actually returned to the LLM (full
+section context), via Retriever.resolve_parent_context. This solves the
+classic tension where small chunks retrieve accurately but lack context,
+and large chunks have context but retrieve imprecisely.
 """
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -29,7 +31,8 @@ class ParentChildChunker(Chunker):
 
     def chunk(self, elements: list[Element]) -> list[Chunk]:
         result: list[Chunk] = []
-        for parent in self._parent_chunker.chunk(elements):
+        for raw_parent in self._parent_chunker.chunk(elements):
+            parent = raw_parent.model_copy(update={"is_parent": True})
             result.append(parent)
             for j, piece in enumerate(self._child_splitter.split_text(parent.text)):
                 result.append(

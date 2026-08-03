@@ -26,11 +26,13 @@ def _chunk(
     source: str = "doc.md",
     pages: list[int] | None = None,
     parent_id: str | None = None,
+    is_parent: bool = False,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
         parent_id=parent_id,
+        is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source,
             element_positions=[0],
@@ -158,6 +160,19 @@ def test_parent_id_is_none_when_chunk_has_no_parent(store: ElasticsearchStore) -
     store.index_chunks([_chunk("doc.md::a::0", "stored content")])
     results = store.search("stored content", top_k=1)
     assert results[0].parent_id is None
+
+
+def test_is_parent_chunks_are_excluded_from_search(store: ElasticsearchStore) -> None:
+    store.index_chunks(
+        [
+            _chunk("doc.md::parent::0", "shared latency wording", is_parent=True),
+            _chunk(
+                "doc.md::child::0", "shared latency wording", parent_id="doc.md::parent::0"
+            ),
+        ]
+    )
+    results = store.search("shared latency wording", top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::child::0"]
 
 
 def test_ensure_ready_creates_the_index_when_missing() -> None:

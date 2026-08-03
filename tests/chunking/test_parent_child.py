@@ -100,3 +100,16 @@ def test_parents_appear_before_their_children_in_result_order() -> None:
     chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
     assert chunks[0].parent_id is None
     assert chunks[1].parent_id == chunks[0].id
+
+
+def test_only_parents_are_marked_is_parent() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.PARAGRAPH, 1, "Body of A."),
+    ]
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+
+    parents = [c for c in chunks if c.parent_id is None]
+    children = [c for c in chunks if c.parent_id is not None]
+    assert all(c.is_parent for c in parents)
+    assert all(not c.is_parent for c in children)

@@ -28,11 +28,13 @@ def _chunk(
     source: str = "doc.md",
     pages: list[int] | None = None,
     parent_id: str | None = None,
+    is_parent: bool = False,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
         parent_id=parent_id,
+        is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source,
             element_positions=[0],
@@ -288,6 +290,29 @@ def test_parent_id_is_none_when_chunk_has_no_parent(store: QdrantStore) -> None:
     store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0])])
     results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
     assert results[0].parent_id is None
+
+
+def test_is_parent_chunks_are_excluded_from_search(store: QdrantStore) -> None:
+    store.upsert(
+        [
+            _chunk("doc.md::parent::0", "parent text", is_parent=True),
+            _chunk("doc.md::child::0", "child text", parent_id="doc.md::parent::0"),
+        ],
+        [_vector([1.0, 0.0, 0.0, 0.0]), _vector([1.0, 0.0, 0.0, 0.0])],
+    )
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::child::0"]
+
+
+def test_is_parent_chunks_are_still_fetchable_by_id(store: QdrantStore) -> None:
+    store.upsert(
+        [_chunk("doc.md::parent::0", "parent text", is_parent=True)],
+        [_vector([1.0, 0.0, 0.0, 0.0])],
+    )
+    fetched = store.get_by_chunk_id("doc.md::parent::0")
+    assert fetched is not None
+    assert fetched.is_parent is True
+    assert fetched.text == "parent text"
 
 
 def test_get_by_chunk_id_returns_the_matching_chunk(store: QdrantStore) -> None:

@@ -37,4 +37,14 @@ class Chunk(BaseModel):
     parent_id: str | None = None
     """Set only on "child" chunks produced by the parent-child strategy."""
 
+    is_parent: bool = False
+    """True only for the "parent" (big) chunk in a parent-child pair.
+    Distinct from parent_id being None, which is ALSO true for ordinary
+    standalone chunks that have no parent-child structure at all — this
+    field exists so stores can specifically exclude parent chunks from
+    being returned as direct search hits (see VectorStore.search()/
+    KeywordStore.search()) without also hiding unrelated standalone
+    chunks. A parent is meant to be reached only by resolving up from
+    one of its children, never matched directly."""
+
     metadata: ChunkMetadata

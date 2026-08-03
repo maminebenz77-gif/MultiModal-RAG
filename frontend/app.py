@@ -160,6 +160,7 @@ if result is not None:
     with st.expander(f"Retrieved chunks ({len(result['retrieved_chunks'])})"):
         for chunk in result["retrieved_chunks"]:
             location = _location_suffix(chunk["pages"], chunk["slides"])
-            st.markdown(f"**{chunk['chunk_id']}** (score={chunk['score']:.3f}){location}")
+            st.markdown(f"**{chunk['source']}**{location} (score={chunk['score']:.3f})")
+            st.caption(chunk["chunk_id"])
             st.text(chunk["text"])
             st.divider()

@@ -60,6 +60,7 @@ class ElasticsearchStore(KeywordStore):
                     "pages": {"type": "integer"},
                     "slides": {"type": "integer"},
                     "parent_id": {"type": "keyword"},
+                    "is_parent": {"type": "boolean"},
                 }
             },
         )
@@ -89,6 +90,7 @@ class ElasticsearchStore(KeywordStore):
                     "pages": chunk.metadata.pages,
                     "slides": chunk.metadata.slides,
                     "parent_id": chunk.parent_id,
+                    "is_parent": chunk.is_parent,
                 },
             }
             for chunk in chunks
@@ -104,8 +106,19 @@ class ElasticsearchStore(KeywordStore):
         retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+        # A parent chunk (from parent-child chunking) is meant to be
+        # reached only by resolving up from one of its children, never
+        # matched directly -- excluded here natively rather than relying
+        # on every caller to remember to filter it out afterward.
         response = self._client.search(
-            index=self._index_name, query={"match": {"text": query}}, size=top_k
+            index=self._index_name,
+            query={
+                "bool": {
+                    "must": {"match": {"text": query}},
+                    "must_not": {"term": {"is_parent": True}},
+                }
+            },
+            size=top_k,
         )
         return [
             SearchResult(

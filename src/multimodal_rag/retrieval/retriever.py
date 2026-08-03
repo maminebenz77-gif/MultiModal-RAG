@@ -59,10 +59,11 @@ class Retriever:
             results = [r for r in results if r.doc_id in allowed]
 
         if rerank:
-            # Reranking runs on the precise child text (matching the
-            # child against the query is what the cross-encoder is good
-            # at) -- parent context is substituted in afterward, only for
-            # the results that actually made the final cut.
+            # Always runs on precise CHILD text, never parent text --
+            # parent chunks can never appear here at all, since
+            # VectorStore/KeywordStore.search() exclude is_parent=True
+            # chunks natively. Parent context is substituted in
+            # afterward, only for the results that actually made the cut.
             results = self._rerank(query, results, top_k)
         else:
             results = results[:top_k]
@@ -77,12 +78,22 @@ class Retriever:
         context for the LLM to generate from -- while every other field
         (chunk_id, source, pages, ...) keeps pointing at the CHILD, so
         citations still resolve to the small, precise chunk that was
-        actually matched, not the parent's broader text."""
+        actually matched, not the parent's broader text.
+
+        If two DIFFERENT children of the SAME parent both made it into
+        `results` (a real possibility -- both are separately embedded,
+        separately ranked), only the higher-ranked one is kept. Without
+        this, the LLM would see the same parent section's text twice,
+        burning context budget for zero new information."""
         resolved = []
+        seen_parent_ids: set[str] = set()
         for result in results:
             if result.parent_id is None:
                 resolved.append(result)
                 continue
+            if result.parent_id in seen_parent_ids:
+                continue
+            seen_parent_ids.add(result.parent_id)
             parent = self._vector_store.get_by_chunk_id(result.parent_id)
             if parent is None:
                 resolved.append(result)

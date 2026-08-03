@@ -42,12 +42,17 @@ class FakeReranker(Reranker):
 
 
 def _chunk(
-    chunk_id: str, text: str, parent_id: str | None = None, source: str = "doc.md"
+    chunk_id: str,
+    text: str,
+    parent_id: str | None = None,
+    source: str = "doc.md",
+    is_parent: bool = False,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
         text=text,
         parent_id=parent_id,
+        is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source, element_positions=[0], element_types=["title"]
         ),
@@ -232,7 +237,7 @@ def test_resolve_parent_context_substitutes_parent_text_but_keeps_child_chunk_id
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text, much longer": [0.5, 0.5]}
     )
-    parent = _chunk("parent", "parent text, much longer")
+    parent = _chunk("parent", "parent text, much longer", is_parent=True)
     child = _chunk("child", "child text", parent_id="parent")
     vector_store.upsert([parent, child], embedder.embed([parent.text, child.text]))
 
@@ -243,6 +248,38 @@ def test_resolve_parent_context_substitutes_parent_text_but_keeps_child_chunk_id
 
     assert results[0].chunk_id == "child"
     assert results[0].text == "parent text, much longer"
+
+
+def test_resolve_parent_context_dedupes_multiple_children_of_the_same_parent(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {
+            "query": [1.0, 0.0],
+            "parent text": [0.5, 0.5],
+            "child one": [1.0, 0.0],
+            "child two": [0.99, 0.01],
+        }
+    )
+    parent = _chunk("parent", "parent text", is_parent=True)
+    child_one = _chunk("child-1", "child one", parent_id="parent")
+    child_two = _chunk("child-2", "child two", parent_id="parent")
+    vector_store.upsert(
+        [parent, child_one, child_two],
+        embedder.embed([parent.text, child_one.text, child_two.text]),
+    )
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=2, resolve_parent_context=True
+    )
+
+    # Both children matched (both close to "query") and share a parent --
+    # the LLM should see that parent's text once, not twice, so only the
+    # higher-ranked child should survive resolution.
+    assert len(results) == 1
+    assert results[0].chunk_id == "child-1"
+    assert results[0].text == "parent text"
 
 
 def test_resolve_parent_context_leaves_parentless_chunks_unchanged(
@@ -267,7 +304,7 @@ def test_resolve_parent_context_off_by_default_leaves_child_text_as_is(
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text": [0.5, 0.5]}
     )
-    parent = _chunk("parent", "parent text")
+    parent = _chunk("parent", "parent text", is_parent=True)
     child = _chunk("child", "child text", parent_id="parent")
     vector_store.upsert([parent, child], embedder.embed([parent.text, child.text]))
 
