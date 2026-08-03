@@ -42,3 +42,32 @@ async def test_ingest_rejects_empty_file(client: httpx.AsyncClient) -> None:
         "/ingest", files={"file": ("empty.md", b"", "text/markdown")}
     )
     assert response.status_code == 400
+
+
+async def test_renaming_and_reingesting_identical_content_does_not_duplicate_chunks(
+    client: httpx.AsyncClient,
+) -> None:
+    """Regression test: chunk_id() used to hash in the uploaded FILENAME,
+    so renaming a.md -> b.md (byte-identical content) minted a whole new
+    set of chunk_ids and left the old set orphaned in the stores, even
+    though the /documents list correctly showed only one document."""
+    with open(SAMPLE_DOC, "rb") as f:
+        response_a = await client.post("/ingest", files={"file": ("a.md", f, "text/markdown")})
+    assert response_a.status_code == 200
+    doc_id_a = response_a.json()["doc_id"]
+
+    with open(SAMPLE_DOC, "rb") as f:
+        response_b = await client.post("/ingest", files={"file": ("b.md", f, "text/markdown")})
+    assert response_b.status_code == 200
+    body_b = response_b.json()
+
+    assert body_b["doc_id"] == doc_id_a
+
+    vector_store = client.app.state.app_state.vector_store  # type: ignore[attr-defined]
+    chunk_ids = vector_store.list_chunk_ids()
+    matching = [cid for cid in chunk_ids if cid.startswith(doc_id_a)]
+    assert len(matching) == body_b["num_parent_chunks"] + body_b["num_child_chunks"]
+
+    documents = (await client.get("/documents")).json()["documents"]
+    assert len(documents) == 1
+    assert documents[0]["filename"] == "b.md"

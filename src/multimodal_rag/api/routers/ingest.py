@@ -41,16 +41,24 @@ def _ingest_sync(
         elements = parse_document(Path(tmp.name))
 
     # parse_document() stamps every element with the *temp* file's path
-    # (a fresh random name per call) -- overwrite it with the real
-    # filename before chunking, since chunk_id() hashes source_file in.
-    # Left as the temp path, re-uploading byte-identical content would
-    # mint a brand new set of chunk_ids every time instead of upserting
-    # over the previous ones, silently breaking the idempotent-ready
-    # design this endpoint is supposed to have.
+    # (a fresh random name per call) -- overwrite it with doc_id (the
+    # content hash) before chunking, since chunk_id() hashes source_file
+    # in. Using doc_id here, not the uploaded filename, is what actually
+    # makes re-ingestion idempotent: two uploads of byte-identical
+    # content always produce the same doc_id and therefore the same
+    # chunk_ids, even if the file was renamed in between. Using the
+    # filename instead would silently mint a fresh set of chunk_ids on
+    # every rename, orphaning the old set rather than upserting over it.
     for element in elements:
-        element.metadata.source_file = filename
+        element.metadata.source_file = doc_id
 
     chunks = _chunker.chunk(elements)
+
+    # Chunk IDs are already locked in above -- safe to swap back to the
+    # human-readable filename now, purely for citation/display purposes.
+    for chunk in chunks:
+        chunk.metadata.source_file = filename
+
     vectors = embedder.embed([c.text for c in chunks])
     indexer.index(chunks, vectors)
 
