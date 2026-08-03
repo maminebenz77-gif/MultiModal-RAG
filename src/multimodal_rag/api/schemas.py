@@ -43,6 +43,12 @@ class QueryRequest(BaseModel):
     question: str
     retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID_RRF
     top_k: int = Field(default=5, ge=1, le=50)
+    rerank: bool = False
+    """Retrieve a broader candidate pool, then re-rank it with a
+    cross-encoder before the top_k cut -- higher precision, higher
+    latency/cost. Requires a Reranker to be configured for this
+    deployment (see api/main.py); if not, the request fails."""
+
     doc_ids: list[str] | None = None
     """Restricts results to these document IDs -- a post-retrieval
     filter (see Retriever usage in routers/query.py), not a native store
@@ -58,6 +64,15 @@ class CitationOut(BaseModel):
     slides: list[int]
 
 
+class RetrievedChunkOut(BaseModel):
+    chunk_id: str
+    score: float
+    text: str
+    source: str
+    pages: list[int]
+    slides: list[int]
+
+
 class QueryResponse(BaseModel):
     query_id: str
     """UUID identifying this query -- POST /feedback references it."""
@@ -67,6 +82,10 @@ class QueryResponse(BaseModel):
     citations: list[CitationOut]
     refused: bool
     retrieval_method: RetrievalMethod
+    retrieved_chunks: list[RetrievedChunkOut]
+    """Every chunk that made it into the generation context -- lets a
+    caller see what a retrieval method actually returned, not just what
+    the model ended up citing."""
 
 
 class FeedbackRequest(BaseModel):

@@ -2,10 +2,12 @@
 
 from pydantic import BaseModel
 
+from ..stores.schema import SearchResult
+
 
 class Citation(BaseModel):
     marker: int
-    """The [N] number used inline in the answer text."""
+    """The ⟦N⟧ number used inline in the answer text."""
 
     chunk_id: str
     source: str
@@ -15,7 +17,7 @@ class Citation(BaseModel):
 
 class RagAnswer(BaseModel):
     answer: str
-    """Raw model output, including inline [N] markers as generated."""
+    """Raw model output, including inline ⟦N⟧ markers as generated."""
 
     citations: list[Citation]
     """Structured lookup for each marker actually used — built by US from
@@ -24,3 +26,9 @@ class RagAnswer(BaseModel):
 
     refused: bool
     """True if the model indicated the answer isn't in the context."""
+
+    retrieved_chunks: list[SearchResult] = []
+    """Every chunk that made it into the generation context, not just the
+    ones actually cited -- lets a caller (e.g. the frontend's "retrieved
+    chunks" panel) see what a retrieval method returned even when the
+    model didn't end up citing all of it."""

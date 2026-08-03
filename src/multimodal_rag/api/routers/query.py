@@ -10,14 +10,14 @@ Retriever singleton.
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from ...generation.chain import RagChain
 from ...retrieval.retriever import Retriever
 from ..db import Database
 from ..dependencies import get_db, get_retriever
-from ..schemas import CitationOut, QueryRequest, QueryResponse
+from ..schemas import CitationOut, QueryRequest, QueryResponse, RetrievedChunkOut
 
 router = APIRouter()
 
@@ -32,9 +32,16 @@ async def query(
         retriever,
         method=request.retrieval_method,
         top_k=request.top_k,
+        rerank=request.rerank,
         resolve_parent_context=True,
     )
-    result = await run_in_threadpool(chain.answer, request.question, None, request.doc_ids)
+    try:
+        result = await run_in_threadpool(chain.answer, request.question, None, request.doc_ids)
+    except ValueError as exc:
+        # Retriever._rerank raises this when rerank=True but no Reranker
+        # is configured for this deployment -- a config gap, not a bad
+        # request shape, but still the client's rerank=True that triggered it.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     query_id = str(uuid.uuid4())
     await run_in_threadpool(
@@ -62,4 +69,15 @@ async def query(
         ],
         refused=result.refused,
         retrieval_method=request.retrieval_method,
+        retrieved_chunks=[
+            RetrievedChunkOut(
+                chunk_id=c.chunk_id,
+                score=c.score,
+                text=c.text,
+                source=c.source,
+                pages=c.pages,
+                slides=c.slides,
+            )
+            for c in result.retrieved_chunks
+        ],
     )

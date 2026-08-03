@@ -34,4 +34,9 @@ def parse_answer(raw_answer: str, context_results: list[SearchResult]) -> RagAns
         if 1 <= number <= len(context_results)
     ]
     refused = REFUSAL_TEXT.lower() in raw_answer.strip().lower()
-    return RagAnswer(answer=raw_answer, citations=citations, refused=refused)
+    return RagAnswer(
+        answer=raw_answer,
+        citations=citations,
+        refused=refused,
+        retrieved_chunks=context_results,
+    )

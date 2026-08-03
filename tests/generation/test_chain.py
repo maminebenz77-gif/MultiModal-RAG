@@ -27,6 +27,7 @@ class FakeRetriever:
         query: str,
         method: RetrievalMethod,
         top_k: int,
+        rerank: bool = False,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
     ) -> list[SearchResult]:
@@ -34,6 +35,7 @@ class FakeRetriever:
             "query": query,
             "method": method,
             "top_k": top_k,
+            "rerank": rerank,
             "resolve_parent_context": resolve_parent_context,
             "doc_ids": doc_ids,
         }
@@ -65,6 +67,20 @@ def test_answer_returns_grounded_answer_with_citations(monkeypatch: pytest.Monke
     assert result.refused is False
 
 
+def test_answer_carries_retrieved_chunks_alongside_the_final_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever([_result("a", "chunk text")])
+    chain = RagChain(retriever)
+
+    result = chain.answer("a question")
+
+    assert [c.chunk_id for c in result.retrieved_chunks] == ["a"]
+
+
 def test_answer_passes_query_method_and_top_k_to_retriever(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -80,9 +96,23 @@ def test_answer_passes_query_method_and_top_k_to_retriever(
         "query": "a question",
         "method": RetrievalMethod.BM25,
         "top_k": 3,
+        "rerank": False,
         "resolve_parent_context": False,
         "doc_ids": None,
     }
+
+
+def test_rerank_is_passed_through_to_retriever(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_llm = FakeLLM("An answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever([_result("a", "text")])
+    chain = RagChain(retriever, rerank=True)
+
+    chain.answer("a question")
+
+    assert retriever.last_call is not None
+    assert retriever.last_call["rerank"] is True
 
 
 def test_doc_ids_are_passed_through_to_retriever(monkeypatch: pytest.MonkeyPatch) -> None:

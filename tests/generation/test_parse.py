@@ -72,3 +72,9 @@ def test_normal_answer_sets_refused_false() -> None:
 def test_raw_answer_text_is_preserved_verbatim() -> None:
     result = parse_answer("Exactly this text ⟦1⟧.", [_result("a")])
     assert result.answer == "Exactly this text ⟦1⟧."
+
+
+def test_retrieved_chunks_includes_every_context_chunk_not_just_cited_ones() -> None:
+    context = [_result("a"), _result("b")]
+    result = parse_answer("Only cites the first ⟦1⟧.", context)
+    assert [c.chunk_id for c in result.retrieved_chunks] == ["a", "b"]

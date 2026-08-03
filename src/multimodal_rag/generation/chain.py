@@ -45,6 +45,7 @@ class RetrieverLike(Protocol):
         method: RetrievalMethod,
         top_k: int,
         *,
+        rerank: bool = False,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
     ) -> list[SearchResult]: ...
@@ -58,12 +59,14 @@ class RagChain:
         top_k: int = 5,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         resolve_parent_context: bool = False,
+        rerank: bool = False,
     ) -> None:
         self._retriever = retriever
         self._method = method
         self._top_k = top_k
         self._token_budget = token_budget
         self._resolve_parent_context = resolve_parent_context
+        self._rerank = rerank
         self._chain = (
             RunnableLambda(self._rewrite)
             | RunnableLambda(self._retrieve)
@@ -97,6 +100,7 @@ class RagChain:
             state["query"],
             method=self._method,
             top_k=self._top_k,
+            rerank=self._rerank,
             resolve_parent_context=self._resolve_parent_context,
             doc_ids=state["doc_ids"],
         )

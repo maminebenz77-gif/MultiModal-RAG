@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
 from ..config import PROJECT_ROOT, get_settings
-from ..providers.factory import get_embedder
+from ..providers.factory import get_embedder, get_reranker
 from ..retrieval.retriever import Retriever
 from ..stores.factory import get_keyword_store, get_vector_store
 from ..stores.indexer import HybridIndexer
@@ -42,12 +42,22 @@ def create_app(
         await run_in_threadpool(vector_store.ensure_ready, probe[0].dimension)
         await run_in_threadpool(keyword_store.ensure_ready)
 
+        try:
+            reranker = await run_in_threadpool(get_reranker, settings)
+        except NotImplementedError:
+            # Reranking is optional per deployment profile -- a profile
+            # without RERANKER_PROVIDER set just can't serve rerank=True
+            # requests (Retriever raises a clear error for those), rather
+            # than the whole service failing to start over an optional
+            # capability.
+            reranker = None
+
         app.state.app_state = AppState(
             vector_store=vector_store,
             keyword_store=keyword_store,
             embedder=embedder,
             indexer=HybridIndexer(vector_store, keyword_store),
-            retriever=Retriever(vector_store, keyword_store, embedder),
+            retriever=Retriever(vector_store, keyword_store, embedder, reranker=reranker),
             db=Database(db_path),
         )
         yield
