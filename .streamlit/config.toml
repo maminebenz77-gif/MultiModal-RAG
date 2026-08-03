@@ -1,0 +1,6 @@
+# Hides the "Deploy" button and other developer-only toolbar items
+# (rerun, clear cache) -- this app talks to a locally-running API, so
+# Streamlit's one-click deploy-to-the-public-internet flow doesn't apply
+# and would only confuse a first-time user.
+[client]
+toolbarMode = "viewer"
