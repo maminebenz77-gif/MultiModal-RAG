@@ -9,6 +9,11 @@ else.
 """
 
 import os
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import logging
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -64,6 +69,9 @@ class Settings(BaseSettings):
     device: str = "auto"
     allow_external: bool = True
 
+    # Certificates
+    trust_system_certs: bool = False
+
     @field_validator(
         "llm_base_url",
         "llm_api_key",
@@ -102,7 +110,20 @@ def load_settings() -> Settings:
         ) from exc
 
     env_file = _env_file_for_profile(profile)
-    return Settings(_env_file=env_file, rag_env=profile)
+    settings = Settings(_env_file=env_file, rag_env=profile)
+
+    if settings.trust_system_certs:
+        # Corporate networks (e.g. the work laptop) sit behind a
+        # TLS-inspecting proxy whose root CA is trusted by the OS but not
+        # by certifi's bundled CA list, which httpx/litellm use by default.
+        # truststore patches ssl to defer to the OS trust store instead.
+        # Only enabled where needed (see .env.server / work-machine env
+        # files) — inert everywhere else, so this never changes behavior
+        # on Linux or in CI.
+        import truststore
+        truststore.inject_into_ssl()
+
+    return settings
 
 
 @lru_cache

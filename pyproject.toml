@@ -8,18 +8,21 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "langchain-text-splitters>=1.1.2",
-    "litellm>=1.92.0",
+    "litellm==1.85.0",
     "markdown-it-py>=4.2.0",
     "pydantic-settings>=2.14.2",
     "python-docx>=1.2.0",
-    "python-magic>=0.4.27",
+    "python-magic>=0.4.27; sys_platform != 'win32'",
+    "python-magic-bin>=0.4.14; sys_platform == 'win32'",
     "python-multipart>=0.0.32",
     "python-pptx>=1.0.2",
     "qdrant-client>=1.18.0",
     "sentence-transformers>=5.6.0",
     "streamlit>=1.60.0",
     "unstructured[pdf]>=0.24.1",
+    "unstructured-inference>=0.8.0",
     "uvicorn[standard]>=0.52.1",
+    "truststore>=0.10.4",
 ]
 
 [project.scripts]

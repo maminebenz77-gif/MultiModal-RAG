@@ -2,6 +2,8 @@
 
 import litellm
 from sentence_transformers import SentenceTransformer
+import truststore
+from openai import OpenAI
 
 from ..retry import retry_with_backoff
 from .base import EmbeddingProvider
@@ -52,17 +54,6 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
     """Covers any OpenAI-compatible embedding backend — same LiteLLM
     pattern as LiteLLMProvider/LiteLLMVisionProvider, this time via
     litellm.embedding() instead of litellm.completion().
-
-    Manually chunks the input into batches: unlike sentence-transformers,
-    LiteLLM doesn't batch for us, and a real embedding API has a practical
-    per-request input-count limit.
-
-    Each batch is retried (exponential backoff) before being considered
-    failed, since most real failures here are transient (rate limits,
-    network blips). If a batch still fails after retries, embedding keeps
-    going with the remaining batches rather than aborting — a single bad
-    batch shouldn't discard every other batch's already-completed,
-    already-paid-for work.
     """
 
     def __init__(
@@ -82,6 +73,14 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 
+        # litellm builds its own internal OpenAI client for embedding
+        # calls, which doesn't reliably pick up truststore's SSL patch
+        # on this network. Build our own client the same way the
+        # known-working chat script does, and hand it to litellm
+        # explicitly instead of letting litellm construct one itself.
+        truststore.inject_into_ssl()
+        self._openai_client = OpenAI(base_url=base_url, api_key=api_key)
+
     def embed(self, texts: list[str]) -> list[EmbeddingVector]:
         vectors: list[EmbeddingVector] = []
         failed_texts: list[str] = []
@@ -90,7 +89,8 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
             batch = texts[start : start + self._batch_size]
             try:
                 vectors.extend(self._embed_batch(batch))
-            except Exception:
+            except Exception as exc:
+                print(repr(exc))
                 failed_texts.extend(batch)
 
         if failed_texts:
@@ -105,7 +105,9 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
     def _embed_batch(self, batch: list[str]) -> list[EmbeddingVector]:
         def call() -> list[EmbeddingVector]:
             response = litellm.embedding(
-                model=self._model, input=batch, base_url=self._base_url, api_key=self._api_key
+                model=self._model,
+                input=batch,
+                client=self._openai_client,
             )
             return [
                 EmbeddingVector(

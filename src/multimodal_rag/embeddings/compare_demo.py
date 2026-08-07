@@ -23,7 +23,8 @@ _DISSIMILAR = (
     "The regression test suite finished in under two minutes.",
 )
 
-_LOCAL_FALLBACK_MODEL = "BAAI/bge-base-en-v1.5"
+# _LOCAL_FALLBACK_MODEL = "BAAI/bge-base-en-v1.5"
+_LOCAL_FALLBACK_MODEL = 'C:/SafApp/embedding_models/bge-base-en-v1.5'
 
 
 def _local_fallback_settings() -> Settings:
