@@ -85,6 +85,11 @@ def _submit_feedback(query_id: str, rating: str, comment: str) -> None:
         )
         response.raise_for_status()
         st.toast("Feedback recorded, thank you!")
+        # The Metrics panel above (in script order) already ran and read
+        # the pre-feedback counts this render -- st.toast() is specifically
+        # designed to survive an immediate rerun, so the confirmation still
+        # shows even though the script restarts right after.
+        st.rerun()
     except httpx.HTTPError as exc:
         st.error(f"Feedback failed: {exc}")
 
@@ -135,7 +140,12 @@ with st.sidebar:
     st.caption("Top-level files only (.pdf, .docx, .pptx, .md) -- subfolders aren't walked.")
 
     if "browse_dir" not in st.session_state:
-        st.session_state.browse_dir = str(Path.cwd())
+        # Home, not the project directory -- this browser can already
+        # navigate anywhere on disk (nothing restricts "Up" past the
+        # project root), but starting inside the project meant reaching
+        # anywhere else took several clicks before you could even start
+        # heading toward it.
+        st.session_state.browse_dir = str(Path.home())
 
     with st.expander("📁 Browse for a folder"):
         current_dir = Path(st.session_state.browse_dir)
@@ -264,6 +274,12 @@ if ask_submitted and question.strip():
         )
         response.raise_for_status()
         st.session_state.last_result = response.json()
+        # Same reason as the feedback rerun above: the backend recorded
+        # this query (and its refusal/method) before this response came
+        # back, but the Metrics panel already rendered earlier in this
+        # same script run, before the query even started -- only a fresh
+        # rerun picks up the updated count.
+        st.rerun()
     except httpx.HTTPError as exc:
         st.error(f"Query failed: {exc}")
 
