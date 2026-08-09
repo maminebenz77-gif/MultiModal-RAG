@@ -51,6 +51,33 @@ def test_bulk_ingest_with_a_nonexistent_folder_shows_an_error() -> None:
     assert any("Not a folder" in e.value for e in at.error)
 
 
+def test_folder_browser_use_button_populates_the_path_input() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    at.session_state["browse_dir"] = str(data_dir)
+    at.run(timeout=30)
+
+    browse_expander = at.sidebar.expander[0]
+    use_button = next(b for b in browse_expander.button if b.label == "Use this folder")
+    use_button.click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.sidebar.text_input[0].value == str(data_dir)
+
+
+def test_metrics_and_documents_panels_render_without_exceptions() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    labels = [e.label for e in at.main.expander]
+    assert "📈 Metrics" in labels
+    assert "📚 Documents in the corpus" in labels
+    assert not at.exception
+
+
 def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)

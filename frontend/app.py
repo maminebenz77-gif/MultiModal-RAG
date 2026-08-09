@@ -134,8 +134,38 @@ with st.sidebar:
     st.header("Bulk ingest a folder")
     st.caption("Top-level files only (.pdf, .docx, .pptx, .md) -- subfolders aren't walked.")
 
+    if "browse_dir" not in st.session_state:
+        st.session_state.browse_dir = str(Path.cwd())
+
+    with st.expander("📁 Browse for a folder"):
+        current_dir = Path(st.session_state.browse_dir)
+        st.caption(str(current_dir))
+        try:
+            entries = sorted(current_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except (PermissionError, FileNotFoundError, NotADirectoryError):
+            entries = []
+            st.warning("Can't read this folder.")
+
+        subdirs = [p for p in entries if p.is_dir() and not p.name.startswith(".")]
+        supported_here = [p for p in entries if p.suffix.lower() in _SUPPORTED_EXTENSIONS]
+        st.caption(f"{len(supported_here)} supported file(s) here.")
+
+        up_col, use_col = st.columns(2)
+        if up_col.button(
+            "⬆️ Up", disabled=current_dir.parent == current_dir, width="stretch"
+        ):
+            st.session_state.browse_dir = str(current_dir.parent)
+            st.rerun()
+        if use_col.button("Use this folder", type="primary", width="stretch"):
+            st.session_state.folder_path_text = str(current_dir)
+
+        for sub in subdirs:
+            if st.button(f"📁 {sub.name}", key=f"browse_into_{sub}", width="stretch"):
+                st.session_state.browse_dir = str(sub)
+                st.rerun()
+
     with st.form("bulk_ingest_form"):
-        folder_path_input = st.text_input("Folder path")
+        folder_path_input = st.text_input("Folder path", key="folder_path_text")
         bulk_submitted = st.form_submit_button("Ingest folder")
 
     if bulk_submitted:
@@ -172,6 +202,41 @@ with st.sidebar:
                     st.error("Failed:\n" + "\n".join(failures))
 
 st.title("Multimodal RAG Demo")
+
+with st.expander("📈 Metrics"):
+    try:
+        metrics = httpx.get(f"{api_base_url}/metrics", timeout=10.0).json()
+        tile_cols = st.columns(6)
+        tile_cols[0].metric("Documents", metrics["total_documents"])
+        tile_cols[1].metric("Chunks", metrics["total_chunks"])
+        tile_cols[2].metric("Queries", metrics["total_queries"])
+        tile_cols[3].metric("Refusal rate", f"{metrics['refusal_rate']:.0%}")
+        tile_cols[4].metric("👍 Helpful", metrics["feedback_up"])
+        tile_cols[5].metric("👎 Not helpful", metrics["feedback_down"])
+    except httpx.HTTPError as exc:
+        st.error(f"Could not load metrics: {exc}")
+
+with st.expander("📚 Documents in the corpus"):
+    try:
+        documents = httpx.get(f"{api_base_url}/documents", timeout=10.0).json()["documents"]
+        if documents:
+            st.dataframe(
+                [
+                    {
+                        "Filename": d["filename"],
+                        "Parent chunks": d["num_parent_chunks"],
+                        "Child chunks": d["num_child_chunks"],
+                        "Ingested at": d["ingested_at"],
+                    }
+                    for d in documents
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.caption("No documents ingested yet.")
+    except httpx.HTTPError as exc:
+        st.error(f"Could not load documents: {exc}")
 
 with st.form("query_form"):
     question = st.text_input("Question")
