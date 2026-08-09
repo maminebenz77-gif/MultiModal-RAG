@@ -39,33 +39,23 @@ def test_ingest_without_a_file_shows_a_warning() -> None:
     assert any("Choose a file first" in w.value for w in at.warning)
 
 
-def test_bulk_ingest_with_a_nonexistent_folder_shows_an_error() -> None:
+def test_bulk_ingest_without_any_files_shows_a_warning() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    at.sidebar.text_input[0].set_value("/definitely/not/a/real/folder")
-    at.button(key="FormSubmitter:bulk_ingest_form-Ingest folder").click()
+    at.button(key="FormSubmitter:bulk_ingest_form-Ingest files").click()
     at.run(timeout=30)
 
     assert not at.exception
-    assert any("Not a folder" in e.value for e in at.error)
+    assert any("Choose at least one file first" in w.value for w in at.warning)
 
 
-def test_folder_browser_use_button_populates_the_path_input() -> None:
+def test_bulk_ingest_uploader_uses_the_native_folder_picker() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    data_dir = Path(__file__).resolve().parents[2] / "data"
-    at.session_state["browse_dir"] = str(data_dir)
-    at.run(timeout=30)
-
-    browse_expander = at.sidebar.expander[0]
-    use_button = next(b for b in browse_expander.button if b.label == "Use this folder")
-    use_button.click()
-    at.run(timeout=30)
-
-    assert not at.exception
-    assert at.sidebar.text_input[0].value == str(data_dir)
+    bulk_uploader = at.sidebar.file_uploader[1]
+    assert bulk_uploader.accept_directory is True
 
 
 def test_metrics_and_documents_panels_render_without_exceptions() -> None:

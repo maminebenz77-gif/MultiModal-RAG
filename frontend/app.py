@@ -35,18 +35,6 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Hybrid + Rerank": ("hybrid_rrf", True),
 }
 
-# Matches what parse_document() actually supports (see
-# multimodal_rag.ingestion) -- .markdown alongside .md since the
-# dispatcher's extension fallback recognizes both.
-_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown"}
-_EXTENSION_TO_MIME = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".md": "text/markdown",
-    ".markdown": "text/markdown",
-}
-
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
@@ -61,19 +49,6 @@ def _location_suffix(pages: list[int], slides: list[int]) -> str:
     if slides:
         return f", slide {', '.join(str(s) for s in slides)}"
     return ""
-
-
-def _ingest_file(path: Path) -> dict:
-    mime = _EXTENSION_TO_MIME.get(path.suffix.lower(), "application/octet-stream")
-    with open(path, "rb") as f:
-        response = httpx.post(
-            f"{api_base_url}/ingest",
-            files={"file": (path.name, f, mime)},
-            timeout=120.0,
-        )
-    response.raise_for_status()
-    result: dict = response.json()
-    return result
 
 
 def _submit_feedback(query_id: str, rating: str, comment: str) -> None:
@@ -137,79 +112,52 @@ with st.sidebar:
 
     st.divider()
     st.header("Bulk ingest a folder")
-    st.caption("Top-level files only (.pdf, .docx, .pptx, .md) -- subfolders aren't walked.")
+    st.caption("Opens your OS's native folder picker -- every supported file inside gets ingested.")
 
-    if "browse_dir" not in st.session_state:
-        # Home, not the project directory -- this browser can already
-        # navigate anywhere on disk (nothing restricts "Up" past the
-        # project root), but starting inside the project meant reaching
-        # anywhere else took several clicks before you could even start
-        # heading toward it.
-        st.session_state.browse_dir = str(Path.home())
-
-    with st.expander("📁 Browse for a folder"):
-        current_dir = Path(st.session_state.browse_dir)
-        st.caption(str(current_dir))
-        try:
-            entries = sorted(current_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except (PermissionError, FileNotFoundError, NotADirectoryError):
-            entries = []
-            st.warning("Can't read this folder.")
-
-        subdirs = [p for p in entries if p.is_dir() and not p.name.startswith(".")]
-        supported_here = [p for p in entries if p.suffix.lower() in _SUPPORTED_EXTENSIONS]
-        st.caption(f"{len(supported_here)} supported file(s) here.")
-
-        up_col, use_col = st.columns(2)
-        if up_col.button(
-            "⬆️ Up", disabled=current_dir.parent == current_dir, width="stretch"
-        ):
-            st.session_state.browse_dir = str(current_dir.parent)
-            st.rerun()
-        if use_col.button("Use this folder", type="primary", width="stretch"):
-            st.session_state.folder_path_text = str(current_dir)
-
-        for sub in subdirs:
-            if st.button(f"📁 {sub.name}", key=f"browse_into_{sub}", width="stretch"):
-                st.session_state.browse_dir = str(sub)
-                st.rerun()
-
-    with st.form("bulk_ingest_form"):
-        folder_path_input = st.text_input("Folder path", key="folder_path_text")
-        bulk_submitted = st.form_submit_button("Ingest folder")
+    with st.form("bulk_ingest_form", clear_on_submit=True):
+        uploaded_files = st.file_uploader(
+            "Choose a folder",
+            type=["pdf", "docx", "pptx", "md"],
+            accept_multiple_files="directory",
+        )
+        bulk_submitted = st.form_submit_button("Ingest files")
 
     if bulk_submitted:
-        folder = Path(folder_path_input).expanduser()
-        if not folder.is_dir():
-            st.error(f"Not a folder: {folder}")
+        if not uploaded_files:
+            st.warning("Choose at least one file first.")
         else:
-            files = sorted(p for p in folder.iterdir() if p.suffix.lower() in _SUPPORTED_EXTENSIONS)
-            if not files:
-                st.warning(f"No supported files found in {folder}")
-            else:
-                progress = st.progress(0.0)
-                status_line = st.empty()
-                counts = {"ingested": 0, "already_ingested": 0}
-                failures: list[str] = []
+            progress = st.progress(0.0)
+            status_line = st.empty()
+            counts = {"ingested": 0, "already_ingested": 0}
+            failures: list[str] = []
 
-                for i, path in enumerate(files, start=1):
-                    status_line.text(f"({i}/{len(files)}) {path.name}...")
-                    try:
-                        body = _ingest_file(path)
-                        counts[body["status"]] += 1
-                    except httpx.HTTPError as exc:
-                        failures.append(f"{path.name}: {exc}")
-                    progress.progress(i / len(files))
+            for i, uploaded_file in enumerate(uploaded_files, start=1):
+                status_line.text(f"({i}/{len(uploaded_files)}) {uploaded_file.name}...")
+                try:
+                    file_payload = (
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                        uploaded_file.type,
+                    )
+                    response = httpx.post(
+                        f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    counts[body["status"]] += 1
+                except httpx.HTTPError as exc:
+                    failures.append(f"{uploaded_file.name}: {exc}")
+                progress.progress(i / len(uploaded_files))
 
-                status_line.empty()
-                progress.empty()
-                st.success(
-                    f"Done: {counts['ingested']} newly ingested, "
-                    f"{counts['already_ingested']} already up to date, "
-                    f"{len(failures)} failed."
-                )
-                if failures:
-                    st.error("Failed:\n" + "\n".join(failures))
+            status_line.empty()
+            progress.empty()
+            st.success(
+                f"Done: {counts['ingested']} newly ingested, "
+                f"{counts['already_ingested']} already up to date, "
+                f"{len(failures)} failed."
+            )
+            if failures:
+                st.error("Failed:\n" + "\n".join(failures))
 
 st.title("Multimodal RAG Demo")
 
