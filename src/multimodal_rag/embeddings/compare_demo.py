@@ -10,6 +10,8 @@ RAG_ENV=server.
 Run: `uv run python -m multimodal_rag.embeddings.compare_demo`
 """
 
+import os
+
 from ..config import Settings, get_settings
 from ..providers.factory import get_embedder
 from ..similarity import cosine_similarity
@@ -23,7 +25,14 @@ _DISSIMILAR = (
     "The regression test suite finished in under two minutes.",
 )
 
-_LOCAL_FALLBACK_MODEL = "BAAI/bge-base-en-v1.5"
+# Portable default: a HuggingFace model ID, downloaded (and then cached)
+# from the Hub on first use. On a machine that can't reach the Hub (e.g.
+# behind a restrictive corporate proxy), set LOCAL_FALLBACK_EMBED_MODEL
+# to a local directory holding a pre-downloaded copy instead --
+# sentence-transformers accepts either form identically. Deliberately a
+# plain env var, not a Settings field: this is a standalone demo script's
+# own concern, not something the rest of the app needs to know about.
+_LOCAL_FALLBACK_MODEL = os.environ.get("LOCAL_FALLBACK_EMBED_MODEL", "BAAI/bge-base-en-v1.5")
 
 
 def _local_fallback_settings() -> Settings:

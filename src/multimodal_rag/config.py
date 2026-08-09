@@ -8,6 +8,7 @@ since it decides which file (.env.local or .env.server) supplies everything
 else.
 """
 
+import logging
 import os
 from enum import StrEnum
 from functools import lru_cache
@@ -15,6 +16,15 @@ from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# litellm otherwise fetches its model-cost map from GitHub on first
+# import -- pointless on any network that can't reach it (air-gapped
+# server, corporate proxy) and pure wasted latency everywhere else,
+# since we don't use its cost-tracking features. Must run before litellm
+# is imported anywhere; config.py is imported before that happens
+# everywhere in this project, and doesn't import litellm itself.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,6 +74,9 @@ class Settings(BaseSettings):
     device: str = "auto"
     allow_external: bool = True
 
+    # Certificates
+    trust_system_certs: bool = False
+
     @field_validator(
         "llm_base_url",
         "llm_api_key",
@@ -102,7 +115,20 @@ def load_settings() -> Settings:
         ) from exc
 
     env_file = _env_file_for_profile(profile)
-    return Settings(_env_file=env_file, rag_env=profile)
+    settings = Settings(_env_file=env_file, rag_env=profile)
+
+    if settings.trust_system_certs:
+        # Corporate networks (e.g. the work laptop) sit behind a
+        # TLS-inspecting proxy whose root CA is trusted by the OS but not
+        # by certifi's bundled CA list, which httpx/litellm use by default.
+        # truststore patches ssl to defer to the OS trust store instead.
+        # Only enabled where needed (see .env.server / work-machine env
+        # files) — inert everywhere else, so this never changes behavior
+        # on Linux or in CI.
+        import truststore
+        truststore.inject_into_ssl()
+
+    return settings
 
 
 @lru_cache

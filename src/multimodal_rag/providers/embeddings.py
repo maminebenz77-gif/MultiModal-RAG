@@ -1,6 +1,9 @@
 """Concrete EmbeddingProvider implementations."""
 
+import logging
+
 import litellm
+from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 
 from ..retry import retry_with_backoff
@@ -8,6 +11,7 @@ from .base import EmbeddingProvider
 from .schema import EmbeddingVector
 
 _DEFAULT_BATCH_SIZE = 64
+_logger = logging.getLogger(__name__)
 
 
 class EmbeddingBatchError(RuntimeError):
@@ -82,6 +86,22 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 
+        # litellm builds its own internal OpenAI client for embedding
+        # calls, which on the corporate-network profile doesn't reliably
+        # pick up the truststore SSL patch load_settings() applies when
+        # trust_system_certs=True (see config.py). Building our own
+        # client here and handing it to litellm explicitly sidesteps
+        # that, and is a no-op change everywhere trust_system_certs is
+        # off -- a plain OpenAI client either way.
+        #
+        # The openai package's own client (unlike litellm's more lenient
+        # internal one) refuses to construct at all without a non-empty
+        # api_key, even for backends that don't check auth (e.g. an
+        # internal, unauthenticated OpenAI-compatible server) -- a
+        # placeholder satisfies that without changing what's actually
+        # sent when a real key is configured.
+        self._openai_client = OpenAI(base_url=base_url, api_key=api_key or "not-needed")
+
     def embed(self, texts: list[str]) -> list[EmbeddingVector]:
         vectors: list[EmbeddingVector] = []
         failed_texts: list[str] = []
@@ -91,6 +111,7 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
             try:
                 vectors.extend(self._embed_batch(batch))
             except Exception:
+                _logger.warning("Embedding batch failed after retries", exc_info=True)
                 failed_texts.extend(batch)
 
         if failed_texts:
@@ -105,7 +126,9 @@ class LiteLLMEmbeddingProvider(EmbeddingProvider):
     def _embed_batch(self, batch: list[str]) -> list[EmbeddingVector]:
         def call() -> list[EmbeddingVector]:
             response = litellm.embedding(
-                model=self._model, input=batch, base_url=self._base_url, api_key=self._api_key
+                model=self._model,
+                input=batch,
+                client=self._openai_client,
             )
             return [
                 EmbeddingVector(

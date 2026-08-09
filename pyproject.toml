@@ -2,23 +2,34 @@
 name = "multimodal-rag"
 version = "0.1.0"
 description = "A multimodal technical RAG system, built step by step as a learning project."
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "elasticsearch>=9.4.1",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "langchain-text-splitters>=1.1.2",
-    "litellm>=1.92.0",
+    # Pinned exact, not a floor: 1.92+ broke embeddings on the corporate
+    # network profile (see LiteLLMEmbeddingProvider). Bump deliberately,
+    # not casually -- re-verify both profiles before moving off 1.85.0.
+    "litellm==1.85.0",
     "markdown-it-py>=4.2.0",
+    "openai>=1.50.0",
     "pydantic-settings>=2.14.2",
     "python-docx>=1.2.0",
-    "python-magic>=0.4.27",
+    # libmagic itself isn't a Python package -- python-magic is a thin
+    # wrapper around the system library (present by default on macOS/
+    # Linux); Windows has no such system library, so python-magic-bin
+    # bundles it instead. Never both on the same platform.
+    "python-magic>=0.4.27; sys_platform != 'win32'",
+    "python-magic-bin>=0.4.14; sys_platform == 'win32'",
     "python-multipart>=0.0.32",
     "python-pptx>=1.0.2",
     "qdrant-client>=1.18.0",
     "sentence-transformers>=5.6.0",
     "streamlit>=1.60.0",
+    "truststore>=0.10.4",
     "unstructured[pdf]>=0.24.1",
+    "unstructured-inference>=0.8.0",
     "uvicorn[standard]>=0.52.1",
 ]
 
@@ -31,7 +42,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "mypy>=2.3.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -40,7 +50,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 # Sensible starting rule set: pyflakes, pycodestyle, isort, pyupgrade, bugbear.
@@ -57,7 +67,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 mypy_path = "src"
 packages = ["multimodal_rag"]
 plugins = ["pydantic.mypy"]

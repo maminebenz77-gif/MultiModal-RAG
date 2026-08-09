@@ -7,12 +7,9 @@ specific and stays with the caller.
 
 import time
 from collections.abc import Callable
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
-def retry_with_backoff(
+def retry_with_backoff[T](
     operation: Callable[[], T], max_retries: int = 3, backoff_seconds: float = 1.0
 ) -> T:
     """Call `operation`, retrying up to max_retries times with exponential
