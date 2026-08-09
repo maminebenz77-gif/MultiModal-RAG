@@ -63,6 +63,8 @@ api_base_url = get_frontend_settings().api_base_url
 
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
+if "confirm_wipe" not in st.session_state:
+    st.session_state.confirm_wipe = False
 
 
 def _location_suffix(pages: list[int], slides: list[int]) -> str:
@@ -124,11 +126,19 @@ with st.sidebar:
                 )
                 response.raise_for_status()
                 body = response.json()
-                verb = "Already ingested" if body["status"] == "already_ingested" else "Ingested"
-                st.success(
-                    f"{verb} {body['filename']}: {body['num_parent_chunks']} parent "
-                    f"chunks, {body['num_child_chunks']} child chunks."
-                )
+                if body["status"] == "duplicate_content":
+                    st.info(
+                        f"Skipped {body['filename']}: identical content is already "
+                        f"ingested as {body['duplicate_of']}."
+                    )
+                else:
+                    verb = (
+                        "Already ingested" if body["status"] == "already_ingested" else "Ingested"
+                    )
+                    st.success(
+                        f"{verb} {body['filename']}: {body['num_parent_chunks']} parent "
+                        f"chunks, {body['num_child_chunks']} child chunks."
+                    )
             except httpx.HTTPError as exc:
                 st.error(f"Ingest failed: {exc}")
 
@@ -136,61 +146,69 @@ with st.sidebar:
     st.header("Bulk ingest a folder")
     st.caption("Opens your OS's native folder picker -- every supported file inside gets ingested.")
 
-    with st.form("bulk_ingest_form", clear_on_submit=True):
-        uploaded_files = st.file_uploader(
-            "Choose a folder",
-            type=["pdf", "docx", "pptx", "md"],
-            accept_multiple_files="directory",
-        )
-        bulk_submitted = st.form_submit_button("Ingest files")
+    # Deliberately NOT in a form: a form only exposes uploaded_files to
+    # this script after the submit button is clicked, so there'd be no
+    # way to show which files are junk (and will be skipped) before the
+    # user commits to clicking Ingest -- the .DS_Store/~$lock-file
+    # entries would just sit in the picker's own file list looking like
+    # they're about to be ingested, even though they never would be.
+    uploaded_files = st.file_uploader(
+        "Choose a folder",
+        type=["pdf", "docx", "pptx", "md"],
+        accept_multiple_files="directory",
+    )
+
+    good_files = [f for f in (uploaded_files or []) if not _is_junk_file(f.name)]
+    if uploaded_files:
+        skipped_names = [Path(f.name).name for f in uploaded_files if _is_junk_file(f.name)]
+        if skipped_names:
+            st.caption(
+                f"Will skip {len(skipped_names)} file(s) that aren't real documents: "
+                + ", ".join(skipped_names)
+            )
+        st.caption(f"{len(good_files)} file(s) ready to ingest.")
+
+    bulk_submitted = st.button("Ingest files", disabled=not good_files)
 
     if bulk_submitted:
-        if not uploaded_files:
-            st.warning("Choose at least one file first.")
-        else:
-            good_files = [f for f in uploaded_files if not _is_junk_file(f.name)]
-            skipped_names = [Path(f.name).name for f in uploaded_files if _is_junk_file(f.name)]
-            if skipped_names:
-                st.caption(
-                    f"Skipped {len(skipped_names)} file(s) that aren't real documents: "
-                    + ", ".join(skipped_names)
+        progress = st.progress(0.0)
+        status_line = st.empty()
+        counts = {"ingested": 0, "already_ingested": 0, "duplicate_content": 0}
+        duplicates: list[str] = []
+        failures: list[str] = []
+
+        for i, uploaded_file in enumerate(good_files, start=1):
+            status_line.text(f"({i}/{len(good_files)}) {uploaded_file.name}...")
+            try:
+                file_payload = (
+                    uploaded_file.name,
+                    uploaded_file.getvalue(),
+                    uploaded_file.type,
                 )
-
-            if not good_files:
-                st.warning("No supported files left after filtering.")
-            else:
-                progress = st.progress(0.0)
-                status_line = st.empty()
-                counts = {"ingested": 0, "already_ingested": 0}
-                failures: list[str] = []
-
-                for i, uploaded_file in enumerate(good_files, start=1):
-                    status_line.text(f"({i}/{len(good_files)}) {uploaded_file.name}...")
-                    try:
-                        file_payload = (
-                            uploaded_file.name,
-                            uploaded_file.getvalue(),
-                            uploaded_file.type,
-                        )
-                        response = httpx.post(
-                            f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
-                        )
-                        response.raise_for_status()
-                        body = response.json()
-                        counts[body["status"]] += 1
-                    except httpx.HTTPError as exc:
-                        failures.append(f"{uploaded_file.name}: {exc}")
-                    progress.progress(i / len(good_files))
-
-                status_line.empty()
-                progress.empty()
-                st.success(
-                    f"Done: {counts['ingested']} newly ingested, "
-                    f"{counts['already_ingested']} already up to date, "
-                    f"{len(failures)} failed."
+                response = httpx.post(
+                    f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
                 )
-                if failures:
-                    st.error("Failed:\n" + "\n".join(failures))
+                response.raise_for_status()
+                body = response.json()
+                counts[body["status"]] += 1
+                if body["status"] == "duplicate_content":
+                    duplicates.append(f"{uploaded_file.name} (same as {body['duplicate_of']})")
+            except httpx.HTTPError as exc:
+                failures.append(f"{uploaded_file.name}: {exc}")
+            progress.progress(i / len(good_files))
+
+        status_line.empty()
+        progress.empty()
+        st.success(
+            f"Done: {counts['ingested']} newly ingested, "
+            f"{counts['already_ingested']} already up to date, "
+            f"{counts['duplicate_content']} duplicate content, "
+            f"{len(failures)} failed."
+        )
+        if duplicates:
+            st.caption("Duplicates skipped: " + ", ".join(duplicates))
+        if failures:
+            st.error("Failed:\n" + "\n".join(failures))
 
 st.title("Multimodal RAG Demo")
 
@@ -228,6 +246,29 @@ with st.expander("📚 Documents in the corpus"):
             st.caption("No documents ingested yet.")
     except httpx.HTTPError as exc:
         st.error(f"Could not load documents: {exc}")
+
+    if st.session_state.confirm_wipe:
+        st.warning("This deletes every ingested document and chunk. This cannot be undone.")
+        confirm_col, cancel_col = st.columns(2)
+        if confirm_col.button("Yes, wipe everything", type="primary"):
+            try:
+                response = httpx.delete(f"{api_base_url}/documents", timeout=60.0)
+                response.raise_for_status()
+                body = response.json()
+                st.session_state.confirm_wipe = False
+                st.toast(
+                    f"Wiped {body['documents_deleted']} document(s), "
+                    f"{body['chunks_deleted']} chunk(s)."
+                )
+                st.rerun()
+            except httpx.HTTPError as exc:
+                st.error(f"Wipe failed: {exc}")
+        if cancel_col.button("Cancel"):
+            st.session_state.confirm_wipe = False
+            st.rerun()
+    elif st.button("🗑️ Wipe all ingested documents"):
+        st.session_state.confirm_wipe = True
+        st.rerun()
 
 with st.form("query_form"):
     question = st.text_input("Question")

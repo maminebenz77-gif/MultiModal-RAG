@@ -39,27 +39,25 @@ def test_ingest_without_a_file_shows_a_warning() -> None:
     assert any("Choose a file first" in w.value for w in at.warning)
 
 
-def test_bulk_ingest_without_any_files_shows_a_warning() -> None:
+def test_bulk_ingest_button_is_disabled_without_any_files() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    at.button(key="FormSubmitter:bulk_ingest_form-Ingest files").click()
-    at.run(timeout=30)
-
-    assert not at.exception
-    assert any("Choose at least one file first" in w.value for w in at.warning)
+    ingest_button = next(b for b in at.sidebar.button if b.label == "Ingest files")
+    assert ingest_button.disabled is True
 
 
-def test_bulk_ingest_filters_out_office_lock_and_dotfile_junk() -> None:
+def test_bulk_ingest_shows_a_live_preview_of_skipped_junk_before_submitting() -> None:
     """Streamlit's own type= allowlist already rejects extensionless
     junk like .DS_Store at the widget level (confirmed: passing one to
     set_value raises before the app's own code even runs). What it
     canNOT catch is junk with a technically-valid extension: Word's
     ~$-prefixed lock file (~$report.docx -- created while a document is
     open for editing) and a dotfile that happens to end in .md. Both
-    need the app's own filename-prefix filter. No real backend needed:
-    filtering both out should leave nothing to actually POST to
-    /ingest."""
+    need the app's own filename-prefix filter -- and since the uploader
+    lives outside the form, this preview appears as soon as files are
+    selected, before the (disabled, since nothing survives filtering)
+    Ingest button could even be clicked."""
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
@@ -72,12 +70,10 @@ def test_bulk_ingest_filters_out_office_lock_and_dotfile_junk() -> None:
     )
     at.run(timeout=30)
 
-    at.button(key="FormSubmitter:bulk_ingest_form-Ingest files").click()
-    at.run(timeout=30)
-
     assert not at.exception
-    assert any("Skipped 2 file(s)" in c.value for c in at.caption)
-    assert any("No supported files left after filtering" in w.value for w in at.warning)
+    assert any("Will skip 2 file(s)" in c.value for c in at.sidebar.caption)
+    ingest_button = next(b for b in at.sidebar.button if b.label == "Ingest files")
+    assert ingest_button.disabled is True
 
 
 def test_bulk_ingest_uploader_uses_the_native_folder_picker() -> None:
@@ -86,6 +82,33 @@ def test_bulk_ingest_uploader_uses_the_native_folder_picker() -> None:
 
     bulk_uploader = at.sidebar.file_uploader[1]
     assert bulk_uploader.accept_directory is True
+
+
+def test_wipe_button_shows_a_confirmation_before_actually_wiping() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    wipe_button = next(b for b in at.main.button if "Wipe all" in b.label)
+    wipe_button.click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("cannot be undone" in w.value for w in at.warning)
+    assert any(b.label == "Yes, wipe everything" for b in at.main.button)
+
+
+def test_wipe_confirmation_cancel_returns_to_the_normal_view() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    next(b for b in at.main.button if "Wipe all" in b.label).click()
+    at.run(timeout=30)
+    next(b for b in at.main.button if b.label == "Cancel").click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["confirm_wipe"] is False
+    assert any("Wipe all" in b.label for b in at.main.button)
 
 
 def test_metrics_and_documents_panels_render_without_exceptions() -> None:
