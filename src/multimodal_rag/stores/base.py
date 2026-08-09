@@ -103,6 +103,14 @@ class VectorStore(ABC):
         data the way blindly recreating on every boot would."""
 
     @abstractmethod
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        """Remove specific chunks by ID. Used when re-ingesting an edited
+        document: chunk_id is content-addressed (chunking/ids.py), so a
+        chunk whose text changed gets a new ID and its old one becomes an
+        orphan unless explicitly deleted — this is that explicit
+        deletion. A no-op for any chunk_id that isn't present."""
+
+    @abstractmethod
     def ping(self) -> bool:
         """Cheap reachability check — True if the backend responds at
         all, regardless of whether a live collection exists yet. Used by
@@ -146,6 +154,13 @@ class KeywordStore(ABC):
         create_index() itself is destructive (drops and recreates), so
         calling THAT unconditionally on every boot would silently wipe
         every previously indexed chunk."""
+
+    @abstractmethod
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        """Remove specific chunks by ID -- the keyword-store counterpart
+        to VectorStore.delete_chunks(), for the same reason (cleaning up
+        orphaned chunk_ids left behind when a re-ingested document's
+        content changes). A no-op for any chunk_id that isn't present."""
 
     @abstractmethod
     def ping(self) -> bool:

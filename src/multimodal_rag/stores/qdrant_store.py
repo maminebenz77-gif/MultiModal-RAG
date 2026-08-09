@@ -321,6 +321,14 @@ class QdrantStore(VectorStore):
         self.create_collection(dimension=dimension)
         self.publish()
 
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        self._client.delete(
+            collection_name=self._alias,
+            points_selector=[_point_id(chunk_id) for chunk_id in chunk_ids],
+        )
+
     def ping(self) -> bool:
         try:
             self._client.get_collections()

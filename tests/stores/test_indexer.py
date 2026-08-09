@@ -86,6 +86,53 @@ def test_index_raises_index_consistency_error_when_keyword_indexing_fails(
     assert keyword_store.list_chunk_ids() == []
 
 
+def test_delete_removes_from_both_stores(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index(
+        [_chunk("a", "hello world"), _chunk("b", "goodbye world")],
+        [_vector([1.0, 0.0]), _vector([0.0, 1.0])],
+    )
+
+    indexer.delete(["b"])
+
+    assert vector_store.list_chunk_ids() == ["a"]
+    assert keyword_store.list_chunk_ids() == ["a"]
+
+
+def test_delete_with_empty_list_is_a_no_op(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index([_chunk("a", "hello")], [_vector([1.0, 0.0])])
+
+    indexer.delete([])
+
+    assert vector_store.list_chunk_ids() == ["a"]
+
+
+def test_delete_raises_index_consistency_error_when_keyword_deletion_fails(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index([_chunk("a", "hello")], [_vector([1.0, 0.0])])
+
+    def always_fails(chunk_ids: list[str]) -> None:
+        raise RuntimeError("persistent ES failure")
+
+    monkeypatch.setattr(keyword_store, "delete_chunks", always_fails)
+
+    with pytest.raises(IndexConsistencyError) as exc_info:
+        indexer.delete(["a"])
+
+    assert exc_info.value.chunk_ids == ["a"]
+    # The vector store deletion already succeeded -- now inconsistent
+    # with the keyword store, which still has the stale chunk.
+    assert vector_store.list_chunk_ids() == []
+    assert keyword_store.list_chunk_ids() == ["a"]
+
+
 def test_check_consistency_reports_no_drift_when_in_sync(
     vector_store: QdrantStore, keyword_store: ElasticsearchStore
 ) -> None:

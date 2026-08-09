@@ -55,6 +55,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS documents (
                     doc_id TEXT PRIMARY KEY,
                     filename TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
                     num_parent_chunks INTEGER NOT NULL,
                     num_child_chunks INTEGER NOT NULL,
                     ingested_at TEXT NOT NULL
@@ -93,6 +94,7 @@ class Database:
         return DocumentSummary(
             doc_id=row["doc_id"],
             filename=row["filename"],
+            content_hash=row["content_hash"],
             num_parent_chunks=row["num_parent_chunks"],
             num_child_chunks=row["num_child_chunks"],
             ingested_at=datetime.fromisoformat(row["ingested_at"]),
@@ -102,6 +104,7 @@ class Database:
         self,
         doc_id: str,
         filename: str,
+        content_hash: str,
         num_parent_chunks: int,
         num_child_chunks: int,
         status: Literal["ingested", "already_ingested"] = "ingested",
@@ -111,15 +114,24 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO documents
-                    (doc_id, filename, num_parent_chunks, num_child_chunks, ingested_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (doc_id, filename, content_hash, num_parent_chunks, num_child_chunks,
+                     ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(doc_id) DO UPDATE SET
                     filename = excluded.filename,
+                    content_hash = excluded.content_hash,
                     num_parent_chunks = excluded.num_parent_chunks,
                     num_child_chunks = excluded.num_child_chunks,
                     ingested_at = excluded.ingested_at
                 """,
-                (doc_id, filename, num_parent_chunks, num_child_chunks, ingested_at.isoformat()),
+                (
+                    doc_id,
+                    filename,
+                    content_hash,
+                    num_parent_chunks,
+                    num_child_chunks,
+                    ingested_at.isoformat(),
+                ),
             )
         return IngestResponse(
             doc_id=doc_id,
@@ -139,6 +151,7 @@ class Database:
             DocumentSummary(
                 doc_id=row["doc_id"],
                 filename=row["filename"],
+                content_hash=row["content_hash"],
                 num_parent_chunks=row["num_parent_chunks"],
                 num_child_chunks=row["num_child_chunks"],
                 ingested_at=datetime.fromisoformat(row["ingested_at"]),

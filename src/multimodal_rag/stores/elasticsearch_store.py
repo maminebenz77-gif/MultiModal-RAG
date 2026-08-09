@@ -136,6 +136,22 @@ class ElasticsearchStore(KeywordStore):
             for hit in response["hits"]["hits"]
         ]
 
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        actions = [
+            {"_op_type": "delete", "_index": self._index_name, "_id": chunk_id}
+            for chunk_id in chunk_ids
+        ]
+
+        def call() -> None:
+            # 404 (already absent) is a valid outcome here, not a failure
+            # -- delete_chunks() is explicitly a no-op for missing IDs.
+            bulk(self._client, actions, ignore_status=404)
+            self._client.indices.refresh(index=self._index_name)
+
+        retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
+
     def list_chunk_ids(self) -> list[str]:
         if not self._client.indices.exists(index=self._index_name):
             return []

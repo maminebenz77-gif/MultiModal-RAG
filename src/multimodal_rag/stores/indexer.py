@@ -55,6 +55,27 @@ class HybridIndexer:
                 chunk_ids=chunk_ids,
             ) from exc
 
+    def delete(self, chunk_ids: list[str]) -> None:
+        """Remove chunk_ids from both stores -- used to clean up orphans
+        left behind when a re-ingested document's content changes (see
+        chunking/ids.py). Same ordering rationale as index(): the vector
+        store first, keyword store second, so a persistent failure on
+        the second step is reported precisely rather than silently
+        leaving one store cleaned and the other not."""
+        if not chunk_ids:
+            return
+        self._vector_store.delete_chunks(chunk_ids)
+
+        try:
+            self._keyword_store.delete_chunks(chunk_ids)
+        except Exception as exc:
+            raise IndexConsistencyError(
+                f"Vector store deletion succeeded but keyword deletion failed even "
+                f"after retries; {len(chunk_ids)} chunk_ids are now missing from the "
+                "vector store but still present and stale in the keyword store.",
+                chunk_ids=chunk_ids,
+            ) from exc
+
     def check_consistency(self) -> ConsistencyReport:
         """Compare the chunk_ids actually present in each store. Catches
         drift regardless of how it happened — a failed index() call, a

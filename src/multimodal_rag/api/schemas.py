@@ -15,15 +15,24 @@ from ..retrieval.schema import RetrievalMethod
 
 class IngestResponse(BaseModel):
     doc_id: str
-    """sha256 of the uploaded file's bytes -- re-uploading identical
-    content always maps to the same doc_id, so a re-upload is recognized
-    by identity alone, before any parsing/chunking/embedding happens."""
+    """sha256 of the FILENAME, not the file's bytes -- doc_id identifies
+    "this document" as a stable slot that survives edits, so re-ingesting
+    the same filename with slightly different content is recognized as
+    an update to the SAME document (and only the chunks that actually
+    changed get re-embedded) rather than looking like an unrelated new
+    document. A rename is therefore a new doc_id, even if the content is
+    byte-identical to something already ingested -- the trade-off that
+    makes chunk-level diffing on edits possible at all with a single
+    identity concept. See DocumentSummary.content_hash for the "is this
+    exact content already what's stored" check."""
 
     filename: str
     status: Literal["ingested", "already_ingested"]
-    """"already_ingested" means this exact content (by doc_id) was
-    already in the corpus -- parse/chunk/embed/index were skipped
-    entirely, not just deduplicated after the fact."""
+    """"already_ingested" means this exact content (same doc_id AND
+    content_hash) was already in the corpus -- parse/chunk/embed/index
+    were skipped entirely. A changed content_hash under an existing
+    doc_id still returns "ingested", not "already_ingested" -- some real
+    work happened, even if fewer chunks than a fresh document."""
 
     num_parent_chunks: int
     num_child_chunks: int
@@ -33,6 +42,12 @@ class IngestResponse(BaseModel):
 class DocumentSummary(BaseModel):
     doc_id: str
     filename: str
+    content_hash: str
+    """sha256 of the file's actual bytes -- compared against a new
+    upload's hash to detect "nothing changed" (skip everything) vs
+    "content changed under this filename" (diff chunks) vs "never seen
+    this filename before" (full ingest)."""
+
     num_parent_chunks: int
     num_child_chunks: int
     ingested_at: datetime

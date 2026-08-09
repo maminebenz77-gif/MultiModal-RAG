@@ -331,6 +331,29 @@ def test_get_by_chunk_id_returns_none_for_unknown_id(store: QdrantStore) -> None
     assert store.get_by_chunk_id("nonexistent") is None
 
 
+def test_delete_chunks_removes_them_from_search(store: QdrantStore) -> None:
+    store.upsert(
+        [_chunk("doc.md::a::0", "keep me"), _chunk("doc.md::b::0", "delete me")],
+        [_vector([1.0, 0.0, 0.0, 0.0]), _vector([1.0, 0.0, 0.0, 0.0])],
+    )
+    store.delete_chunks(["doc.md::b::0"])
+
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::a::0"]
+
+
+def test_delete_chunks_is_a_no_op_for_unknown_ids(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "text")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    store.delete_chunks(["nonexistent"])  # should not raise
+    assert len(store.list_chunk_ids()) == 1
+
+
+def test_delete_chunks_with_empty_list_is_a_no_op(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "text")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    store.delete_chunks([])
+    assert len(store.list_chunk_ids()) == 1
+
+
 def test_ping_returns_true_when_reachable(store: QdrantStore) -> None:
     assert store.ping() is True
 

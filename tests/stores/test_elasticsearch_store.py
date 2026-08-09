@@ -122,6 +122,25 @@ def test_list_chunk_ids_returns_all_indexed_ids(store: ElasticsearchStore) -> No
     assert sorted(store.list_chunk_ids()) == sorted(c.id for c in chunks)
 
 
+def test_delete_chunks_removes_them_from_the_index(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "keep me"), _chunk("doc.md::b::0", "delete me")])
+    store.delete_chunks(["doc.md::b::0"])
+
+    assert store.list_chunk_ids() == ["doc.md::a::0"]
+
+
+def test_delete_chunks_is_a_no_op_for_unknown_ids(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "text")])
+    store.delete_chunks(["nonexistent"])  # should not raise
+    assert store.list_chunk_ids() == ["doc.md::a::0"]
+
+
+def test_delete_chunks_with_empty_list_is_a_no_op(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "text")])
+    store.delete_chunks([])
+    assert store.list_chunk_ids() == ["doc.md::a::0"]
+
+
 def test_index_chunks_retries_transient_failure_then_succeeds(
     store: ElasticsearchStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
