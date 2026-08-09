@@ -35,6 +35,28 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Hybrid + Rerank": ("hybrid_rrf", True),
 }
 
+# The OS's native folder picker (accept_multiple_files="directory") has
+# no per-file filtering UI of its own -- once you pick a folder, every
+# file inside comes through, recursively. Streamlit's own `type=`
+# allowlist already rejects anything with a disallowed (or missing)
+# extension, like .DS_Store, at the widget level, before this code ever
+# sees it -- but it can't catch junk with a technically-valid
+# extension, which is exactly what Word/Office lock files are:
+# ~$report.docx, created while a document is open for editing, has a
+# real .docx extension. That's what this filter exists for.
+_JUNK_PREFIXES = ("~$", ".")
+_JUNK_NAMES = {"thumbs.db", "desktop.ini"}
+_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown"}
+
+
+def _is_junk_file(filename: str) -> bool:
+    name = Path(filename).name
+    if name.startswith(_JUNK_PREFIXES):
+        return True
+    if name.lower() in _JUNK_NAMES:
+        return True
+    return Path(name).suffix.lower() not in _ALLOWED_EXTENSIONS
+
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
@@ -126,38 +148,49 @@ with st.sidebar:
         if not uploaded_files:
             st.warning("Choose at least one file first.")
         else:
-            progress = st.progress(0.0)
-            status_line = st.empty()
-            counts = {"ingested": 0, "already_ingested": 0}
-            failures: list[str] = []
+            good_files = [f for f in uploaded_files if not _is_junk_file(f.name)]
+            skipped_names = [Path(f.name).name for f in uploaded_files if _is_junk_file(f.name)]
+            if skipped_names:
+                st.caption(
+                    f"Skipped {len(skipped_names)} file(s) that aren't real documents: "
+                    + ", ".join(skipped_names)
+                )
 
-            for i, uploaded_file in enumerate(uploaded_files, start=1):
-                status_line.text(f"({i}/{len(uploaded_files)}) {uploaded_file.name}...")
-                try:
-                    file_payload = (
-                        uploaded_file.name,
-                        uploaded_file.getvalue(),
-                        uploaded_file.type,
-                    )
-                    response = httpx.post(
-                        f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
-                    )
-                    response.raise_for_status()
-                    body = response.json()
-                    counts[body["status"]] += 1
-                except httpx.HTTPError as exc:
-                    failures.append(f"{uploaded_file.name}: {exc}")
-                progress.progress(i / len(uploaded_files))
+            if not good_files:
+                st.warning("No supported files left after filtering.")
+            else:
+                progress = st.progress(0.0)
+                status_line = st.empty()
+                counts = {"ingested": 0, "already_ingested": 0}
+                failures: list[str] = []
 
-            status_line.empty()
-            progress.empty()
-            st.success(
-                f"Done: {counts['ingested']} newly ingested, "
-                f"{counts['already_ingested']} already up to date, "
-                f"{len(failures)} failed."
-            )
-            if failures:
-                st.error("Failed:\n" + "\n".join(failures))
+                for i, uploaded_file in enumerate(good_files, start=1):
+                    status_line.text(f"({i}/{len(good_files)}) {uploaded_file.name}...")
+                    try:
+                        file_payload = (
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            uploaded_file.type,
+                        )
+                        response = httpx.post(
+                            f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
+                        )
+                        response.raise_for_status()
+                        body = response.json()
+                        counts[body["status"]] += 1
+                    except httpx.HTTPError as exc:
+                        failures.append(f"{uploaded_file.name}: {exc}")
+                    progress.progress(i / len(good_files))
+
+                status_line.empty()
+                progress.empty()
+                st.success(
+                    f"Done: {counts['ingested']} newly ingested, "
+                    f"{counts['already_ingested']} already up to date, "
+                    f"{len(failures)} failed."
+                )
+                if failures:
+                    st.error("Failed:\n" + "\n".join(failures))
 
 st.title("Multimodal RAG Demo")
 

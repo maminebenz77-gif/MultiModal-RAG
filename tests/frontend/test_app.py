@@ -50,6 +50,36 @@ def test_bulk_ingest_without_any_files_shows_a_warning() -> None:
     assert any("Choose at least one file first" in w.value for w in at.warning)
 
 
+def test_bulk_ingest_filters_out_office_lock_and_dotfile_junk() -> None:
+    """Streamlit's own type= allowlist already rejects extensionless
+    junk like .DS_Store at the widget level (confirmed: passing one to
+    set_value raises before the app's own code even runs). What it
+    canNOT catch is junk with a technically-valid extension: Word's
+    ~$-prefixed lock file (~$report.docx -- created while a document is
+    open for editing) and a dotfile that happens to end in .md. Both
+    need the app's own filename-prefix filter. No real backend needed:
+    filtering both out should leave nothing to actually POST to
+    /ingest."""
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    uploader = at.sidebar.file_uploader[1]
+    uploader.set_value(
+        [
+            ("~$report.docx", b"garbage", "application/octet-stream"),
+            (".hidden.md", b"garbage", "text/markdown"),
+        ]
+    )
+    at.run(timeout=30)
+
+    at.button(key="FormSubmitter:bulk_ingest_form-Ingest files").click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("Skipped 2 file(s)" in c.value for c in at.caption)
+    assert any("No supported files left after filtering" in w.value for w in at.warning)
+
+
 def test_bulk_ingest_uploader_uses_the_native_folder_picker() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
