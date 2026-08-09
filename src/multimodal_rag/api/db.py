@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from .schemas import DocumentSummary, IngestResponse, MetricsResponse
 
@@ -84,8 +85,26 @@ class Database:
                 """
             )
 
+    def get_document(self, doc_id: str) -> DocumentSummary | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
+        if row is None:
+            return None
+        return DocumentSummary(
+            doc_id=row["doc_id"],
+            filename=row["filename"],
+            num_parent_chunks=row["num_parent_chunks"],
+            num_child_chunks=row["num_child_chunks"],
+            ingested_at=datetime.fromisoformat(row["ingested_at"]),
+        )
+
     def upsert_document(
-        self, doc_id: str, filename: str, num_parent_chunks: int, num_child_chunks: int
+        self,
+        doc_id: str,
+        filename: str,
+        num_parent_chunks: int,
+        num_child_chunks: int,
+        status: Literal["ingested", "already_ingested"] = "ingested",
     ) -> IngestResponse:
         ingested_at = datetime.now(UTC)
         with self._connect() as conn:
@@ -105,7 +124,7 @@ class Database:
         return IngestResponse(
             doc_id=doc_id,
             filename=filename,
-            status="ingested",
+            status=status,
             num_parent_chunks=num_parent_chunks,
             num_child_chunks=num_child_chunks,
             ingested_at=ingested_at,

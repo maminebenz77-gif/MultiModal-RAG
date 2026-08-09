@@ -4,6 +4,14 @@ doc_id is sha256(file_bytes) -- see schemas.IngestResponse for why. The
 file has to touch disk briefly (a temp file) because parse_document()
 ultimately calls libmagic + format-specific parsers that all expect a
 real path, not an in-memory buffer.
+
+Re-uploading byte-identical content is recognized by doc_id BEFORE any
+of that expensive work starts -- parsing, chunking, embedding, and
+indexing are all skipped entirely for a known doc_id, not just
+deduplicated after the fact. Content-addressed chunk_ids (see the
+doc_id-as-source_file trick below) already made re-ingestion safe
+either way, but without this check it was still slow and looked
+indistinguishable from a fresh ingest.
 """
 
 import hashlib
@@ -34,6 +42,29 @@ def _ingest_sync(
     db: Database,
 ) -> IngestResponse:
     doc_id = hashlib.sha256(raw_bytes).hexdigest()
+
+    existing = db.get_document(doc_id)
+    if existing is not None:
+        if existing.filename == filename:
+            # Nothing changed at all -- not even a metadata write needed.
+            return IngestResponse(
+                doc_id=doc_id,
+                filename=existing.filename,
+                status="already_ingested",
+                num_parent_chunks=existing.num_parent_chunks,
+                num_child_chunks=existing.num_child_chunks,
+                ingested_at=existing.ingested_at,
+            )
+        # Same content, re-uploaded under a different name -- refresh the
+        # display filename (a cheap metadata write) but still skip the
+        # expensive parse/chunk/embed/index work entirely.
+        return db.upsert_document(
+            doc_id,
+            filename,
+            existing.num_parent_chunks,
+            existing.num_child_chunks,
+            status="already_ingested",
+        )
 
     with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix) as tmp:
         tmp.write(raw_bytes)

@@ -37,6 +37,32 @@ async def test_reingesting_identical_content_does_not_duplicate_documents(
     assert len(response.json()["documents"]) == 1
 
 
+async def test_reingesting_identical_content_is_marked_already_ingested_and_skips_work(
+    client: httpx.AsyncClient,
+) -> None:
+    """The short-circuit this guards: chunk_id() being content-addressed
+    already prevented duplicate chunks on a re-upload, but the pipeline
+    still re-parsed/re-chunked/re-embedded every time -- slow, and
+    indistinguishable from a genuinely new ingest from the response
+    alone. A known doc_id should now skip straight to a cheap DB lookup."""
+    with open(SAMPLE_DOC, "rb") as f:
+        first = await client.post(
+            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+        )
+    assert first.json()["status"] == "ingested"
+
+    with open(SAMPLE_DOC, "rb") as f:
+        second = await client.post(
+            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+        )
+    body = second.json()
+    assert body["status"] == "already_ingested"
+    assert body["doc_id"] == first.json()["doc_id"]
+    assert body["num_parent_chunks"] == first.json()["num_parent_chunks"]
+    assert body["num_child_chunks"] == first.json()["num_child_chunks"]
+    assert body["ingested_at"] == first.json()["ingested_at"]
+
+
 async def test_ingest_rejects_empty_file(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/ingest", files={"file": ("empty.md", b"", "text/markdown")}
@@ -62,6 +88,7 @@ async def test_renaming_and_reingesting_identical_content_does_not_duplicate_chu
     body_b = response_b.json()
 
     assert body_b["doc_id"] == doc_id_a
+    assert body_b["status"] == "already_ingested"
 
     vector_store = client.app.state.app_state.vector_store  # type: ignore[attr-defined]
     chunk_ids = vector_store.list_chunk_ids()

@@ -16,12 +16,15 @@ from ..retrieval.schema import RetrievalMethod
 class IngestResponse(BaseModel):
     doc_id: str
     """sha256 of the uploaded file's bytes -- re-uploading identical
-    content always maps to the same doc_id, so ingestion is naturally
-    idempotent at the identity level even before real change-detection
-    is built."""
+    content always maps to the same doc_id, so a re-upload is recognized
+    by identity alone, before any parsing/chunking/embedding happens."""
 
     filename: str
-    status: Literal["ingested"]
+    status: Literal["ingested", "already_ingested"]
+    """"already_ingested" means this exact content (by doc_id) was
+    already in the corpus -- parse/chunk/embed/index were skipped
+    entirely, not just deduplicated after the fact."""
+
     num_parent_chunks: int
     num_child_chunks: int
     ingested_at: datetime
