@@ -61,6 +61,29 @@ def _ingest_sync(
             ingested_at=existing.ingested_at,
         )
 
+    # Not a match on THIS filename -- but is this exact content already
+    # sitting in the corpus under a DIFFERENT filename? Checked globally
+    # (not scoped to doc_id) specifically to catch the same file arriving
+    # through two different upload paths that report its name
+    # differently -- e.g. the folder picker's webkitRelativePath
+    # ("MyFolder/report.docx") vs. the single-file picker's bare name
+    # ("report.docx") for the identical bytes. Declining to duplicate the
+    # embedding work here, rather than normalizing filenames to catch
+    # this, also sidesteps needing to guess which of several possible
+    # upload-path naming quirks (a path prefix, Unicode normalization,
+    # ...) is responsible in any given case.
+    existing_by_content = db.get_document_by_content_hash(content_hash)
+    if existing_by_content is not None and existing_by_content.doc_id != doc_id:
+        return IngestResponse(
+            doc_id=existing_by_content.doc_id,
+            filename=filename,
+            status="duplicate_content",
+            duplicate_of=existing_by_content.filename,
+            num_parent_chunks=existing_by_content.num_parent_chunks,
+            num_child_chunks=existing_by_content.num_child_chunks,
+            ingested_at=existing_by_content.ingested_at,
+        )
+
     with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix) as tmp:
         tmp.write(raw_bytes)
         tmp.flush()

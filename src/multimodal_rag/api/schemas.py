@@ -27,12 +27,19 @@ class IngestResponse(BaseModel):
     exact content already what's stored" check."""
 
     filename: str
-    status: Literal["ingested", "already_ingested"]
-    """"already_ingested" means this exact content (same doc_id AND
+    status: Literal["ingested", "already_ingested", "duplicate_content"]
+    """"already_ingested": this exact content (same doc_id AND
     content_hash) was already in the corpus -- parse/chunk/embed/index
     were skipped entirely. A changed content_hash under an existing
     doc_id still returns "ingested", not "already_ingested" -- some real
-    work happened, even if fewer chunks than a fresh document."""
+    work happened, even if fewer chunks than a fresh document.
+    "duplicate_content": this exact content already exists in the
+    corpus under a DIFFERENT filename (checked globally, not scoped to
+    this doc_id) -- nothing was ingested; see duplicate_of."""
+
+    duplicate_of: str | None = None
+    """Set only when status == "duplicate_content": the filename this
+    content is already stored under."""
 
     num_parent_chunks: int
     num_child_chunks: int
@@ -55,6 +62,15 @@ class DocumentSummary(BaseModel):
 
 class DocumentsResponse(BaseModel):
     documents: list[DocumentSummary]
+
+
+class WipeResponse(BaseModel):
+    status: Literal["wiped"]
+    documents_deleted: int
+    chunks_deleted: int
+    """Query/feedback history is NOT touched by a wipe -- it's a log of
+    past activity, not corpus state, and stays meaningful even after
+    the corpus itself is reset."""
 
 
 class QueryRequest(BaseModel):

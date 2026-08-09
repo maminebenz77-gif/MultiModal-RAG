@@ -76,6 +76,19 @@ class HybridIndexer:
                 chunk_ids=chunk_ids,
             ) from exc
 
+    def delete_all(self) -> int:
+        """Wipe every chunk from both stores -- the store side of a full
+        corpus reset (see api.db.Database.wipe_documents() for the
+        sqlite side). Unions both stores' chunk_ids rather than trusting
+        either alone, so this also cleans up any drift check_consistency()
+        would otherwise report (a chunk_id present in only one store still
+        gets removed). Returns how many distinct chunk_ids were deleted."""
+        chunk_ids = sorted(
+            set(self._vector_store.list_chunk_ids()) | set(self._keyword_store.list_chunk_ids())
+        )
+        self.delete(chunk_ids)
+        return len(chunk_ids)
+
     def check_consistency(self) -> ConsistencyReport:
         """Compare the chunk_ids actually present in each store. Catches
         drift regardless of how it happened — a failed index() call, a

@@ -101,6 +101,37 @@ def test_delete_removes_from_both_stores(
     assert keyword_store.list_chunk_ids() == ["a"]
 
 
+def test_delete_all_wipes_both_stores_and_returns_the_count(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index(
+        [_chunk("a", "hello world"), _chunk("b", "goodbye world")],
+        [_vector([1.0, 0.0]), _vector([0.0, 1.0])],
+    )
+
+    deleted = indexer.delete_all()
+
+    assert deleted == 2
+    assert vector_store.list_chunk_ids() == []
+    assert keyword_store.list_chunk_ids() == []
+
+
+def test_delete_all_also_cleans_up_drift_present_in_only_one_store(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    # A chunk present in only the vector store (e.g. from a partial
+    # failure) should still get cleaned up, not just chunks both stores
+    # agree on.
+    vector_store.upsert([_chunk("a", "hello")], [_vector([1.0, 0.0])])
+
+    indexer = HybridIndexer(vector_store, keyword_store)
+    deleted = indexer.delete_all()
+
+    assert deleted == 1
+    assert vector_store.list_chunk_ids() == []
+
+
 def test_delete_with_empty_list_is_a_no_op(
     vector_store: QdrantStore, keyword_store: ElasticsearchStore
 ) -> None:

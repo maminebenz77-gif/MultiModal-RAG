@@ -32,3 +32,41 @@ def test_schema_recreates_itself_if_the_file_is_deleted_while_the_process_is_ali
     assert db.get_document("doc-1") is None
     db.upsert_document("doc-2", "b.md", "hash-2", 1, 1)
     assert db.get_document("doc-2") is not None
+
+
+def test_get_document_by_content_hash_finds_it_regardless_of_doc_id(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.upsert_document("doc-a", "a.md", "shared-hash", 1, 1)
+
+    found = db.get_document_by_content_hash("shared-hash")
+
+    assert found is not None
+    assert found.doc_id == "doc-a"
+
+
+def test_get_document_by_content_hash_returns_none_when_not_found(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    assert db.get_document_by_content_hash("nonexistent-hash") is None
+
+
+def test_wipe_documents_deletes_all_rows_and_returns_the_count(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.upsert_document("doc-a", "a.md", "hash-a", 1, 1)
+    db.upsert_document("doc-b", "b.md", "hash-b", 2, 2)
+
+    deleted = db.wipe_documents()
+
+    assert deleted == 2
+    assert db.list_documents() == []
+
+
+def test_wipe_documents_does_not_touch_queries_or_feedback(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.upsert_document("doc-a", "a.md", "hash-a", 1, 1)
+    db.record_query("q-1", "a question", "an answer", False, "hybrid_rrf")
+    db.record_feedback("q-1", "up", None)
+
+    db.wipe_documents()
+
+    assert db.query_exists("q-1")
+    assert db.metrics().feedback_up == 1

@@ -98,8 +98,26 @@ class Database:
     def get_document(self, doc_id: str) -> DocumentSummary | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
-        if row is None:
-            return None
+        return self._row_to_document(row) if row is not None else None
+
+    def get_document_by_content_hash(self, content_hash: str) -> DocumentSummary | None:
+        """Finds a document by its CONTENT, regardless of filename/doc_id
+        -- used to catch "this exact file was already ingested under a
+        different-looking name" (e.g. the same file uploaded once via
+        the single-file picker and once via the folder picker, which
+        reports a path-prefixed name for the same bytes). If more than
+        one doc_id happens to share this content_hash, the most
+        recently ingested one wins -- an arbitrary but stable tiebreak,
+        not a case expected to come up often."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM documents WHERE content_hash = ? ORDER BY ingested_at DESC LIMIT 1",
+                (content_hash,),
+            ).fetchone()
+        return self._row_to_document(row) if row is not None else None
+
+    @staticmethod
+    def _row_to_document(row: sqlite3.Row) -> DocumentSummary:
         return DocumentSummary(
             doc_id=row["doc_id"],
             filename=row["filename"],
@@ -156,17 +174,18 @@ class Database:
             rows = conn.execute(
                 "SELECT * FROM documents ORDER BY ingested_at DESC"
             ).fetchall()
-        return [
-            DocumentSummary(
-                doc_id=row["doc_id"],
-                filename=row["filename"],
-                content_hash=row["content_hash"],
-                num_parent_chunks=row["num_parent_chunks"],
-                num_child_chunks=row["num_child_chunks"],
-                ingested_at=datetime.fromisoformat(row["ingested_at"]),
-            )
-            for row in rows
-        ]
+        return [self._row_to_document(row) for row in rows]
+
+    def wipe_documents(self) -> int:
+        """Deletes every row from `documents` -- the sqlite side of a
+        full corpus reset (see HybridIndexer.delete_all() for the store
+        side). Leaves queries/feedback history alone; those are a log of
+        past activity, not corpus state, and wiping the corpus doesn't
+        make past questions or feedback about it meaningless."""
+        with self._connect() as conn:
+            deleted = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            conn.execute("DELETE FROM documents")
+        return int(deleted)
 
     def record_query(
         self, query_id: str, question: str, answer: str, refused: bool, retrieval_method: str

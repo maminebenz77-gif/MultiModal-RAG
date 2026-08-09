@@ -70,28 +70,50 @@ async def test_ingest_rejects_empty_file(client: httpx.AsyncClient) -> None:
     assert response.status_code == 400
 
 
-async def test_renaming_identical_content_now_creates_a_separate_document(
+async def test_renaming_identical_content_is_recognized_as_a_duplicate_not_reingested(
     client: httpx.AsyncClient,
 ) -> None:
     """doc_id is derived from the FILENAME (schemas.IngestResponse
     explains why: it's what makes chunk-level diffing on edits possible
-    with a single identity concept) -- a deliberate trade-off against the
-    previous behavior, where doc_id was a content hash and a rename with
-    identical bytes deduped into one document. This documents the new,
-    intentional behavior: a rename is now a distinct document."""
+    with a single identity concept), which on its own would mean a
+    rename looks like an unrelated new document. The global
+    content_hash check (checked across ALL documents, not scoped to one
+    doc_id) catches this: the same bytes under a new name are recognized
+    as a duplicate and not re-ingested, without needing doc_id itself to
+    survive the rename."""
     with open(SAMPLE_DOC, "rb") as f:
         response_a = await client.post("/ingest", files={"file": ("a.md", f, "text/markdown")})
     assert response_a.status_code == 200
     body_a = response_a.json()
+    assert body_a["status"] == "ingested"
 
     with open(SAMPLE_DOC, "rb") as f:
         response_b = await client.post("/ingest", files={"file": ("b.md", f, "text/markdown")})
     assert response_b.status_code == 200
     body_b = response_b.json()
 
-    assert body_a["doc_id"] != body_b["doc_id"]
-    assert body_b["status"] == "ingested"
+    assert body_b["status"] == "duplicate_content"
+    assert body_b["duplicate_of"] == "a.md"
+    assert body_b["doc_id"] == body_a["doc_id"]
 
+    # Nothing new was actually ingested -- still just the one document,
+    # under its original name.
+    documents = (await client.get("/documents")).json()["documents"]
+    assert len(documents) == 1
+    assert documents[0]["filename"] == "a.md"
+
+
+async def test_duplicate_content_check_does_not_trigger_for_genuinely_new_content(
+    client: httpx.AsyncClient,
+) -> None:
+    with open(SAMPLE_DOC, "rb") as f:
+        await client.post("/ingest", files={"file": ("a.md", f, "text/markdown")})
+
+    response = await client.post(
+        "/ingest", files={"file": ("b.md", b"completely different content", "text/markdown")}
+    )
+
+    assert response.json()["status"] == "ingested"
     documents = (await client.get("/documents")).json()["documents"]
     assert {d["filename"] for d in documents} == {"a.md", "b.md"}
 
