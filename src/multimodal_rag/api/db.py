@@ -36,55 +36,64 @@ class Database:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
+        # Re-applied on every connection, not just once at construction.
+        # CREATE TABLE IF NOT EXISTS is cheap and idempotent, and this
+        # makes the schema self-healing if the underlying file is ever
+        # deleted or replaced out from under an already-running process
+        # -- exactly what tests/live/wipe_db.py does, and it's
+        # explicitly meant to be safe to run against a live server.
+        # Schema-only-at-__init__ isn't: the file getting wiped while a
+        # server holds a Database instance left every later query
+        # hitting "no such table" until that process restarted.
+        self._create_tables(conn)
         try:
             yield conn
             conn.commit()
         finally:
             conn.close()
 
-    def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS documents (
-                    doc_id TEXT PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    num_parent_chunks INTEGER NOT NULL,
-                    num_child_chunks INTEGER NOT NULL,
-                    ingested_at TEXT NOT NULL
-                )
-                """
+    @staticmethod
+    def _create_tables(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                doc_id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                num_parent_chunks INTEGER NOT NULL,
+                num_child_chunks INTEGER NOT NULL,
+                ingested_at TEXT NOT NULL
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS queries (
-                    query_id TEXT PRIMARY KEY,
-                    question TEXT NOT NULL,
-                    answer TEXT NOT NULL,
-                    refused INTEGER NOT NULL,
-                    retrieval_method TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queries (
+                query_id TEXT PRIMARY KEY,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                refused INTEGER NOT NULL,
+                retrieval_method TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS feedback (
-                    feedback_id TEXT PRIMARY KEY,
-                    query_id TEXT NOT NULL REFERENCES queries(query_id),
-                    rating TEXT NOT NULL,
-                    comment TEXT,
-                    created_at TEXT NOT NULL
-                )
-                """
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                feedback_id TEXT PRIMARY KEY,
+                query_id TEXT NOT NULL REFERENCES queries(query_id),
+                rating TEXT NOT NULL,
+                comment TEXT,
+                created_at TEXT NOT NULL
             )
+            """
+        )
 
     def get_document(self, doc_id: str) -> DocumentSummary | None:
         with self._connect() as conn:
