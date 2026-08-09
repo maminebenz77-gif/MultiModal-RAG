@@ -35,6 +35,18 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Hybrid + Rerank": ("hybrid_rrf", True),
 }
 
+# Matches what parse_document() actually supports (see
+# multimodal_rag.ingestion) -- .markdown alongside .md since the
+# dispatcher's extension fallback recognizes both.
+_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown"}
+_EXTENSION_TO_MIME = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+}
+
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
@@ -49,6 +61,19 @@ def _location_suffix(pages: list[int], slides: list[int]) -> str:
     if slides:
         return f", slide {', '.join(str(s) for s in slides)}"
     return ""
+
+
+def _ingest_file(path: Path) -> dict:
+    mime = _EXTENSION_TO_MIME.get(path.suffix.lower(), "application/octet-stream")
+    with open(path, "rb") as f:
+        response = httpx.post(
+            f"{api_base_url}/ingest",
+            files={"file": (path.name, f, mime)},
+            timeout=120.0,
+        )
+    response.raise_for_status()
+    result: dict = response.json()
+    return result
 
 
 def _submit_feedback(query_id: str, rating: str, comment: str) -> None:
@@ -97,12 +122,54 @@ with st.sidebar:
                 )
                 response.raise_for_status()
                 body = response.json()
+                verb = "Already ingested" if body["status"] == "already_ingested" else "Ingested"
                 st.success(
-                    f"Ingested {body['filename']}: {body['num_parent_chunks']} parent "
+                    f"{verb} {body['filename']}: {body['num_parent_chunks']} parent "
                     f"chunks, {body['num_child_chunks']} child chunks."
                 )
             except httpx.HTTPError as exc:
                 st.error(f"Ingest failed: {exc}")
+
+    st.divider()
+    st.header("Bulk ingest a folder")
+    st.caption("Top-level files only (.pdf, .docx, .pptx, .md) -- subfolders aren't walked.")
+
+    with st.form("bulk_ingest_form"):
+        folder_path_input = st.text_input("Folder path")
+        bulk_submitted = st.form_submit_button("Ingest folder")
+
+    if bulk_submitted:
+        folder = Path(folder_path_input).expanduser()
+        if not folder.is_dir():
+            st.error(f"Not a folder: {folder}")
+        else:
+            files = sorted(p for p in folder.iterdir() if p.suffix.lower() in _SUPPORTED_EXTENSIONS)
+            if not files:
+                st.warning(f"No supported files found in {folder}")
+            else:
+                progress = st.progress(0.0)
+                status_line = st.empty()
+                counts = {"ingested": 0, "already_ingested": 0}
+                failures: list[str] = []
+
+                for i, path in enumerate(files, start=1):
+                    status_line.text(f"({i}/{len(files)}) {path.name}...")
+                    try:
+                        body = _ingest_file(path)
+                        counts[body["status"]] += 1
+                    except httpx.HTTPError as exc:
+                        failures.append(f"{path.name}: {exc}")
+                    progress.progress(i / len(files))
+
+                status_line.empty()
+                progress.empty()
+                st.success(
+                    f"Done: {counts['ingested']} newly ingested, "
+                    f"{counts['already_ingested']} already up to date, "
+                    f"{len(failures)} failed."
+                )
+                if failures:
+                    st.error("Failed:\n" + "\n".join(failures))
 
 st.title("Multimodal RAG Demo")
 

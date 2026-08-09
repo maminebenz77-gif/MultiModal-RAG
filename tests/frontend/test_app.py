@@ -39,6 +39,18 @@ def test_ingest_without_a_file_shows_a_warning() -> None:
     assert any("Choose a file first" in w.value for w in at.warning)
 
 
+def test_bulk_ingest_with_a_nonexistent_folder_shows_an_error() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    at.sidebar.text_input[0].set_value("/definitely/not/a/real/folder")
+    at.button(key="FormSubmitter:bulk_ingest_form-Ingest folder").click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("Not a folder" in e.value for e in at.error)
+
+
 def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
