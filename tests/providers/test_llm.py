@@ -32,8 +32,35 @@ def test_litellm_provider_extracts_text_from_response(monkeypatch: pytest.Monkey
     result = provider.generate([{"role": "user", "content": "hi"}])
 
     assert result == "hello from the model"
-    assert captured_kwargs["model"] == "gpt-4o-mini"
+    assert captured_kwargs["model"] == "openai/gpt-4o-mini"
     assert captured_kwargs["base_url"] == "http://localhost:11434"
+
+
+def test_litellm_provider_normalizes_model_with_openai_prefix_for_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs = {}
+
+    class FakeMessage:
+        content = "hello"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    def fake_completion(**kwargs: object):
+        captured_kwargs.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("multimodal_rag.providers.llm.litellm.completion", fake_completion)
+
+    provider = LiteLLMProvider(model="gemma4", base_url="http://localhost:11434")
+    result = provider.generate([{"role": "user", "content": "hi"}])
+
+    assert result == "hello"
+    assert captured_kwargs["model"] == "openai/gemma4"
 
 
 def test_internal_server_llm_requires_base_url() -> None:

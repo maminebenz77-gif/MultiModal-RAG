@@ -18,7 +18,7 @@ class LiteLLMProvider(LLMProvider):
         # network call our privacy guard (which only checks base_url) can't
         # see. Disable it unconditionally; there's no case where we want it.
         litellm.telemetry = False
-        self._model = model
+        self._model = self._normalize_model(model, base_url)
         self._base_url = base_url
         self._api_key = api_key
 
@@ -31,6 +31,15 @@ class LiteLLMProvider(LLMProvider):
         )
         content = response.choices[0].message.content
         return content or ""
+
+    @staticmethod
+    def _normalize_model(model: str, base_url: str | None) -> str:
+        # For OpenAI-compatible gateways, LiteLLM expects an explicit
+        # provider prefix for bare model names. Normalizing once up front
+        # avoids the noisy fail-then-retry path in every request.
+        if base_url is not None and "/" not in model:
+            return f"openai/{model}"
+        return model
 
 
 class InternalServerLLM(LLMProvider):
