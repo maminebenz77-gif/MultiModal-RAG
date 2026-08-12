@@ -186,6 +186,7 @@ class QdrantStore(VectorStore):
         target = self._pending_collection or self._alias
         succeeded_ids: list[str] = []
         failed_ids: list[str] = []
+        first_error: Exception | None = None
 
         for start in range(0, len(chunks), self._batch_size):
             batch_chunks = chunks[start : start + self._batch_size]
@@ -197,13 +198,17 @@ class QdrantStore(VectorStore):
             try:
                 self._upsert_batch(target, points)
                 succeeded_ids.extend(chunk.id for chunk in batch_chunks)
-            except Exception:
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
                 failed_ids.extend(chunk.id for chunk in batch_chunks)
 
         if failed_ids:
+            detail = f" First error: {type(first_error).__name__}: {first_error}" if first_error else ""
             raise UpsertBatchError(
                 f"{len(failed_ids)} of {len(chunks)} chunks failed to upsert after "
-                f"{self._max_retries} attempts per batch; {len(succeeded_ids)} succeeded.",
+                f"{self._max_retries} attempts per batch; {len(succeeded_ids)} succeeded."
+                f"{detail}",
                 succeeded_chunk_ids=succeeded_ids,
                 failed_chunk_ids=failed_ids,
             )

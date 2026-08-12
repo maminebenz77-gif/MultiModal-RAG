@@ -8,6 +8,7 @@ fall back to the file extension in that one case.
 """
 
 from pathlib import Path
+import zipfile
 
 import magic
 
@@ -24,8 +25,17 @@ _MIME_PARSERS = {
 }
 
 _EXTENSION_PARSERS = {
+    ".pdf": parse_pdf,
+    ".docx": parse_docx,
+    ".pptx": parse_pptx,
     ".md": parse_markdown,
     ".markdown": parse_markdown,
+}
+
+_AMBIGUOUS_MIME_TYPES = {
+    "text/plain",
+    "application/octet-stream",
+    "application/zip",
 }
 
 
@@ -33,8 +43,10 @@ def parse_document(path: Path, summarize_tables: bool = False) -> list[Element]:
     mime_type = magic.from_file(str(path), mime=True)
 
     parser = _MIME_PARSERS.get(mime_type)
-    if parser is None and mime_type == "text/plain":
+    if parser is None and mime_type in _AMBIGUOUS_MIME_TYPES:
         parser = _EXTENSION_PARSERS.get(path.suffix.lower())
+    if parser is None and mime_type in _AMBIGUOUS_MIME_TYPES:
+        parser = _parser_from_content_signature(path)
 
     if parser is None:
         raise ValueError(
@@ -43,3 +55,27 @@ def parse_document(path: Path, summarize_tables: bool = False) -> list[Element]:
         )
 
     return parser(path, summarize_tables=summarize_tables)
+
+
+def _parser_from_content_signature(path: Path):
+    # PDF magic bytes, independent of filename extension.
+    try:
+        if path.read_bytes().startswith(b"%PDF"):
+            return parse_pdf
+    except OSError:
+        return None
+
+    # DOCX/PPTX are ZIP containers; detect by canonical internal paths.
+    try:
+        if not zipfile.is_zipfile(path):
+            return None
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return None
+
+    if "word/document.xml" in names:
+        return parse_docx
+    if "ppt/presentation.xml" in names:
+        return parse_pptx
+    return None

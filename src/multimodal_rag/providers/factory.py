@@ -35,6 +35,22 @@ def get_llm(settings: Settings | None = None) -> LLMProvider:
     raise ValueError(f"Unknown llm_provider: {settings.llm_provider!r}")
 
 
+def llm_from_override(
+    provider: str,
+    model: str,
+    base_url: str | None,
+    api_key: str | None,
+    *,
+    allow_external: bool,
+) -> LLMProvider:
+    enforce_privacy_guard(base_url, allow_external)
+    if provider == "litellm":
+        return LiteLLMProvider(model=model, base_url=base_url, api_key=api_key)
+    if provider == "internal_server":
+        return InternalServerLLM(base_url=base_url, api_key=api_key)
+    raise ValueError(f"Unknown llm_provider: {provider!r}")
+
+
 def get_embedder(settings: Settings | None = None) -> EmbeddingProvider:
     settings = settings or get_settings()
     enforce_privacy_guard(settings.embed_base_url, settings.allow_external)
@@ -49,6 +65,23 @@ def get_embedder(settings: Settings | None = None) -> EmbeddingProvider:
             api_key=settings.embed_api_key,
         )
     raise ValueError(f"Unknown embed_provider: {settings.embed_provider!r}")
+
+
+def embedder_from_override(
+    provider: str,
+    model: str,
+    base_url: str | None,
+    api_key: str | None,
+    *,
+    allow_external: bool,
+    device: str,
+) -> EmbeddingProvider:
+    enforce_privacy_guard(base_url, allow_external)
+    if provider == "sentence_transformers":
+        return SentenceTransformerEmbeddingProvider(model_name=model, device=device)
+    if provider == "litellm":
+        return LiteLLMEmbeddingProvider(model=model, base_url=base_url, api_key=api_key)
+    raise ValueError(f"Unknown embed_provider: {provider!r}")
 
 
 def get_vision(settings: Settings | None = None) -> VisionProvider:

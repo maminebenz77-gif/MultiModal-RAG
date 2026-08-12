@@ -1,0 +1,52 @@
+{
+  "llm": {
+    "default": {
+      "provider": "litellm",
+      "model": "gemma4"
+    },
+    "providers": {
+      "litellm": {
+        "label": "LiteLLM (OpenAI-compatible gateway)",
+        "requires_base_url": true,
+        "requires_api_key": true,
+        "models": [
+          "gemma4",
+          "gpt-4o-mini"
+        ]
+      },
+      "internal_server": {
+        "label": "Internal Server (custom API)",
+        "requires_base_url": true,
+        "requires_api_key": true,
+        "models": [
+          "internal-llama-70b"
+        ]
+      }
+    }
+  },
+  "embedder": {
+    "default": {
+      "provider": "litellm",
+      "model": "openai/harrier-oss-v1-0.6b"
+    },
+    "providers": {
+      "sentence_transformers": {
+        "label": "Sentence Transformers (local)",
+        "requires_base_url": false,
+        "requires_api_key": false,
+        "models": [
+          "all-MiniLM-L6-v2"
+        ]
+      },
+      "litellm": {
+        "label": "LiteLLM Embeddings",
+        "requires_base_url": true,
+        "requires_api_key": true,
+        "models": [
+          "openai/harrier-oss-v1-0.6b",
+          "text-embedding-3-small"
+        ]
+      }
+    }
+  }
+}

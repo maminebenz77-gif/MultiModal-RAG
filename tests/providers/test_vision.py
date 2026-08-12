@@ -47,7 +47,7 @@ def test_litellm_vision_provider_builds_multimodal_message(
     result = provider.describe(_TINY_PNG)
 
     assert result == "a red one-pixel image"
-    assert captured_kwargs["model"] == "gpt-4o-mini"
+    assert captured_kwargs["model"] == "openai/gpt-4o-mini"
 
     messages = captured_kwargs["messages"]
     content_blocks = messages[0]["content"]

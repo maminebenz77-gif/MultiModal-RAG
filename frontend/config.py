@@ -24,6 +24,20 @@ class FrontendSettings(BaseSettings):
     api_base_url: str = "http://127.0.0.1:8000"
 
 
+class FrontendProviderDefaults(BaseSettings):
+    model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore")
+
+    llm_provider: str = "litellm"
+    llm_model: str = "gpt-4o-mini"
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+
+    embed_provider: str = "sentence_transformers"
+    embed_model: str = "all-MiniLM-L6-v2"
+    embed_base_url: str | None = None
+    embed_api_key: str | None = None
+
+
 def _env_file_for_profile(profile: str) -> Path:
     return PROJECT_ROOT / f".env.{profile}"
 
@@ -33,3 +47,10 @@ def get_frontend_settings() -> FrontendSettings:
     profile = os.environ.get("RAG_ENV", "local")
     env_file = _env_file_for_profile(profile)
     return FrontendSettings(_env_file=env_file)
+
+
+@lru_cache
+def get_frontend_provider_defaults() -> FrontendProviderDefaults:
+    profile = os.environ.get("RAG_ENV", "local")
+    env_file = _env_file_for_profile(profile)
+    return FrontendProviderDefaults(_env_file=env_file)

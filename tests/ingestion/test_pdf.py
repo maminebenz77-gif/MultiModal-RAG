@@ -138,3 +138,27 @@ def test_page_numbers_are_carried_through(monkeypatch: pytest.MonkeyPatch) -> No
     )
     elements = parse_pdf(Path("doc.pdf"))
     assert [el.metadata.page for el in elements] == [1, 2]
+
+
+def test_pdf_falls_back_to_fast_strategy_if_hi_res_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_elements = [
+        FakeUnstructuredElement("NarrativeText", "Fallback text.", FakeMetadata(page_number=1))
+    ]
+    calls: list[dict[str, Any]] = []
+
+    def _fake_partition_pdf(**kwargs: Any) -> list[Any]:
+        calls.append(kwargs)
+        if kwargs.get("strategy") == "hi_res":
+            raise RuntimeError("hi_res unavailable")
+        return fallback_elements
+
+    monkeypatch.setattr("multimodal_rag.ingestion.pdf.partition_pdf", _fake_partition_pdf)
+
+    elements = parse_pdf(Path("doc.pdf"))
+
+    assert len(elements) == 1
+    assert elements[0].text == "Fallback text."
+    assert calls[0]["strategy"] == "hi_res"
+    assert calls[1]["strategy"] == "fast"

@@ -18,20 +18,24 @@ real path, not an in-memory buffer.
 """
 
 import hashlib
+import json
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from ...chunking.parent_child import ParentChildChunker
+from ...config import get_settings
+from ...device import resolve_device
 from ...ingestion import parse_document
 from ...providers.base import EmbeddingProvider
+from ...providers.factory import embedder_from_override
 from ...stores.base import VectorStore
 from ...stores.indexer import HybridIndexer
 from ..db import Database
 from ..dependencies import get_db, get_embedder, get_indexer, get_vector_store
-from ..schemas import IngestResponse
+from ..schemas import IngestResponse, ProviderOverride, RuntimeOverrides
 
 router = APIRouter()
 
@@ -84,10 +88,19 @@ def _ingest_sync(
             ingested_at=existing_by_content.ingested_at,
         )
 
-    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix) as tmp:
+    # On Windows, NamedTemporaryFile keeps an open handle that can block
+    # other readers (python-magic/libmagic) from opening the same path.
+    # Create with delete=False, close it, then parse by path.
+    with tempfile.NamedTemporaryFile(
+        suffix=Path(filename).suffix, delete=False
+    ) as tmp:
         tmp.write(raw_bytes)
-        tmp.flush()
-        elements = parse_document(Path(tmp.name))
+        tmp_path = Path(tmp.name)
+
+    try:
+        elements = parse_document(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
     # parse_document() stamps every element with the *temp* file's path
     # (a fresh random name per call) -- overwrite it with doc_id (stable
@@ -123,6 +136,7 @@ def _ingest_sync(
 
     if chunks_to_embed:
         vectors = embedder.embed([c.text for c in chunks_to_embed])
+        _validate_vector_store_compatibility(vector_store, vectors)
         indexer.index(chunks_to_embed, vectors)
     if orphaned_chunk_ids:
         indexer.delete(orphaned_chunk_ids)
@@ -132,9 +146,51 @@ def _ingest_sync(
     return db.upsert_document(doc_id, filename, content_hash, num_parent_chunks, num_child_chunks)
 
 
+def _validate_vector_store_compatibility(
+    vector_store: VectorStore, vectors: list
+) -> None:
+    if not vectors:
+        return
+
+    expected_dimension = _live_vector_dimension(vector_store)
+    if expected_dimension is not None and expected_dimension != vectors[0].dimension:
+        raise ValueError(
+            "Runtime embedder override is incompatible with the existing corpus: "
+            f"stored dimension is {expected_dimension}, override produced {vectors[0].dimension}."
+        )
+
+    stored_model_id = getattr(vector_store, "_stored_model_id", lambda: None)()
+    if stored_model_id is not None and stored_model_id != vectors[0].model_id:
+        raise ValueError(
+            "Runtime embedder override is incompatible with the existing corpus: "
+            f"stored model is {stored_model_id!r}, override produced {vectors[0].model_id!r}."
+        )
+
+
+def _live_vector_dimension(vector_store: VectorStore) -> int | None:
+    current_alias_target = getattr(vector_store, "_current_alias_target", lambda: None)()
+    if current_alias_target is None:
+        return None
+
+    client = getattr(vector_store, "_client", None)
+    if client is None:
+        return None
+
+    try:
+        collection = client.get_collection(current_alias_target)
+    except Exception:
+        return None
+
+    params = getattr(collection.config, "params", None)
+    vectors = getattr(params, "vectors", None)
+    size = getattr(vectors, "size", None)
+    return size if isinstance(size, int) else None
+
+
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     file: UploadFile,
+    runtime_overrides_json: str | None = Form(default=None),
     embedder: EmbeddingProvider = Depends(get_embedder),
     indexer: HybridIndexer = Depends(get_indexer),
     vector_store: VectorStore = Depends(get_vector_store),
@@ -145,9 +201,32 @@ async def ingest(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     filename = file.filename or "unnamed"
 
+    embedder_to_use = embedder
+    if runtime_overrides_json:
+        try:
+            overrides_payload = json.loads(runtime_overrides_json)
+            overrides = RuntimeOverrides.model_validate(overrides_payload)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid runtime overrides: {exc}") from exc
+
+        if overrides.embedder is not None:
+            settings = get_settings()
+            chosen: ProviderOverride = overrides.embedder
+            try:
+                embedder_to_use = embedder_from_override(
+                    provider=chosen.provider,
+                    model=chosen.model,
+                    base_url=chosen.base_url,
+                    api_key=chosen.api_key,
+                    allow_external=settings.allow_external,
+                    device=resolve_device(settings.device),
+                )
+            except (ValueError, NotImplementedError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         return await run_in_threadpool(
-            _ingest_sync, raw_bytes, filename, embedder, indexer, vector_store, db
+            _ingest_sync, raw_bytes, filename, embedder_to_use, indexer, vector_store, db
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

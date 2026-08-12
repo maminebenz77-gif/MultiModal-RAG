@@ -14,6 +14,7 @@ unrelated widget (like the retrieval-method dropdown).
 """
 
 import sys
+import json
 from pathlib import Path
 
 # `streamlit run` puts this script's own directory on sys.path
@@ -25,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 import streamlit as st
-from config import get_frontend_settings
+from config import get_frontend_provider_defaults, get_frontend_settings
 
 _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Cosine similarity": ("cosine", False),
@@ -47,6 +48,39 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
 _JUNK_PREFIXES = ("~$", ".")
 _JUNK_NAMES = {"thumbs.db", "desktop.ini"}
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown"}
+_PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
+
+
+def _load_provider_catalog() -> dict:
+    with _PROVIDER_CATALOG_PATH.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _provider_options(catalog: dict, family: str) -> dict[str, dict]:
+    return catalog[family]["providers"]
+
+
+def _runtime_overrides_payload(state: dict) -> dict:
+    return {
+        "llm": {
+            "provider": state["llm_provider"],
+            "model": state["llm_model"],
+            "base_url": state.get("llm_base_url") or None,
+            "api_key": state.get("llm_api_key") or None,
+        },
+        "embedder": {
+            "provider": state["embed_provider"],
+            "model": state["embed_model"],
+            "base_url": state.get("embed_base_url") or None,
+            "api_key": state.get("embed_api_key") or None,
+        },
+    }
+
+
+def _select_index(options: list[str], preferred: str) -> int:
+    if preferred in options:
+        return options.index(preferred)
+    return 0
 
 
 def _is_junk_file(filename: str) -> bool:
@@ -60,11 +94,14 @@ def _is_junk_file(filename: str) -> bool:
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
+provider_defaults = get_frontend_provider_defaults()
 
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
+
+provider_catalog = _load_provider_catalog()
 
 
 def _location_suffix(pages: list[int], slides: list[int]) -> str:
@@ -93,7 +130,99 @@ def _submit_feedback(query_id: str, rating: str, comment: str) -> None:
         st.error(f"Feedback failed: {exc}")
 
 
+def _http_error_detail(exc: httpx.HTTPError) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+
+    if isinstance(body, dict) and "detail" in body:
+        return f"{exc} -- {body['detail']}"
+    if isinstance(body, str) and body.strip():
+        return f"{exc} -- {body.strip()}"
+    return str(exc)
+
+
 with st.sidebar:
+    with st.expander("Runtime providers", expanded=False):
+        st.caption("These values override backend .env defaults for this UI session only.")
+
+        llm_options = _provider_options(provider_catalog, "llm")
+        embed_options = _provider_options(provider_catalog, "embedder")
+
+        llm_provider_labels = {
+            key: f"{key} - {value['label']}" for key, value in llm_options.items()
+        }
+        llm_default = provider_defaults.llm_provider
+        llm_provider = st.selectbox(
+            "LLM provider",
+            options=list(llm_options.keys()),
+            index=_select_index(list(llm_options.keys()), llm_default),
+            key="llm_provider",
+            format_func=lambda p: llm_provider_labels[p],
+        )
+        llm_models = llm_options[llm_provider]["models"]
+        llm_default_model = provider_defaults.llm_model
+        st.selectbox(
+            "LLM model",
+            options=llm_models,
+            index=_select_index(llm_models, llm_default_model),
+            key="llm_model",
+        )
+        st.text_input(
+            "LLM base URL",
+            key="llm_base_url",
+            value=provider_defaults.llm_base_url or "",
+        )
+        st.text_input(
+            "LLM API key",
+            key="llm_api_key",
+            value=provider_defaults.llm_api_key or "",
+            type="password",
+        )
+
+        embed_provider_labels = {
+            key: f"{key} - {value['label']}" for key, value in embed_options.items()
+        }
+        embed_default = provider_defaults.embed_provider
+        embed_provider = st.selectbox(
+            "Embedder provider",
+            options=list(embed_options.keys()),
+            index=_select_index(list(embed_options.keys()), embed_default),
+            key="embed_provider",
+            format_func=lambda p: embed_provider_labels[p],
+        )
+        embed_models = embed_options[embed_provider]["models"]
+        embed_default_model = provider_defaults.embed_model
+        st.selectbox(
+            "Embedder model",
+            options=embed_models,
+            index=_select_index(embed_models, embed_default_model),
+            key="embed_model",
+        )
+        st.text_input(
+            "Embedder base URL",
+            key="embed_base_url",
+            value=provider_defaults.embed_base_url or "",
+        )
+        st.text_input(
+            "Embedder API key",
+            key="embed_api_key",
+            value=provider_defaults.embed_api_key or "",
+            type="password",
+        )
+
+        apply_runtime_overrides = st.checkbox(
+            "Use runtime provider overrides from this page",
+            value=False,
+        )
+
+    runtime_overrides = _runtime_overrides_payload(st.session_state)
+
+    st.divider()
     st.header("Ingest a document")
     st.caption(f"API: {api_base_url}")
     try:
@@ -121,7 +250,17 @@ with st.sidebar:
                 )
                 response = httpx.post(
                     f"{api_base_url}/ingest",
-                    files={"file": file_payload},
+                    files=(
+                        {
+                            "file": file_payload,
+                            "runtime_overrides_json": (
+                                None,
+                                json.dumps({"embedder": runtime_overrides["embedder"]}),
+                            ),
+                        }
+                        if apply_runtime_overrides
+                        else {"file": file_payload}
+                    ),
                     timeout=120.0,
                 )
                 response.raise_for_status()
@@ -140,7 +279,7 @@ with st.sidebar:
                         f"chunks, {body['num_child_chunks']} child chunks."
                     )
             except httpx.HTTPError as exc:
-                st.error(f"Ingest failed: {exc}")
+                st.error(f"Ingest failed: {_http_error_detail(exc)}")
 
     st.divider()
     st.header("Bulk ingest a folder")
@@ -186,7 +325,19 @@ with st.sidebar:
                     uploaded_file.type,
                 )
                 response = httpx.post(
-                    f"{api_base_url}/ingest", files={"file": file_payload}, timeout=120.0
+                    f"{api_base_url}/ingest",
+                    files=(
+                        {
+                            "file": file_payload,
+                            "runtime_overrides_json": (
+                                None,
+                                json.dumps({"embedder": runtime_overrides["embedder"]}),
+                            ),
+                        }
+                        if apply_runtime_overrides
+                        else {"file": file_payload}
+                    ),
+                    timeout=120.0,
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -194,7 +345,7 @@ with st.sidebar:
                 if body["status"] == "duplicate_content":
                     duplicates.append(f"{uploaded_file.name} (same as {body['duplicate_of']})")
             except httpx.HTTPError as exc:
-                failures.append(f"{uploaded_file.name}: {exc}")
+                failures.append(f"{uploaded_file.name}: {_http_error_detail(exc)}")
             progress.progress(i / len(good_files))
 
         status_line.empty()
@@ -286,12 +437,22 @@ if ask_submitted and question.strip():
     try:
         response = httpx.post(
             f"{api_base_url}/query",
-            json={
-                "question": question,
-                "retrieval_method": retrieval_method,
-                "top_k": top_k,
-                "rerank": rerank,
-            },
+            json=(
+                {
+                    "question": question,
+                    "retrieval_method": retrieval_method,
+                    "top_k": top_k,
+                    "rerank": rerank,
+                    "runtime_overrides": runtime_overrides,
+                }
+                if apply_runtime_overrides
+                else {
+                    "question": question,
+                    "retrieval_method": retrieval_method,
+                    "top_k": top_k,
+                    "rerank": rerank,
+                }
+            ),
             timeout=120.0,
         )
         response.raise_for_status()
@@ -303,7 +464,7 @@ if ask_submitted and question.strip():
         # rerun picks up the updated count.
         st.rerun()
     except httpx.HTTPError as exc:
-        st.error(f"Query failed: {exc}")
+        st.error(f"Query failed: {_http_error_detail(exc)}")
 
 result = st.session_state.last_result
 if result is not None:

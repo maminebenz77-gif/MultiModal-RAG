@@ -73,6 +73,18 @@ class WipeResponse(BaseModel):
     the corpus itself is reset."""
 
 
+class ProviderOverride(BaseModel):
+    provider: str
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+class RuntimeOverrides(BaseModel):
+    llm: ProviderOverride | None = None
+    embedder: ProviderOverride | None = None
+
+
 class QueryRequest(BaseModel):
     question: str
     retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID_RRF
@@ -88,6 +100,10 @@ class QueryRequest(BaseModel):
     filter (see Retriever usage in routers/query.py), not a native store
     query. Fine at this corpus size; would need real store-level
     filtering to scale."""
+
+    runtime_overrides: RuntimeOverrides | None = None
+    """Optional per-request provider overrides from the UI. When unset,
+    the backend uses the active .env profile defaults."""
 
 
 class CitationOut(BaseModel):

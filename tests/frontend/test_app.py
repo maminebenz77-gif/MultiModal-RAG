@@ -25,7 +25,7 @@ def test_app_renders_title_and_sidebar() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
     assert at.title[0].value == "Multimodal RAG Demo"
-    assert at.sidebar.header[0].value == "Ingest a document"
+    assert any(h.value == "Ingest a document" for h in at.sidebar.header)
 
 
 def test_ingest_without_a_file_shows_a_warning() -> None:

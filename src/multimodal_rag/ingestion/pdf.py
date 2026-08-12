@@ -35,14 +35,7 @@ _TYPE_MAP = {
 
 
 def parse_pdf(path: Path, summarize_tables: bool = False) -> list[Element]:
-    raw_elements = partition_pdf(
-        filename=str(path),
-        strategy="hi_res",
-        infer_table_structure=True,
-        extract_images_in_pdf=True,
-        extract_image_block_types=["Image"],
-        extract_image_block_to_payload=True,
-    )
+    raw_elements = _partition_pdf_with_fallback(path)
     describer = ImageDescriber()
 
     elements: list[Element] = []
@@ -92,6 +85,28 @@ def parse_pdf(path: Path, summarize_tables: bool = False) -> list[Element]:
         )
 
     return elements
+
+
+def _partition_pdf_with_fallback(path: Path) -> list[Any]:
+    try:
+        return partition_pdf(
+            filename=str(path),
+            strategy="hi_res",
+            infer_table_structure=True,
+            extract_images_in_pdf=True,
+            extract_image_block_types=["Image"],
+            extract_image_block_to_payload=True,
+        )
+    except Exception:
+        # Some environments cannot download/initialize the hi_res layout
+        # model (e.g. restricted network). Fall back to text-first parsing
+        # instead of failing the entire ingest request.
+        return partition_pdf(
+            filename=str(path),
+            strategy="fast",
+            infer_table_structure=False,
+            extract_images_in_pdf=False,
+        )
 
 
 def _table_to_markdown(raw: Any) -> str:

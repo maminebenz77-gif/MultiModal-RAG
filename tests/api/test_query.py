@@ -95,20 +95,28 @@ async def test_query_rejects_top_k_out_of_range(client: httpx.AsyncClient) -> No
 
 
 async def test_query_with_rerank_true_succeeds_when_a_reranker_is_configured(
-    client: httpx.AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    await ingest_sample_doc(client)
+    class _FakeReranker(Reranker):
+        def rerank(self, query: str, documents: list[str]) -> list[int]:
+            return list(range(len(documents)))
 
-    response = await client.post(
-        "/query",
-        json={
-            "question": "How does local inference latency compare to the internal gateway?",
-            "rerank": True,
-            "top_k": 3,
-        },
-    )
+    monkeypatch.setattr("multimodal_rag.api.main.get_reranker", lambda settings=None: _FakeReranker())
 
-    assert response.status_code == 200
+    async with make_client(tmp_path) as client:
+        await ingest_sample_doc(client)
+
+        response = await client.post(
+            "/query",
+            json={
+                "question": "How does local inference latency compare to the internal gateway?",
+                "rerank": True,
+                "top_k": 3,
+            },
+        )
+
+        assert response.status_code == 200
 
 
 async def test_query_with_rerank_true_returns_400_when_no_reranker_is_configured(
@@ -122,3 +130,51 @@ async def test_query_with_rerank_true_returns_400_when_no_reranker_is_configured
     async with make_client(tmp_path) as ac:
         response = await ac.post("/query", json={"question": "anything", "rerank": True})
         assert response.status_code == 400
+
+
+async def test_query_returns_503_when_llm_provider_fails(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FailingLLM(LLMProvider):
+        def generate(self, messages: list[dict[str, str]]) -> str:
+            raise RuntimeError("upstream model unavailable")
+
+    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: _FailingLLM())
+
+    response = await client.post("/query", json={"question": "anything"})
+    assert response.status_code == 503
+    assert "Query generation failed" in response.json()["detail"]
+
+
+async def test_query_runtime_overrides_use_llm_provider_from_request(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await ingest_sample_doc(client)
+
+    class _OverrideLLM(LLMProvider):
+        def generate(self, messages: list[dict[str, str]]) -> str:
+            return "Override answer ⟦1⟧."
+
+    monkeypatch.setattr(
+        "multimodal_rag.api.routers.query.llm_from_override",
+        lambda **_: _OverrideLLM(),
+    )
+
+    response = await client.post(
+        "/query",
+        json={
+            "question": "How does local inference latency compare to the internal gateway?",
+            "runtime_overrides": {
+                "llm": {
+                    "provider": "litellm",
+                    "model": "gpt-4o-mini",
+                    "base_url": "http://localhost:1234",
+                    "api_key": "x",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Override answer ⟦1⟧."

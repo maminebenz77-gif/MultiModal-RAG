@@ -63,10 +63,16 @@ class LiteLLMVisionProvider(VisionProvider):
         max_dimension: int = _DEFAULT_MAX_DIMENSION,
     ) -> None:
         litellm.telemetry = False
-        self._model = model
+        self._model = self._normalize_model(model, base_url)
         self._base_url = base_url
         self._api_key = api_key
         self._max_dimension = max_dimension
+
+    @staticmethod
+    def _normalize_model(model: str, base_url: str | None) -> str:
+        if base_url is not None and "/" not in model:
+            return f"openai/{model}"
+        return model
 
     def describe(self, image_bytes: bytes, prompt: str | None = None) -> str:
         image_bytes = _downscale_if_needed(image_bytes, self._max_dimension)

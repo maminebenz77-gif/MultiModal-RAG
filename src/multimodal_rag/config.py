@@ -27,6 +27,62 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_TRUSTSTORE_INJECTED = False
+
+
+def _is_truthy(raw: str | None) -> bool:
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_env_file_value(path: Path, key: str) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        if name.strip() != key:
+            continue
+        return value.strip().strip('"').strip("'")
+    return None
+
+
+def _should_trust_system_certs_early() -> bool:
+    explicit = os.environ.get("TRUST_SYSTEM_CERTS")
+    if explicit is not None:
+        return _is_truthy(explicit)
+
+    profile = os.environ.get("RAG_ENV", "local").strip().lower()
+    if profile not in {"local", "server"}:
+        return False
+
+    env_file = PROJECT_ROOT / f".env.{profile}"
+    from_file = _read_env_file_value(env_file, "TRUST_SYSTEM_CERTS")
+    return _is_truthy(from_file)
+
+
+def _inject_truststore_if_needed() -> None:
+    global _TRUSTSTORE_INJECTED
+    if _TRUSTSTORE_INJECTED:
+        return
+    if not _should_trust_system_certs_early():
+        return
+
+    import truststore
+
+    truststore.inject_into_ssl()
+    _TRUSTSTORE_INJECTED = True
+
+
+# Providers can import litellm/openai during module import, so TLS trust
+# must be patched before provider modules are imported anywhere.
+_inject_truststore_if_needed()
 
 
 class RagEnv(StrEnum):
@@ -118,15 +174,9 @@ def load_settings() -> Settings:
     settings = Settings(_env_file=env_file, rag_env=profile)
 
     if settings.trust_system_certs:
-        # Corporate networks (e.g. the work laptop) sit behind a
-        # TLS-inspecting proxy whose root CA is trusted by the OS but not
-        # by certifi's bundled CA list, which httpx/litellm use by default.
-        # truststore patches ssl to defer to the OS trust store instead.
-        # Only enabled where needed (see .env.server / work-machine env
-        # files) — inert everywhere else, so this never changes behavior
-        # on Linux or in CI.
-        import truststore
-        truststore.inject_into_ssl()
+        # Keep this here too for explicitness and idempotence if settings
+        # are loaded in an unusual import order.
+        _inject_truststore_if_needed()
 
     return settings
 

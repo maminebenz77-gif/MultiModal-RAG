@@ -44,12 +44,13 @@ def create_app(
 
         try:
             reranker = await run_in_threadpool(get_reranker, settings)
-        except NotImplementedError:
+        except (NotImplementedError, OSError):
             # Reranking is optional per deployment profile -- a profile
             # without RERANKER_PROVIDER set just can't serve rerank=True
             # requests (Retriever raises a clear error for those), rather
             # than the whole service failing to start over an optional
-            # capability.
+            # capability. OSError covers offline/corporate-network model
+            # download failures for cross-encoder initialization.
             reranker = None
 
         app.state.app_state = AppState(
