@@ -1,6 +1,7 @@
 import base64
 import io
 from typing import Any
+import warnings
 
 import pytest
 from PIL import Image
@@ -155,3 +156,29 @@ class TestLiteLLMVisionProviderDownscaling:
         sent_bytes = base64.b64decode(sent_data_url.split(",", 1)[1])
         sent_image = Image.open(io.BytesIO(sent_bytes))
         assert max(sent_image.width, sent_image.height) == 256
+
+
+def test_litellm_vision_provider_does_not_warn_about_missing_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    def fake_completion(**_kwargs: object) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("multimodal_rag.providers.vision.litellm.completion", fake_completion)
+
+    provider = LiteLLMVisionProvider(model="gpt-4o-mini")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert provider.describe(_TINY_PNG) == "ok"
+
+    assert not any("There is no current event loop" in str(w.message) for w in caught)

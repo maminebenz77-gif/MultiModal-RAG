@@ -162,3 +162,58 @@ def test_pdf_falls_back_to_fast_strategy_if_hi_res_fails(
     assert elements[0].text == "Fallback text."
     assert calls[0]["strategy"] == "hi_res"
     assert calls[1]["strategy"] == "fast"
+
+
+def test_pdf_hi_res_fallback_emits_actionable_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_elements = [
+        FakeUnstructuredElement("NarrativeText", "Fallback text.", FakeMetadata(page_number=1))
+    ]
+
+    def _fake_partition_pdf(**kwargs: Any) -> list[Any]:
+        if kwargs.get("strategy") == "hi_res":
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        return fallback_elements
+
+    monkeypatch.setattr("multimodal_rag.ingestion.pdf.partition_pdf", _fake_partition_pdf)
+    monkeypatch.setattr("multimodal_rag.ingestion.pdf.shutil.which", lambda _name: None)
+
+    with pytest.warns(RuntimeWarning, match="PDF hi_res parsing failed") as warns:
+        elements = parse_pdf(Path("doc.pdf"))
+
+    assert len(elements) == 1
+    msg = str(warns.list[0].message)
+    assert "tesseract not found on PATH" in msg
+    assert "poppler (pdftoppm) not found on PATH" in msg
+    assert "table/image quality may degrade" in msg
+
+
+def test_pdf_uses_local_hi_res_model_directory_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_dir = tmp_path / ".model-cache" / "unstructuredio" / "yolo_x_layout"
+    local_dir.mkdir(parents=True)
+    (local_dir / "yolox_l0.05.onnx").write_bytes(b"fake")
+
+    captured: list[dict[str, Any]] = []
+
+    def _fake_partition_pdf(**kwargs: Any) -> list[Any]:
+        captured.append(kwargs)
+        return [FakeUnstructuredElement("NarrativeText", "ok", FakeMetadata())]
+
+    monkeypatch.setattr("multimodal_rag.ingestion.pdf.partition_pdf", _fake_partition_pdf)
+    monkeypatch.setattr(
+        "multimodal_rag.ingestion.pdf._LOCAL_HI_RES_MODEL_CANDIDATES",
+        [local_dir / "yolox_l0.05.onnx"],
+    )
+    monkeypatch.setattr(
+        "multimodal_rag.ingestion.pdf._LOCAL_HI_RES_MODEL_NAME",
+        "test_local_yolox",
+    )
+
+    elements = parse_pdf(Path("doc.pdf"))
+
+    assert elements[0].text == "ok"
+    assert captured[0]["hi_res_model_name"] == "test_local_yolox"

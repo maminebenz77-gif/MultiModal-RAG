@@ -44,6 +44,9 @@ class IngestResponse(BaseModel):
     num_parent_chunks: int
     num_child_chunks: int
     ingested_at: datetime
+    ingest_warnings: list[str] = Field(default_factory=list)
+    """Non-fatal ingest warnings (e.g., parser fallback from PDF hi_res
+    to fast mode)."""
 
 
 class DocumentSummary(BaseModel):

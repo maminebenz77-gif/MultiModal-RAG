@@ -21,6 +21,7 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
+import warnings
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
@@ -53,6 +54,8 @@ def _ingest_sync(
     doc_id = hashlib.sha256(filename.encode()).hexdigest()
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
+    ingest_warnings: list[str] = []
+
     existing = db.get_document(doc_id)
     if existing is not None and existing.content_hash == content_hash:
         # Byte-identical re-upload of the same filename -- nothing to do.
@@ -63,6 +66,7 @@ def _ingest_sync(
             num_parent_chunks=existing.num_parent_chunks,
             num_child_chunks=existing.num_child_chunks,
             ingested_at=existing.ingested_at,
+            ingest_warnings=ingest_warnings,
         )
 
     # Not a match on THIS filename -- but is this exact content already
@@ -86,6 +90,7 @@ def _ingest_sync(
             num_parent_chunks=existing_by_content.num_parent_chunks,
             num_child_chunks=existing_by_content.num_child_chunks,
             ingested_at=existing_by_content.ingested_at,
+            ingest_warnings=ingest_warnings,
         )
 
     # On Windows, NamedTemporaryFile keeps an open handle that can block
@@ -98,7 +103,10 @@ def _ingest_sync(
         tmp_path = Path(tmp.name)
 
     try:
-        elements = parse_document(tmp_path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            elements = parse_document(tmp_path)
+        ingest_warnings = [str(item.message) for item in caught]
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -143,7 +151,8 @@ def _ingest_sync(
 
     num_parent_chunks = sum(1 for c in chunks if c.parent_id is None)
     num_child_chunks = len(chunks) - num_parent_chunks
-    return db.upsert_document(doc_id, filename, content_hash, num_parent_chunks, num_child_chunks)
+    response = db.upsert_document(doc_id, filename, content_hash, num_parent_chunks, num_child_chunks)
+    return response.model_copy(update={"ingest_warnings": ingest_warnings})
 
 
 def _validate_vector_store_compatibility(

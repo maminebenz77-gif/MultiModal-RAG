@@ -1,8 +1,20 @@
 """Concrete LLMProvider implementations."""
 
+import asyncio
+
 import litellm
 
 from .base import LLMProvider
+
+
+def _ensure_current_event_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        asyncio.get_running_loop()
+        return None
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 
 
 class LiteLLMProvider(LLMProvider):
@@ -23,12 +35,18 @@ class LiteLLMProvider(LLMProvider):
         self._api_key = api_key
 
     def generate(self, messages: list[dict[str, str]]) -> str:
-        response = litellm.completion(
-            model=self._model,
-            messages=messages,
-            base_url=self._base_url,
-            api_key=self._api_key,
-        )
+        owned_loop = _ensure_current_event_loop()
+        try:
+            response = litellm.completion(
+                model=self._model,
+                messages=messages,
+                base_url=self._base_url,
+                api_key=self._api_key,
+            )
+        finally:
+            if owned_loop is not None:
+                owned_loop.close()
+                asyncio.set_event_loop(None)
         content = response.choices[0].message.content
         return content or ""
 

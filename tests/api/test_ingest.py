@@ -1,4 +1,5 @@
 import httpx
+import warnings
 
 from .conftest import SAMPLE_DOC, ingest_sample_doc
 
@@ -68,6 +69,34 @@ async def test_ingest_rejects_empty_file(client: httpx.AsyncClient) -> None:
         "/ingest", files={"file": ("empty.md", b"", "text/markdown")}
     )
     assert response.status_code == 400
+
+
+async def test_ingest_surfaces_non_fatal_parser_warnings(
+    client: httpx.AsyncClient,
+    monkeypatch,
+) -> None:
+    from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
+
+    def _fake_parse_document(_path, summarize_tables: bool = False):
+        warnings.warn("PDF hi_res parsing failed; falling back to fast mode", RuntimeWarning)
+        return [
+            Element(
+                type=ElementType.PARAGRAPH,
+                text="hello",
+                metadata=ElementMetadata(source_file="tmp", position=0),
+            )
+        ]
+
+    monkeypatch.setattr("multimodal_rag.api.routers.ingest.parse_document", _fake_parse_document)
+
+    response = await client.post(
+        "/ingest", files={"file": ("warn.pdf", b"not-empty", "application/pdf")}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ingested"
+    assert any("falling back to fast mode" in w for w in body["ingest_warnings"])
 
 
 async def test_renaming_identical_content_is_recognized_as_a_duplicate_not_reingested(

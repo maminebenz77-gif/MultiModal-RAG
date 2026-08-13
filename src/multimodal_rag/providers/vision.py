@@ -1,5 +1,6 @@
 """Concrete VisionProvider implementations."""
 
+import asyncio
 import base64
 import io
 
@@ -16,6 +17,16 @@ _DEFAULT_PROMPT = (
 )
 
 _DEFAULT_MAX_DIMENSION = 1024
+
+
+def _ensure_current_event_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        asyncio.get_running_loop()
+        return None
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 
 
 def _downscale_if_needed(image_bytes: bytes, max_dimension: int) -> bytes:
@@ -75,26 +86,32 @@ class LiteLLMVisionProvider(VisionProvider):
         return model
 
     def describe(self, image_bytes: bytes, prompt: str | None = None) -> str:
-        image_bytes = _downscale_if_needed(image_bytes, self._max_dimension)
-        mime_type = magic.from_buffer(image_bytes, mime=True)
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        response = litellm.completion(
-            model=self._model,
-            base_url=self._base_url,
-            api_key=self._api_key,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt or _DEFAULT_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-                        },
-                    ],
-                }
-            ],
-        )
+        owned_loop = _ensure_current_event_loop()
+        try:
+            image_bytes = _downscale_if_needed(image_bytes, self._max_dimension)
+            mime_type = magic.from_buffer(image_bytes, mime=True)
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            response = litellm.completion(
+                model=self._model,
+                base_url=self._base_url,
+                api_key=self._api_key,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt or _DEFAULT_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                            },
+                        ],
+                    }
+                ],
+            )
+        finally:
+            if owned_loop is not None:
+                owned_loop.close()
+                asyncio.set_event_loop(None)
         content = response.choices[0].message.content
         return content or ""
 

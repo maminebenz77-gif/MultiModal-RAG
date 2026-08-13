@@ -17,10 +17,14 @@ chart or otherwise, comes back as a generic "Image" element.
 
 import base64
 from pathlib import Path
+import shutil
 from typing import Any
+import warnings
 
 from bs4 import BeautifulSoup
 from unstructured.partition.pdf import partition_pdf
+from unstructured_inference.models.base import register_new_model
+from unstructured_inference.models.yolox import YOLOX_LABEL_MAP, UnstructuredYoloXModel
 
 from .schema import Element, ElementMetadata, ElementType
 from .tables import rows_to_markdown, summarize_table
@@ -32,6 +36,13 @@ _TYPE_MAP = {
     "UncategorizedText": ElementType.PARAGRAPH,
     "ListItem": ElementType.PARAGRAPH,
 }
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_LOCAL_HI_RES_MODEL_CANDIDATES = [
+    _PROJECT_ROOT / ".model-cache" / "unstructuredio" / "yolo_x_layout" / "yolox_l0.05.onnx",
+    _PROJECT_ROOT / ".model-cacheunstructuredioyolo_x_layout" / "yolox_l0.05.onnx",
+]
+_LOCAL_HI_RES_MODEL_NAME = "multimodal_rag_local_yolox"
 
 
 def parse_pdf(path: Path, summarize_tables: bool = False) -> list[Element]:
@@ -89,6 +100,9 @@ def parse_pdf(path: Path, summarize_tables: bool = False) -> list[Element]:
 
 def _partition_pdf_with_fallback(path: Path) -> list[Any]:
     try:
+        hi_res_kwargs = {}
+        if local_model_name := _local_hi_res_model_name():
+            hi_res_kwargs["hi_res_model_name"] = local_model_name
         return partition_pdf(
             filename=str(path),
             strategy="hi_res",
@@ -96,17 +110,66 @@ def _partition_pdf_with_fallback(path: Path) -> list[Any]:
             extract_images_in_pdf=True,
             extract_image_block_types=["Image"],
             extract_image_block_to_payload=True,
+            **hi_res_kwargs,
         )
-    except Exception:
+    except Exception as exc:
         # Some environments cannot download/initialize the hi_res layout
         # model (e.g. restricted network). Fall back to text-first parsing
         # instead of failing the entire ingest request.
+        warnings.warn(_hi_res_fallback_message(exc), RuntimeWarning, stacklevel=2)
         return partition_pdf(
             filename=str(path),
             strategy="fast",
             infer_table_structure=False,
             extract_images_in_pdf=False,
         )
+
+
+def _local_hi_res_model_path() -> Path | None:
+    for candidate in _LOCAL_HI_RES_MODEL_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _local_hi_res_model_name() -> str | None:
+    local_model_path = _local_hi_res_model_path()
+    if local_model_path is None:
+        return None
+
+    register_new_model(
+        {
+            _LOCAL_HI_RES_MODEL_NAME: {
+                "model_path": str(local_model_path),
+                "label_map": YOLOX_LABEL_MAP,
+            }
+        },
+        UnstructuredYoloXModel,
+    )
+    return _LOCAL_HI_RES_MODEL_NAME
+
+
+def _hi_res_fallback_message(exc: Exception) -> str:
+    hints: list[str] = []
+
+    if shutil.which("tesseract") is None:
+        hints.append("tesseract not found on PATH")
+    if shutil.which("pdftoppm") is None:
+        hints.append("poppler (pdftoppm) not found on PATH")
+    if _local_hi_res_model_path() is None:
+        hints.append("local YOLOX hi_res model not found in .model-cache")
+
+    message = (
+        "PDF hi_res parsing failed; falling back to fast mode (table/image quality may degrade). "
+        f"Cause: {type(exc).__name__}: {exc}."
+    )
+    if hints:
+        message += " Environment checks: " + ", ".join(hints) + "."
+    message += (
+        " If your network uses custom TLS/proxy, ensure model downloads for "
+        "unstructured layout detection are reachable and trusted."
+    )
+    return message
 
 
 def _table_to_markdown(raw: Any) -> str:

@@ -6,6 +6,7 @@ missing model cache, or a bad base_url shows up here instead of mid-run.
 """
 
 from collections.abc import Callable
+import shutil
 
 from .config import get_settings
 from .device import resolve_device
@@ -33,6 +34,10 @@ def main() -> None:
     print(f"llm              : {settings.llm_provider} ({settings.llm_model})")
     print(f"embeddings       : {settings.embed_provider} ({settings.embed_model})")
     print(f"vision           : {settings.vision_provider or '(not configured)'}")
+    print()
+    print("pdf hi_res prerequisites:")
+    print(f"  tesseract      : {shutil.which('tesseract') or 'MISSING (not on PATH)'}")
+    print(f"  pdftoppm       : {shutil.which('pdftoppm') or 'MISSING (not on PATH)'}")
     print()
     print("wiring providers via factories:")
     _try("llm", lambda: get_llm(settings))
