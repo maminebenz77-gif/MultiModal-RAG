@@ -13,6 +13,7 @@ import os
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
+import warnings
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +26,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # everywhere in this project, and doesn't import litellm itself.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+warnings.filterwarnings(
+    "ignore",
+    message=".*unauthenticated requests to the HF Hub.*",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _TRUSTSTORE_INJECTED = False

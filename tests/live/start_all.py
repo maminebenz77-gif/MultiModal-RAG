@@ -20,6 +20,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_START_SCRIPT = PROJECT_ROOT / ".local-services" / "scripts" / "start-stores.ps1"
+_QDRANT_PORT = 6333
+_ELASTIC_PORT = 9200
+_BACKEND_PORT = 8000
+_FRONTEND_PORT = 8501
 
 
 def _try_start_stores_with_docker() -> bool:
@@ -82,8 +86,13 @@ def _is_port_open(host: str, port: int) -> bool:
 def main() -> None:
     store_mode = _start_stores()
 
+    if not _wait_for_port("127.0.0.1", _QDRANT_PORT, timeout=60.0):
+        raise RuntimeError("Qdrant did not open port 6333 within 60s")
+    if not _wait_for_port("127.0.0.1", _ELASTIC_PORT, timeout=60.0):
+        raise RuntimeError("Elasticsearch did not open port 9200 within 60s")
+
     backend = None
-    if _is_port_open("127.0.0.1", 8000):
+    if _is_port_open("127.0.0.1", _BACKEND_PORT):
         print("Backend port 8000 already in use; reusing existing backend process.")
     else:
         print("Starting backend (FastAPI, http://127.0.0.1:8000)...")
@@ -94,8 +103,11 @@ def main() -> None:
             env=backend_env,
         )
 
+    if not _wait_for_port("127.0.0.1", _BACKEND_PORT, timeout=60.0):
+        raise RuntimeError("Backend did not open port 8000 within 60s")
+
     frontend = None
-    if _is_port_open("127.0.0.1", 8501):
+    if _is_port_open("127.0.0.1", _FRONTEND_PORT):
         print("Frontend port 8501 already in use; reusing existing Streamlit process.")
     else:
         print("Starting frontend (Streamlit, http://127.0.0.1:8501)...")
@@ -120,7 +132,7 @@ def main() -> None:
         )
 
     # Launch the UI only once Streamlit is actually listening.
-    if _wait_for_port("127.0.0.1", 8501, timeout=60.0):
+    if _wait_for_port("127.0.0.1", _FRONTEND_PORT, timeout=60.0):
         webbrowser.open("http://127.0.0.1:8501", new=2)
     else:
         print("Streamlit did not open port 8501 within 60s; check its logs above.")
