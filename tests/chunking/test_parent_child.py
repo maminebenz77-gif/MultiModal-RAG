@@ -1,4 +1,5 @@
 from multimodal_rag.chunking.parent_child import ParentChildChunker
+from multimodal_rag.chunking.structure_aware import StructureAwareChunker
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
 
 
@@ -27,6 +28,7 @@ def test_short_section_produces_one_parent_and_one_child() -> None:
     children = [c for c in chunks if c.parent_id is not None]
     assert len(parents) == 1
     assert len(children) == 1
+    assert parents[0].id == StructureAwareChunker().chunk(elements)[0].id
     assert children[0].parent_id == parents[0].id
 
 
@@ -43,6 +45,23 @@ def test_long_section_produces_multiple_children_under_one_parent() -> None:
     assert len(parents) == 1
     assert len(children) > 1
     assert all(c.parent_id == parents[0].id for c in children)
+
+
+def test_oversized_section_produces_bounded_parents_with_linked_children() -> None:
+    long_body = " ".join(f"Sentence number {i}." for i in range(100))
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.PARAGRAPH, 1, long_body),
+    ]
+    chunks = ParentChildChunker(
+        parent_chunk_size=300, child_chunk_size=100, child_chunk_overlap=0
+    ).chunk(elements)
+
+    parents = [c for c in chunks if c.parent_id is None]
+    children = [c for c in chunks if c.parent_id is not None]
+    assert len(parents) > 1
+    assert all(len(parent.text) <= 300 for parent in parents)
+    assert {child.parent_id for child in children} == {parent.id for parent in parents}
 
 
 def test_multiple_sections_produce_independently_linked_parent_child_groups() -> None:
