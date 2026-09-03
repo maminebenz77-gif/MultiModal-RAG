@@ -8,10 +8,12 @@ startup answers that, rather than hardcoding a dimension that would
 silently drift out of sync if the configured embedding model changed.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
@@ -26,6 +28,17 @@ from .routers import documents, feedback, health, ingest, metrics, query
 
 _DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
 _COLLECTION_NAME = "api_corpus"
+_logger = logging.getLogger(__name__)
+
+
+def _load_optional_reranker(settings):
+    try:
+        return get_reranker(settings)
+    except (NotImplementedError, OSError, httpx.HTTPError) as exc:
+        # Reranking is optional; a missing cache or temporary model-download
+        # failure must not prevent hybrid search from starting.
+        _logger.warning("Reranker unavailable; starting without reranking: %s", exc)
+        return None
 
 
 def create_app(
@@ -42,16 +55,7 @@ def create_app(
         await run_in_threadpool(vector_store.ensure_ready, probe[0].dimension)
         await run_in_threadpool(keyword_store.ensure_ready)
 
-        try:
-            reranker = await run_in_threadpool(get_reranker, settings)
-        except (NotImplementedError, OSError):
-            # Reranking is optional per deployment profile -- a profile
-            # without RERANKER_PROVIDER set just can't serve rerank=True
-            # requests (Retriever raises a clear error for those), rather
-            # than the whole service failing to start over an optional
-            # capability. OSError covers offline/corporate-network model
-            # download failures for cross-encoder initialization.
-            reranker = None
+        reranker = await run_in_threadpool(_load_optional_reranker, settings)
 
         app.state.app_state = AppState(
             vector_store=vector_store,
