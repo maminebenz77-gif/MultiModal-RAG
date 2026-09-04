@@ -98,6 +98,8 @@ provider_defaults = get_frontend_provider_defaults()
 
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
 
@@ -363,6 +365,12 @@ with st.sidebar:
 
 st.title("Multimodal RAG Demo")
 
+conversation_col, _ = st.columns([1, 5])
+if conversation_col.button("New conversation"):
+    st.session_state.conversation_history = []
+    st.session_state.last_result = None
+    st.rerun()
+
 with st.expander("📈 Metrics"):
     try:
         metrics = httpx.get(f"{api_base_url}/metrics", timeout=10.0).json()
@@ -434,29 +442,26 @@ with st.form("query_form"):
 
 if ask_submitted and question.strip():
     retrieval_method, rerank = _METHOD_OPTIONS[method_label]
+    query_payload = {
+        "question": question,
+        "history": st.session_state.conversation_history,
+        "retrieval_method": retrieval_method,
+        "top_k": top_k,
+        "rerank": rerank,
+    }
+    if apply_runtime_overrides:
+        query_payload["runtime_overrides"] = runtime_overrides
     try:
         response = httpx.post(
             f"{api_base_url}/query",
-            json=(
-                {
-                    "question": question,
-                    "retrieval_method": retrieval_method,
-                    "top_k": top_k,
-                    "rerank": rerank,
-                    "runtime_overrides": runtime_overrides,
-                }
-                if apply_runtime_overrides
-                else {
-                    "question": question,
-                    "retrieval_method": retrieval_method,
-                    "top_k": top_k,
-                    "rerank": rerank,
-                }
-            ),
+            json=query_payload,
             timeout=120.0,
         )
         response.raise_for_status()
         st.session_state.last_result = response.json()
+        st.session_state.conversation_history.append(
+            {"question": question, "answer": st.session_state.last_result["answer"]}
+        )
         # Same reason as the feedback rerun above: the backend recorded
         # this query (and its refusal/method) before this response came
         # back, but the Metrics panel already rendered earlier in this

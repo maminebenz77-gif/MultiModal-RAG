@@ -30,13 +30,17 @@ router = APIRouter()
 @contextmanager
 def _temporary_llm_provider(llm: LLMProvider):
     from ...generation import chain as chain_module
+    from ...generation import rewrite as rewrite_module
 
-    original = chain_module.get_llm
+    original_chain_llm = chain_module.get_llm
+    original_rewrite_llm = rewrite_module.get_llm
     chain_module.get_llm = lambda: llm
+    rewrite_module.get_llm = lambda: llm
     try:
         yield
     finally:
-        chain_module.get_llm = original
+        chain_module.get_llm = original_chain_llm
+        rewrite_module.get_llm = original_rewrite_llm
 
 
 def _build_retriever_for_request(
@@ -94,6 +98,7 @@ async def query(
         rerank=request.rerank,
         resolve_parent_context=True,
     )
+    history = [(turn.question, turn.answer) for turn in request.history]
 
     try:
         overrides = request.runtime_overrides
@@ -109,11 +114,11 @@ async def query(
 
             def _answer_with_override():
                 with _temporary_llm_provider(llm):
-                    return chain.answer(request.question, None, request.doc_ids)
+                    return chain.answer(request.question, history, request.doc_ids)
 
             result = await run_in_threadpool(_answer_with_override)
         else:
-            result = await run_in_threadpool(chain.answer, request.question, None, request.doc_ids)
+            result = await run_in_threadpool(chain.answer, request.question, history, request.doc_ids)
     except ValueError as exc:
         # Retriever._rerank raises this when rerank=True but no Reranker
         # is configured for this deployment -- a config gap, not a bad

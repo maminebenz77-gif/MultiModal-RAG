@@ -131,3 +131,15 @@ def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
 
     assert not at.exception
     assert at.session_state["last_result"] is None
+
+
+def test_new_conversation_clears_session_history() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+    at.session_state["conversation_history"] = [{"question": "Earlier", "answer": "Answer"}]
+
+    next(b for b in at.main.button if b.label == "New conversation").click()
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["conversation_history"] == []

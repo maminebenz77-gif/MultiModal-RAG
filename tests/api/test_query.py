@@ -19,8 +19,10 @@ from .conftest import ingest_sample_doc, make_client
 class _FakeLLM(LLMProvider):
     def __init__(self, response: str = "Fixed answer ⟦1⟧.") -> None:
         self._response = response
+        self.last_messages: list[dict[str, str]] | None = None
 
     def generate(self, messages: list[dict[str, str]]) -> str:
+        self.last_messages = messages
         return self._response
 
 
@@ -49,6 +51,33 @@ async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient)
     assert "query_id" in body
     assert len(body["retrieved_chunks"]) >= 1
     assert "text" in body["retrieved_chunks"][0]
+
+
+async def test_query_passes_history_to_the_rewrite_step(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await ingest_sample_doc(client)
+
+    rewrite_llm = _FakeLLM("How does local inference latency compare to the internal gateway?")
+    monkeypatch.setattr("multimodal_rag.generation.rewrite.get_llm", lambda: rewrite_llm)
+
+    response = await client.post(
+        "/query",
+        json={
+            "question": "How does it compare?",
+            "history": [
+                {
+                    "question": "What is the local inference latency?",
+                    "answer": "It is 220ms.",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert rewrite_llm.last_messages is not None
+    assert "What is the local inference latency?" in rewrite_llm.last_messages[1]["content"]
+    assert "It is 220ms." in rewrite_llm.last_messages[1]["content"]
 
 
 async def test_query_with_no_ingested_documents_still_returns_a_response(

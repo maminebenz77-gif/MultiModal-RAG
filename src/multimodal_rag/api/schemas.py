@@ -88,8 +88,18 @@ class RuntimeOverrides(BaseModel):
     embedder: ProviderOverride | None = None
 
 
+class ConversationTurn(BaseModel):
+    question: str = Field(min_length=1, max_length=4_000)
+    answer: str = Field(min_length=1, max_length=12_000)
+
+
 class QueryRequest(BaseModel):
     question: str
+    history: list[ConversationTurn] = Field(default_factory=list, max_length=10)
+    """Earlier user/assistant turns, oldest first. This is used only to
+    rewrite a follow-up into a standalone retrieval question; it is not
+    included as evidence in the grounded answer prompt."""
+
     retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID_RRF
     top_k: int = Field(default=5, ge=1, le=50)
     rerank: bool = False
