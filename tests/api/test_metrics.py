@@ -2,21 +2,29 @@ import httpx
 import pytest
 
 from multimodal_rag.providers.base import LLMProvider
+from multimodal_rag.providers.schema import ToolResponse
 
 from .conftest import ingest_sample_doc
 
 
 class _FakeLLM(LLMProvider):
+    """Answers directly with no tool calls -- these tests only care about
+    the final answer text (for refusal detection) and query-count
+    bookkeeping, not retrieval, so no search needs to actually happen."""
+
     def __init__(self, response: str = "Fixed answer ⟦1⟧.") -> None:
         self._response = response
 
     def generate(self, messages: list[dict[str, str]]) -> str:
         return self._response
 
+    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+        return ToolResponse(content=self._response, tool_calls=[])
+
 
 @pytest.fixture(autouse=True)
 def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: _FakeLLM())
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
 
 
 async def test_metrics_on_a_fresh_service_are_all_zero(client: httpx.AsyncClient) -> None:
@@ -56,7 +64,7 @@ async def test_refusal_rate_reflects_refused_queries(
     from multimodal_rag.generation.prompt import REFUSAL_TEXT
 
     monkeypatch.setattr(
-        "multimodal_rag.generation.chain.get_llm", lambda: _FakeLLM(REFUSAL_TEXT)
+        "multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM(REFUSAL_TEXT)
     )
 
     await client.post("/query", json={"question": "anything"})

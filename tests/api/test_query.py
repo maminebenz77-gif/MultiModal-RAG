@@ -12,23 +12,49 @@ import httpx
 import pytest
 
 from multimodal_rag.providers.base import LLMProvider, Reranker
+from multimodal_rag.providers.schema import ToolCall, ToolResponse
 
 from .conftest import ingest_sample_doc, make_client
 
 
 class _FakeLLM(LLMProvider):
+    """Simulates the minimal one-search agent turn: a tool call (echoing
+    the latest user message as the search query) followed by a fixed
+    final answer. That's enough to exercise real retrieval (and so real
+    citation resolution, and real doc_ids/rerank plumbing) without
+    re-testing the agent's own decomposition/looping behavior -- see
+    generation/test_agent.py for that."""
+
     def __init__(self, response: str = "Fixed answer ⟦1⟧.") -> None:
         self._response = response
         self.last_messages: list[dict[str, str]] | None = None
+        self._searched = False
 
     def generate(self, messages: list[dict[str, str]]) -> str:
         self.last_messages = messages
         return self._response
 
+    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+        self.last_messages = messages
+        if not self._searched:
+            self._searched = True
+            latest_message = messages[-1]["content"]
+            return ToolResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="search_knowledge_base",
+                        arguments={"query": latest_message},
+                    )
+                ],
+            )
+        return ToolResponse(content=self._response, tool_calls=[])
+
 
 @pytest.fixture(autouse=True)
 def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: _FakeLLM())
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
 
 
 async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient) -> None:
@@ -53,13 +79,13 @@ async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient)
     assert "text" in body["retrieved_chunks"][0]
 
 
-async def test_query_passes_history_to_the_rewrite_step(
+async def test_query_passes_history_as_real_chat_messages_to_the_agent(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await ingest_sample_doc(client)
 
-    rewrite_llm = _FakeLLM("How does local inference latency compare to the internal gateway?")
-    monkeypatch.setattr("multimodal_rag.generation.rewrite.get_llm", lambda: rewrite_llm)
+    fake_llm = _FakeLLM("Fixed answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
 
     response = await client.post(
         "/query",
@@ -75,9 +101,26 @@ async def test_query_passes_history_to_the_rewrite_step(
     )
 
     assert response.status_code == 200
-    assert rewrite_llm.last_messages is not None
-    assert "What is the local inference latency?" in rewrite_llm.last_messages[1]["content"]
-    assert "It is 220ms." in rewrite_llm.last_messages[1]["content"]
+    messages = fake_llm.last_messages
+    assert messages is not None
+    assert {"role": "user", "content": "What is the local inference latency?"} in messages
+    assert {"role": "assistant", "content": "It is 220ms."} in messages
+    assert {"role": "user", "content": "How does it compare?"} in messages
+
+
+async def test_query_response_includes_needs_clarification_field(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clarifying_llm = _FakeLLM("CLARIFYING QUESTION: Which deployment do you mean?")
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: clarifying_llm)
+
+    response = await client.post("/query", json={"question": "How does it compare?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["needs_clarification"] is True
+    assert body["answer"] == "Which deployment do you mean?"
+    assert body["citations"] == []
 
 
 async def test_query_with_no_ingested_documents_still_returns_a_response(
@@ -168,7 +211,10 @@ async def test_query_returns_503_when_llm_provider_fails(
         def generate(self, messages: list[dict[str, str]]) -> str:
             raise RuntimeError("upstream model unavailable")
 
-    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: _FailingLLM())
+        def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+            raise RuntimeError("upstream model unavailable")
+
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FailingLLM())
 
     response = await client.post("/query", json={"question": "anything"})
     assert response.status_code == 503
@@ -184,6 +230,9 @@ async def test_query_runtime_overrides_use_llm_provider_from_request(
     class _OverrideLLM(LLMProvider):
         def generate(self, messages: list[dict[str, str]]) -> str:
             return "Override answer ⟦1⟧."
+
+        def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+            return ToolResponse(content="Override answer ⟦1⟧.", tool_calls=[])
 
     monkeypatch.setattr(
         "multimodal_rag.api.routers.query.llm_from_override",

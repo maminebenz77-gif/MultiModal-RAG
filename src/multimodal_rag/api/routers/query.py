@@ -1,11 +1,10 @@
-"""POST /query: retrieve -> generate -> answer with citations.
+"""POST /query: agentic retrieve -> generate -> answer with citations.
 
-retrieval_method/top_k are per-request here even though RagChain
+retrieval_method/top_k are per-request here even though AgentChain
 normally fixes them at construction time (see the demo) -- constructing
-a RagChain is cheap (it just wraps references and builds a LangChain
-pipeline, no I/O), so a fresh one per request is the simplest way to
-let each call choose its own method/top_k against the one shared
-Retriever singleton.
+an AgentChain is cheap (it just wraps references, no I/O), so a fresh
+one per request is the simplest way to let each call choose its own
+method/top_k against the one shared Retriever singleton.
 """
 
 import uuid
@@ -16,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ...config import get_settings
 from ...device import resolve_device
-from ...generation.chain import RagChain
+from ...generation.agent import AgentChain
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
@@ -29,18 +28,14 @@ router = APIRouter()
 
 @contextmanager
 def _temporary_llm_provider(llm: LLMProvider):
-    from ...generation import chain as chain_module
-    from ...generation import rewrite as rewrite_module
+    from ...generation import agent as agent_module
 
-    original_chain_llm = chain_module.get_llm
-    original_rewrite_llm = rewrite_module.get_llm
-    chain_module.get_llm = lambda: llm
-    rewrite_module.get_llm = lambda: llm
+    original_agent_llm = agent_module.get_llm
+    agent_module.get_llm = lambda: llm
     try:
         yield
     finally:
-        chain_module.get_llm = original_chain_llm
-        rewrite_module.get_llm = original_rewrite_llm
+        agent_module.get_llm = original_agent_llm
 
 
 def _build_retriever_for_request(
@@ -91,7 +86,7 @@ async def query(
     except (ValueError, NotImplementedError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    chain = RagChain(
+    agent = AgentChain(
         retriever_for_request,
         method=request.retrieval_method,
         top_k=request.top_k,
@@ -114,11 +109,13 @@ async def query(
 
             def _answer_with_override():
                 with _temporary_llm_provider(llm):
-                    return chain.answer(request.question, history, request.doc_ids)
+                    return agent.answer(request.question, history, request.doc_ids)
 
             result = await run_in_threadpool(_answer_with_override)
         else:
-            result = await run_in_threadpool(chain.answer, request.question, history, request.doc_ids)
+            result = await run_in_threadpool(
+                agent.answer, request.question, history, request.doc_ids
+            )
     except ValueError as exc:
         # Retriever._rerank raises this when rerank=True but no Reranker
         # is configured for this deployment -- a config gap, not a bad
@@ -153,6 +150,7 @@ async def query(
             for c in result.citations
         ],
         refused=result.refused,
+        needs_clarification=result.needs_clarification,
         retrieval_method=request.retrieval_method,
         retrieved_chunks=[
             RetrievedChunkOut(

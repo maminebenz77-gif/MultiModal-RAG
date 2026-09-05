@@ -2,16 +2,20 @@ import httpx
 import pytest
 
 from multimodal_rag.providers.base import LLMProvider
+from multimodal_rag.providers.schema import ToolResponse
 
 
 class _FakeLLM(LLMProvider):
     def generate(self, messages: list[dict[str, str]]) -> str:
         return "Fixed answer ⟦1⟧."
 
+    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+        return ToolResponse(content="Fixed answer ⟦1⟧.", tool_calls=[])
+
 
 @pytest.fixture(autouse=True)
 def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("multimodal_rag.generation.chain.get_llm", lambda: _FakeLLM())
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
 
 
 async def _run_a_query(client: httpx.AsyncClient) -> str:

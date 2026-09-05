@@ -1,5 +1,14 @@
-"""RAG generation chain: rewrite -> retrieve -> grounded prompt -> LLM
--> answer with citations.
+"""RAG generation chain: retrieve -> grounded prompt -> LLM -> answer
+with citations.
+
+This is a pure single-shot chain -- one query in, one grounded answer
+out, no conversation history. It backs the standalone demo
+(generation/demo.py) and is the simplest possible building block for
+"retrieve + generate" on its own. The interactive, multi-turn /query
+endpoint uses AgentChain (generation/agent.py) instead, which decides
+for itself how many searches a message needs and can hold a real
+conversation; RagChain deliberately stays this simple rather than
+growing history/rewrite support a second time.
 
 LCEL provides orchestration/composition; the actual LLM call still goes
 through get_llm(), so "same chain runs against the local OpenAI key and
@@ -12,9 +21,7 @@ vendor coupling the whole providers layer exists to avoid.
 State flows through the chain as a dict, each step adding a key — the
 standard LCEL pattern for carrying auxiliary data (here: the context
 results, needed again after the LLM call to map citation markers back
-to real metadata) alongside the main value. The rewrite step is a no-op
-LLM-call-wise when there's no conversation history, so single-turn
-callers pay nothing extra.
+to real metadata) alongside the main value.
 """
 
 from typing import Any, Protocol
@@ -27,7 +34,6 @@ from ..stores.schema import SearchResult
 from .context import assemble_context
 from .parse import parse_answer
 from .prompt import build_messages
-from .rewrite import rewrite_query
 from .schema import RagAnswer
 
 _DEFAULT_TOKEN_BUDGET = 2000
@@ -68,32 +74,16 @@ class RagChain:
         self._resolve_parent_context = resolve_parent_context
         self._rerank = rerank
         self._chain = (
-            RunnableLambda(self._rewrite)
-            | RunnableLambda(self._retrieve)
+            RunnableLambda(self._retrieve)
             | RunnableLambda(self._build_messages)
             | RunnableLambda(self._call_llm)
             | RunnableLambda(self._parse)
         )
 
-    def answer(
-        self,
-        query: str,
-        history: list[tuple[str, str]] | None = None,
-        doc_ids: list[str] | None = None,
-    ) -> RagAnswer:
-        """`history` is prior (question, answer) turns, oldest first. If
-        non-empty, the query is rewritten into a standalone form before
-        retrieval — see rewrite.py. Omitted or empty, this behaves exactly
-        like single-turn use. `doc_ids`, if given, restricts retrieval to
-        those documents."""
-        result: RagAnswer = self._chain.invoke(
-            {"query": query, "history": history or [], "doc_ids": doc_ids}
-        )
+    def answer(self, query: str, doc_ids: list[str] | None = None) -> RagAnswer:
+        """`doc_ids`, if given, restricts retrieval to those documents."""
+        result: RagAnswer = self._chain.invoke({"query": query, "doc_ids": doc_ids})
         return result
-
-    def _rewrite(self, state: dict[str, Any]) -> dict[str, Any]:
-        query = rewrite_query(state["query"], state["history"])
-        return {**state, "query": query}
 
     def _retrieve(self, state: dict[str, Any]) -> dict[str, Any]:
         results = self._retriever.retrieve(

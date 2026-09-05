@@ -96,9 +96,11 @@ class ConversationTurn(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     history: list[ConversationTurn] = Field(default_factory=list, max_length=10)
-    """Earlier user/assistant turns, oldest first. This is used only to
-    rewrite a follow-up into a standalone retrieval question; it is not
-    included as evidence in the grounded answer prompt."""
+    """Earlier user/assistant turns, oldest first, sent to the agent as
+    real conversation messages (see generation/agent.py) -- it decides
+    for itself, from the actual history, whether/how to search again for
+    a follow-up. A turn whose `answer` was a clarifying question belongs
+    here too, with the user's reply as the next `question`."""
 
     retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID_RRF
     top_k: int = Field(default=5, ge=1, le=50)
@@ -144,6 +146,14 @@ class QueryResponse(BaseModel):
     answer: str
     citations: list[CitationOut]
     refused: bool
+    needs_clarification: bool = False
+    """True if `answer` is a clarifying question the agent asked back
+    instead of searching -- the request was too ambiguous to know what
+    to search for. Not a refusal: no search happened, so `citations` and
+    `retrieved_chunks` are empty. The caller's next /query call should
+    put the user's reply in `history` as this turn's answer, same as any
+    other follow-up."""
+
     retrieval_method: RetrievalMethod
     retrieved_chunks: list[RetrievedChunkOut]
     """Every chunk that made it into the generation context -- lets a

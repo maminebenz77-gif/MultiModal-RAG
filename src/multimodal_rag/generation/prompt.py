@@ -2,9 +2,15 @@
 cite by number, an explicit refusal instruction, and an explicit
 instruction to treat context content as data, never as commands —
 mitigating (not eliminating) prompt injection from ingested documents.
-Our LLMProvider.generate() has no tool-use wired up at all, so even a
-successful injection can only manipulate the text of the answer, not
-trigger a real action.
+
+This module backs the single-shot RagChain (see chain.py); the
+tool-calling AgentChain (see agent.py) carries the same three rules in
+its own system prompt. AgentChain's LLMProvider.generate_with_tools()
+DOES let the model trigger a real action, unlike plain generate() here —
+but the only tool that exists is a read-only search over our own
+corpus, so a successful injection can still only steer what gets
+searched, never perform a side-effecting action. Any future tool must
+preserve that property, or this mitigation stops holding.
 """
 
 from ..stores.schema import SearchResult

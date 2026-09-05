@@ -27,6 +27,13 @@ class RagAnswer(BaseModel):
     refused: bool
     """True if the model indicated the answer isn't in the context."""
 
+    needs_clarification: bool = False
+    """True if the model asked the user a clarifying question instead of
+    searching/answering -- `answer` holds that question, `citations` and
+    `retrieved_chunks` are empty, and `refused` is False (this isn't "no
+    answer in the corpus", it's "not enough information in the request
+    yet to know what to search for"). See generation/agent.py."""
+
     retrieved_chunks: list[SearchResult] = []
     """Every chunk that made it into the generation context, not just the
     ones actually cited -- lets a caller (e.g. the frontend's "retrieved
