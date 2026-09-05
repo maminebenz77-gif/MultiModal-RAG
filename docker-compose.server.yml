@@ -1,0 +1,26 @@
+# Server profile: NVIDIA GPU, no internet at all (allow_external=false
+# is already set inside .env.server -- not repeated here). Model weights
+# are BAKED into the image at build time (see the Dockerfile's prefetch
+# step and scripts/prefetch_models.py) -- nothing to mount, nothing to
+# stage by hand on this box. The trade-off: building the image needs
+# internet access, and updating a model means rebuilding, not swapping a
+# folder.
+#
+# Prerequisite on the host: the NVIDIA Container Toolkit must already be
+# installed (a one-time host setup outside anything Compose or the
+# Dockerfile can do) for the GPU reservation below to mean anything.
+#
+# Run: docker compose -f docker-compose.yml -f docker-compose.server.yml up --build -d
+services:
+  api:
+    env_file:
+      - .env.server
+    environment:
+      - RAG_ENV=server
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -74,3 +74,25 @@ uv run pytest        # run tests
 uv run ruff check .  # lint
 uv run mypy .        # type-check
 ```
+
+## Running with Docker
+
+One image, two profiles — a base `docker-compose.yml` plus one override per environment:
+
+- **Local** (`docker-compose.local.yml`) — CPU/MPS, external providers (OpenAI, litellm) allowed, points at Qdrant + Elasticsearch on `localhost`.
+- **Server** (`docker-compose.server.yml`) — NVIDIA GPU, no internet access at runtime, embedding + reranker model weights baked into the image at build time, points at the internal LLM gateway.
+
+**Local, from clean, one command:**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+```
+
+**Server**, built on a machine with internet access (the weights are downloaded once, at build time, and baked into the image so the server itself never needs internet). Use the wrapper script rather than a bare `docker compose build` — it reads the real `.env.server` so the baked-in weights always match what it configures:
+
+```bash
+uv run python scripts/build_server_image.py
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+```
+
+The server profile also needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed on the host for GPU access, and a real `.env.server` filled in (copy `.env.server.example`).

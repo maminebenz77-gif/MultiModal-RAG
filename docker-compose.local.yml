@@ -1,0 +1,12 @@
+# Local profile: CPU only (Docker Desktop/Colima on macOS runs a Linux
+# VM with no MPS passthrough -- containerized local dev doesn't get the
+# Metal acceleration running the app NATIVELY on the same Mac would),
+# external providers allowed (OpenAI etc.), reads .env.local.
+#
+# Run: docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+services:
+  api:
+    env_file:
+      - .env.local
+    environment:
+      - RAG_ENV=local

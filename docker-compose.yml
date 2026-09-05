@@ -18,6 +18,34 @@ services:
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
 
+  api:
+    build: .
+    depends_on:
+      - qdrant
+      - elasticsearch
+    environment:
+      # True in both profiles once containerized, regardless of what
+      # QDRANT_URL/ELASTIC_URL say in .env.local/.env.server -- those
+      # files were written for the app running NATIVELY, reaching
+      # "localhost" or a real internal IP. Inside a container,
+      # "localhost" means the api container itself; qdrant/elasticsearch
+      # are reachable by SERVICE NAME instead, resolved by Compose's own
+      # internal DNS. Set here (not per-override) because it's true
+      # either way -- only what actually differs per profile (RAG_ENV,
+      # GPU access, offline flags, which .env file) lives in the
+      # local/server override files.
+      - QDRANT_URL=http://qdrant:6333
+      - ELASTIC_URL=http://elasticsearch:9200
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind mount, not a named volume: this is where the sqlite
+      # tracking file (documents/queries/feedback) lives, and it also
+      # brings data/samples/ into the container for free, since it's
+      # already a subdirectory of ./data -- no separate "sample data"
+      # mount needed for local use.
+      - ./data:/app/data
+
 volumes:
   qdrant_data:
   elasticsearch_data:

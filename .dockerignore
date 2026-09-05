@@ -1,0 +1,28 @@
+# Never let real secrets end up in the build context (and therefore
+# possibly an image layer) even by accident -- the container gets its
+# config via compose's env_file: at CONTAINER-START time, not by ever
+# copying these files into the image.
+.env
+.env.*
+!.env.*.example
+
+.git/
+.github/
+
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Not needed inside the API image -- the frontend is a separate
+# deployable that only ever talks to the API over HTTP.
+frontend/
+
+tests/
+docs/
+data/
+*.md
+
+.streamlit/
