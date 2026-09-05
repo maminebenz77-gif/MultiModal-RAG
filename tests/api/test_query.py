@@ -79,32 +79,47 @@ async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient)
     assert "text" in body["retrieved_chunks"][0]
 
 
-async def test_query_passes_history_as_real_chat_messages_to_the_agent(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+async def test_query_without_conversation_id_creates_a_new_conversation(
+    client: httpx.AsyncClient,
 ) -> None:
-    await ingest_sample_doc(client)
-
-    fake_llm = _FakeLLM("Fixed answer ⟦1⟧.")
-    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
-
-    response = await client.post(
-        "/query",
-        json={
-            "question": "How does it compare?",
-            "history": [
-                {
-                    "question": "What is the local inference latency?",
-                    "answer": "It is 220ms.",
-                }
-            ],
-        },
-    )
+    response = await client.post("/query", json={"question": "anything"})
 
     assert response.status_code == 200
-    messages = fake_llm.last_messages
+    assert response.json()["conversation_id"]
+
+
+async def test_query_with_unknown_conversation_id_returns_404(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/query", json={"question": "anything", "conversation_id": "nonexistent"}
+    )
+
+    assert response.status_code == 404
+
+
+async def test_query_continues_history_across_requests_via_conversation_id(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_llm = _FakeLLM("It is 220ms ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: first_llm)
+    first_response = await client.post(
+        "/query", json={"question": "What is the local inference latency?"}
+    )
+    assert first_response.status_code == 200
+    conversation_id = first_response.json()["conversation_id"]
+
+    second_llm = _FakeLLM("Fixed answer ⟦1⟧.")
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: second_llm)
+    second_response = await client.post(
+        "/query",
+        json={"question": "How does it compare?", "conversation_id": conversation_id},
+    )
+
+    assert second_response.status_code == 200
+    assert second_response.json()["conversation_id"] == conversation_id
+    messages = second_llm.last_messages
     assert messages is not None
     assert {"role": "user", "content": "What is the local inference latency?"} in messages
-    assert {"role": "assistant", "content": "It is 220ms."} in messages
+    assert {"role": "assistant", "content": "It is 220ms ⟦1⟧."} in messages
     assert {"role": "user", "content": "How does it compare?"} in messages
 
 

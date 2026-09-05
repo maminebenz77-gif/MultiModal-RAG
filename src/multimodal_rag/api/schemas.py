@@ -88,19 +88,16 @@ class RuntimeOverrides(BaseModel):
     embedder: ProviderOverride | None = None
 
 
-class ConversationTurn(BaseModel):
-    question: str = Field(min_length=1, max_length=4_000)
-    answer: str = Field(min_length=1, max_length=12_000)
-
-
 class QueryRequest(BaseModel):
     question: str
-    history: list[ConversationTurn] = Field(default_factory=list, max_length=10)
-    """Earlier user/assistant turns, oldest first, sent to the agent as
-    real conversation messages (see generation/agent.py) -- it decides
-    for itself, from the actual history, whether/how to search again for
-    a follow-up. A turn whose `answer` was a clarifying question belongs
-    here too, with the user's reply as the next `question`."""
+    conversation_id: str | None = None
+    """Omit to start a new conversation (the server generates one and
+    returns it in QueryResponse.conversation_id); pass a previously
+    returned id to continue it -- the server loads that conversation's
+    history and feeds it to the agent as real conversation messages (see
+    generation/agent.py), which decides for itself, from the actual
+    history, whether/how to search again for a follow-up. An unknown id
+    is a 404, not a silently-started new conversation."""
 
     retrieval_method: RetrievalMethod = RetrievalMethod.HYBRID_RRF
     top_k: int = Field(default=5, ge=1, le=50)
@@ -142,6 +139,11 @@ class QueryResponse(BaseModel):
     query_id: str
     """UUID identifying this query -- POST /feedback references it."""
 
+    conversation_id: str
+    """Always populated -- either the id the caller passed in, or the
+    one the server just created because none was given. The caller's
+    next /query call for this conversation should pass this back."""
+
     question: str
     answer: str
     citations: list[CitationOut]
@@ -150,15 +152,33 @@ class QueryResponse(BaseModel):
     """True if `answer` is a clarifying question the agent asked back
     instead of searching -- the request was too ambiguous to know what
     to search for. Not a refusal: no search happened, so `citations` and
-    `retrieved_chunks` are empty. The caller's next /query call should
-    put the user's reply in `history` as this turn's answer, same as any
-    other follow-up."""
+    `retrieved_chunks` are empty. The caller's next /query call (same
+    conversation_id) should just carry the user's reply as `question`."""
 
     retrieval_method: RetrievalMethod
     retrieved_chunks: list[RetrievedChunkOut]
     """Every chunk that made it into the generation context -- lets a
     caller see what a retrieval method actually returned, not just what
     the model ended up citing."""
+
+
+class ConversationMessageOut(BaseModel):
+    query_id: str
+    question: str
+    answer: str
+    citations: list[CitationOut]
+    refused: bool
+    needs_clarification: bool
+    retrieval_method: str
+    created_at: datetime
+
+
+class ConversationResponse(BaseModel):
+    conversation_id: str
+    messages: list[ConversationMessageOut]
+    """Oldest first -- the full turn history for this conversation, each
+    with its own citations, for reloading/resuming (see GET
+    /conversations/{conversation_id})."""
 
 
 class FeedbackRequest(BaseModel):

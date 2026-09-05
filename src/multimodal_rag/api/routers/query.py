@@ -25,6 +25,11 @@ from ..schemas import CitationOut, ProviderOverride, QueryRequest, QueryResponse
 
 router = APIRouter()
 
+_HISTORY_WINDOW = 10
+"""How many prior turns of a conversation get fed to the agent -- was
+previously a client-side max_length=10 on the request body; now that
+the server owns the full conversation, it's a windowed read instead."""
+
 
 @contextmanager
 def _temporary_llm_provider(llm: LLMProvider):
@@ -86,6 +91,18 @@ async def query(
     except (ValueError, NotImplementedError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if request.conversation_id is None:
+        conversation_id = await run_in_threadpool(db.create_conversation)
+    else:
+        exists = await run_in_threadpool(db.conversation_exists, request.conversation_id)
+        if not exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No conversation with id={request.conversation_id!r}",
+            )
+        conversation_id = request.conversation_id
+    history = await run_in_threadpool(db.get_recent_turns, conversation_id, _HISTORY_WINDOW)
+
     agent = AgentChain(
         retriever_for_request,
         method=request.retrieval_method,
@@ -93,7 +110,6 @@ async def query(
         rerank=request.rerank,
         resolve_parent_context=True,
     )
-    history = [(turn.question, turn.answer) for turn in request.history]
 
     try:
         overrides = request.runtime_overrides
@@ -133,10 +149,14 @@ async def query(
         result.answer,
         result.refused,
         request.retrieval_method.value,
+        conversation_id=conversation_id,
+        needs_clarification=result.needs_clarification,
+        citations=result.citations,
     )
 
     return QueryResponse(
         query_id=query_id,
+        conversation_id=conversation_id,
         question=request.question,
         answer=result.answer,
         citations=[

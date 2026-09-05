@@ -98,8 +98,8 @@ provider_defaults = get_frontend_provider_defaults()
 
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
-if "conversation_history" not in st.session_state:
-    st.session_state.conversation_history = []
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = None
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
 
@@ -367,7 +367,7 @@ st.title("Multimodal RAG Demo")
 
 conversation_col, _ = st.columns([1, 5])
 if conversation_col.button("New conversation"):
-    st.session_state.conversation_history = []
+    st.session_state.conversation_id = None
     st.session_state.last_result = None
     st.rerun()
 
@@ -444,7 +444,7 @@ if ask_submitted and question.strip():
     retrieval_method, rerank = _METHOD_OPTIONS[method_label]
     query_payload = {
         "question": question,
-        "history": st.session_state.conversation_history,
+        "conversation_id": st.session_state.conversation_id,
         "retrieval_method": retrieval_method,
         "top_k": top_k,
         "rerank": rerank,
@@ -459,9 +459,7 @@ if ask_submitted and question.strip():
         )
         response.raise_for_status()
         st.session_state.last_result = response.json()
-        st.session_state.conversation_history.append(
-            {"question": question, "answer": st.session_state.last_result["answer"]}
-        )
+        st.session_state.conversation_id = st.session_state.last_result["conversation_id"]
         # Same reason as the feedback rerun above: the backend recorded
         # this query (and its refusal/method) before this response came
         # back, but the Metrics panel already rendered earlier in this

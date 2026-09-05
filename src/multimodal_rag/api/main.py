@@ -24,7 +24,7 @@ from ..stores.factory import get_keyword_store, get_vector_store
 from ..stores.indexer import HybridIndexer
 from .db import Database
 from .dependencies import AppState
-from .routers import documents, feedback, health, ingest, metrics, query
+from .routers import conversations, documents, feedback, health, ingest, metrics, query
 
 _DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
 _COLLECTION_NAME = "api_corpus"
@@ -71,6 +71,7 @@ def create_app(
     app.include_router(ingest.router)
     app.include_router(documents.router)
     app.include_router(query.router)
+    app.include_router(conversations.router)
     app.include_router(feedback.router)
     app.include_router(metrics.router)
     app.include_router(health.router)

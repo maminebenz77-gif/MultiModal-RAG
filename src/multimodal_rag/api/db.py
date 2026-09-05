@@ -1,8 +1,10 @@
 """SQLite persistence for API-level state that doesn't fit in Qdrant/
 Elasticsearch, which only know about chunks: which documents have been
 ingested, a log of past queries (so /feedback has something to
-reference and /metrics has something to summarize), and feedback on
-those queries.
+reference and /metrics has something to summarize) grouped into
+conversations (so /query can load history server-side instead of the
+client re-sending it every call), the citations each query produced,
+and feedback on those queries.
 
 A short-lived connection per call, rather than one held open for the
 app's lifetime -- this isn't the hot path (retrieval/generation are),
@@ -16,6 +18,7 @@ project, and raw SQL keeps exactly what's stored and how fully visible
 rather than adding a new abstraction layer on top of everything else.
 """
 
+import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -24,7 +27,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from .schemas import DocumentSummary, IngestResponse, MetricsResponse
+from ..generation.schema import Citation
+from .schemas import (
+    CitationOut,
+    ConversationMessageOut,
+    DocumentSummary,
+    IngestResponse,
+    MetricsResponse,
+)
 
 
 class QueryNotFoundError(LookupError):
@@ -73,15 +83,34 @@ class Database:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS conversations (
+                conversation_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS queries (
                 query_id TEXT PRIMARY KEY,
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 refused INTEGER NOT NULL,
                 retrieval_method TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                conversation_id TEXT REFERENCES conversations(conversation_id),
+                needs_clarification INTEGER NOT NULL DEFAULT 0
             )
             """
+        )
+        # Self-healed rather than only declared above -- an already-existing
+        # queries table (from before this migration) needs these added onto
+        # it directly; CREATE TABLE IF NOT EXISTS only helps a fresh database.
+        Database._ensure_column(
+            conn, "queries", "conversation_id", "TEXT REFERENCES conversations(conversation_id)"
+        )
+        Database._ensure_column(
+            conn, "queries", "needs_clarification", "INTEGER NOT NULL DEFAULT 0"
         )
         conn.execute(
             """
@@ -94,6 +123,25 @@ class Database:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS citations (
+                query_id TEXT NOT NULL REFERENCES queries(query_id),
+                marker INTEGER NOT NULL,
+                chunk_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                pages TEXT NOT NULL,
+                slides TEXT NOT NULL,
+                PRIMARY KEY (query_id, marker)
+            )
+            """
+        )
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
     def get_document(self, doc_id: str) -> DocumentSummary | None:
         with self._connect() as conn:
@@ -188,14 +236,24 @@ class Database:
         return int(deleted)
 
     def record_query(
-        self, query_id: str, question: str, answer: str, refused: bool, retrieval_method: str
+        self,
+        query_id: str,
+        question: str,
+        answer: str,
+        refused: bool,
+        retrieval_method: str,
+        *,
+        conversation_id: str | None = None,
+        needs_clarification: bool = False,
+        citations: list[Citation] | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO queries
-                    (query_id, question, answer, refused, retrieval_method, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (query_id, question, answer, refused, retrieval_method, created_at,
+                     conversation_id, needs_clarification)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query_id,
@@ -204,8 +262,94 @@ class Database:
                     int(refused),
                     retrieval_method,
                     datetime.now(UTC).isoformat(),
+                    conversation_id,
+                    int(needs_clarification),
                 ),
             )
+            for citation in citations or []:
+                conn.execute(
+                    """
+                    INSERT INTO citations (query_id, marker, chunk_id, source, pages, slides)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        query_id,
+                        citation.marker,
+                        citation.chunk_id,
+                        citation.source,
+                        json.dumps(citation.pages),
+                        json.dumps(citation.slides),
+                    ),
+                )
+
+    def create_conversation(self) -> str:
+        conversation_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO conversations (conversation_id, created_at) VALUES (?, ?)",
+                (conversation_id, datetime.now(UTC).isoformat()),
+            )
+        return conversation_id
+
+    def conversation_exists(self, conversation_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
+            ).fetchone()
+        return row is not None
+
+    def get_recent_turns(self, conversation_id: str, limit: int) -> list[tuple[str, str]]:
+        """Last `limit` (question, answer) pairs, oldest-first -- fed
+        straight into AgentChain.answer()'s `history` parameter. Windowed
+        here rather than at the API schema layer (the old client-owned
+        `history` field capped itself at max_length=10) since the server
+        now owns the full conversation."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT question, answer FROM queries
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (conversation_id, limit),
+            ).fetchall()
+        return [(row["question"], row["answer"]) for row in reversed(rows)]
+
+    def get_conversation_messages(self, conversation_id: str) -> list[ConversationMessageOut]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM queries WHERE conversation_id = ? ORDER BY created_at",
+                (conversation_id,),
+            ).fetchall()
+            messages = []
+            for row in rows:
+                citation_rows = conn.execute(
+                    "SELECT * FROM citations WHERE query_id = ? ORDER BY marker",
+                    (row["query_id"],),
+                ).fetchall()
+                messages.append(
+                    ConversationMessageOut(
+                        query_id=row["query_id"],
+                        question=row["question"],
+                        answer=row["answer"],
+                        citations=[
+                            CitationOut(
+                                marker=c["marker"],
+                                chunk_id=c["chunk_id"],
+                                source=c["source"],
+                                pages=json.loads(c["pages"]),
+                                slides=json.loads(c["slides"]),
+                            )
+                            for c in citation_rows
+                        ],
+                        refused=bool(row["refused"]),
+                        needs_clarification=bool(row["needs_clarification"]),
+                        retrieval_method=row["retrieval_method"],
+                        created_at=datetime.fromisoformat(row["created_at"]),
+                    )
+                )
+        return messages
 
     def query_exists(self, query_id: str) -> bool:
         with self._connect() as conn:

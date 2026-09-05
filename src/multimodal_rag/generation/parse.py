@@ -9,6 +9,15 @@ technical documents (citations, footnotes, array/step indices) and in
 the model's own enumerated lists, and either would be misread as a
 citation by a plain "\\[(\\d+)\\]" regex. The double-angled form is
 distinctive enough that it only appears when WE put it there.
+
+Being told to use ⟦N⟧ doesn't guarantee a model will (observed with
+gpt-4o-mini: it sometimes reverts to its own trained-in browsing-citation
+format, 【N†source】, despite the system prompt explicitly forbidding it —
+prompting shapes behavior, it doesn't enforce it). Rather than silently
+losing the citation when that happens, the one variant actually observed
+is normalized back to ⟦N⟧ before parsing. This is deliberately narrow: it
+targets exactly the pattern seen in practice, not a broad guess at every
+format a model might someday use.
 """
 
 import re
@@ -18,9 +27,15 @@ from .prompt import REFUSAL_TEXT
 from .schema import Citation, RagAnswer
 
 _CITATION_RE = re.compile(r"⟦(\d+)⟧")
+_ALTERNATE_CITATION_RE = re.compile(r"【(\d+)†[^】]*】")
+
+
+def _normalize_citation_markers(raw_answer: str) -> str:
+    return _ALTERNATE_CITATION_RE.sub(lambda m: f"⟦{m.group(1)}⟧", raw_answer)
 
 
 def parse_answer(raw_answer: str, context_results: list[SearchResult]) -> RagAnswer:
+    raw_answer = _normalize_citation_markers(raw_answer)
     cited_numbers = sorted({int(match) for match in _CITATION_RE.findall(raw_answer)})
     citations = [
         Citation(

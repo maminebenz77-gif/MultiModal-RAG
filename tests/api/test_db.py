@@ -5,9 +5,11 @@ specific enough to Database's own internals that it deserves its own
 test rather than being an incidental side effect of some API test.
 """
 
+import sqlite3
 from pathlib import Path
 
 from multimodal_rag.api.db import Database
+from multimodal_rag.generation.schema import Citation
 
 
 def test_schema_recreates_itself_if_the_file_is_deleted_while_the_process_is_alive(
@@ -70,3 +72,127 @@ def test_wipe_documents_does_not_touch_queries_or_feedback(tmp_path: Path) -> No
 
     assert db.query_exists("q-1")
     assert db.metrics().feedback_up == 1
+
+
+def test_create_conversation_returns_a_fresh_id_each_time(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+
+    first = db.create_conversation()
+    second = db.create_conversation()
+
+    assert first != second
+    assert db.conversation_exists(first)
+    assert db.conversation_exists(second)
+
+
+def test_conversation_exists_is_false_for_an_unknown_id(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    assert db.conversation_exists("nonexistent") is False
+
+
+def test_get_recent_turns_returns_oldest_first_and_respects_limit(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    for i in range(3):
+        db.record_query(
+            f"q-{i}", f"question {i}", f"answer {i}", False, "hybrid_rrf",
+            conversation_id=conversation_id,
+        )
+
+    turns = db.get_recent_turns(conversation_id, limit=2)
+
+    assert turns == [("question 1", "answer 1"), ("question 2", "answer 2")]
+
+
+def test_get_recent_turns_only_includes_this_conversation(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_a = db.create_conversation()
+    conversation_b = db.create_conversation()
+    db.record_query(
+        "q-a", "question a", "answer a", False, "hybrid_rrf", conversation_id=conversation_a
+    )
+    db.record_query(
+        "q-b", "question b", "answer b", False, "hybrid_rrf", conversation_id=conversation_b
+    )
+
+    assert db.get_recent_turns(conversation_a, limit=10) == [("question a", "answer a")]
+
+
+def test_record_query_persists_citations_and_get_conversation_messages_reads_them_back(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    citations = [
+        Citation(marker=1, chunk_id="chunk-a", source="doc.md", pages=[2], slides=[]),
+        Citation(marker=2, chunk_id="chunk-b", source="doc.md", pages=[], slides=[3]),
+    ]
+
+    db.record_query(
+        "q-1", "a question", "an answer ⟦1⟧⟦2⟧", False, "hybrid_rrf",
+        conversation_id=conversation_id, needs_clarification=False, citations=citations,
+    )
+
+    messages = db.get_conversation_messages(conversation_id)
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.question == "a question"
+    assert message.answer == "an answer ⟦1⟧⟦2⟧"
+    assert message.needs_clarification is False
+    assert [(c.marker, c.chunk_id, c.pages, c.slides) for c in message.citations] == [
+        (1, "chunk-a", [2], []),
+        (2, "chunk-b", [], [3]),
+    ]
+
+
+def test_get_conversation_messages_is_ordered_oldest_first(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    db.record_query(
+        "q-1", "first", "first answer", False, "hybrid_rrf", conversation_id=conversation_id
+    )
+    db.record_query(
+        "q-2", "second", "second answer", False, "hybrid_rrf", conversation_id=conversation_id
+    )
+
+    messages = db.get_conversation_messages(conversation_id)
+
+    assert [m.question for m in messages] == ["first", "second"]
+
+
+def test_needs_clarification_and_conversation_id_self_heal_onto_an_existing_queries_table(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the B2 migration: a queries table created
+    BEFORE conversation_id/needs_clarification existed must still work
+    once the new Database code runs against it -- see _ensure_column and
+    its use in _create_tables."""
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE queries (
+            query_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            refused INTEGER NOT NULL,
+            retrieval_method TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    conversation_id = db.create_conversation()
+
+    # Must not raise "no such column" -- this is the whole point of the test.
+    db.record_query(
+        "q-1", "a question", "an answer", False, "hybrid_rrf",
+        conversation_id=conversation_id, needs_clarification=True,
+    )
+
+    messages = db.get_conversation_messages(conversation_id)
+    assert messages[0].needs_clarification is True

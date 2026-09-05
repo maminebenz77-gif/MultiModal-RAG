@@ -78,3 +78,24 @@ def test_retrieved_chunks_includes_every_context_chunk_not_just_cited_ones() -> 
     context = [_result("a"), _result("b")]
     result = parse_answer("Only cites the first ⟦1⟧.", context)
     assert [c.chunk_id for c in result.retrieved_chunks] == ["a", "b"]
+
+
+def test_alternate_openai_citation_format_is_normalized_and_extracted() -> None:
+    """Some models (observed: gpt-4o-mini) revert to their own trained-in
+    browsing-citation format despite being told not to -- this must still
+    resolve to a real citation rather than silently vanishing."""
+    context = [_result("a"), _result("b"), _result("c")]
+    result = parse_answer("The answer is X【1†source】 and Y【3†some_doc.pdf】.", context)
+    assert [c.marker for c in result.citations] == [1, 3]
+    assert [c.chunk_id for c in result.citations] == ["a", "c"]
+
+
+def test_alternate_citation_format_is_rewritten_in_the_returned_answer_text() -> None:
+    result = parse_answer("The answer is X【1†source】.", [_result("a")])
+    assert result.answer == "The answer is X⟦1⟧."
+
+
+def test_mixed_native_and_alternate_citation_markers_both_resolve() -> None:
+    context = [_result("a"), _result("b")]
+    result = parse_answer("First ⟦1⟧, second【2†source】.", context)
+    assert [c.marker for c in result.citations] == [1, 2]
