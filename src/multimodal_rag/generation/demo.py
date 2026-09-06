@@ -1,4 +1,4 @@
-"""End-to-end RAG demo: ingest the sample corpus, then show three
+"""End-to-end RAG demo: ingest the sample corpus, then show four
 behaviors side by side --
   1. RagChain: one retrieve + one generate, no tool calling (the simple
      baseline every AgentChain call is built on top of).
@@ -12,6 +12,15 @@ behaviors side by side --
      latency table has Avg and P95 columns, no P99) -- shows the agent
      searching for real, coming up empty, and refusing rather than
      guessing.
+  4. AgentChain across two turns of an actual conversation: the first
+     message is genuinely ambiguous with zero prior context ("it"/"the
+     one we discussed earlier" resolve to nothing, since nothing was
+     actually discussed earlier), so the agent should ask a clarifying
+     question instead of guessing or searching speculatively (the
+     human-in-the-loop path) -- then the follow-up reply is threaded in
+     as real history, giving the agent enough to search and answer for
+     real. This is what a chat turn where the agent has to ask back
+     actually looks like end to end.
 
 Run: `uv run python -m multimodal_rag.generation.demo`
 """
@@ -38,6 +47,9 @@ _COMPOUND_QUESTION = (
     "local on-device configuration have that a latency-only comparison doesn't capture?"
 )
 _UNANSWERABLE_QUESTION = "What was the P99 latency for the internal gateway?"
+
+_AMBIGUOUS_OPENING_QUESTION = "Can you compare it with the one we discussed earlier?"
+_CLARIFYING_REPLY = "I meant the local on-device configuration compared to the internal gateway."
 
 
 def _print_header(label: str, question: str) -> None:
@@ -115,6 +127,21 @@ def main() -> None:
 
     _print_header("3. AgentChain -- unanswerable question, refusal", _UNANSWERABLE_QUESTION)
     _print_answer(agent.answer(_UNANSWERABLE_QUESTION, on_tool_call=_print_tool_call))
+
+    _print_header(
+        "4. AgentChain -- conversation with a clarifying-question round-trip",
+        _AMBIGUOUS_OPENING_QUESTION,
+    )
+    turn_1 = agent.answer(_AMBIGUOUS_OPENING_QUESTION, on_tool_call=_print_tool_call)
+    _print_answer(turn_1)
+
+    print(f'Follow-up: "{_CLARIFYING_REPLY}"')
+    turn_2 = agent.answer(
+        _CLARIFYING_REPLY,
+        history=[(_AMBIGUOUS_OPENING_QUESTION, turn_1.answer)],
+        on_tool_call=_print_tool_call,
+    )
+    _print_answer(turn_2)
 
 
 if __name__ == "__main__":
