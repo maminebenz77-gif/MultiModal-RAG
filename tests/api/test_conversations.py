@@ -40,11 +40,19 @@ class _FakeLLM(LLMProvider):
         return ToolResponse(content=self._response, tool_calls=[])
 
 
+@pytest.fixture(autouse=True)
+def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
+    # Every new conversation created here also triggers a title-generation
+    # call (see routers/query.py) -- without this, that call would fall
+    # through to the real, unmocked provider factory.
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", lambda: _FakeLLM())
+
+
 async def test_get_conversation_returns_the_turn_with_its_citations(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: httpx.AsyncClient,
 ) -> None:
     await ingest_sample_doc(client)
-    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
 
     query_response = await client.post(
         "/query",
@@ -78,7 +86,16 @@ async def test_get_conversation_returns_404_for_an_unknown_id(client: httpx.Asyn
 async def test_list_conversations_includes_a_newly_created_one_with_preview(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
+    # Override the autouse fixture's title mock specifically: no title
+    # provider configured -- generate_title() fails soft (see
+    # generation/test_title.py), so preview stays the raw first question,
+    # which is what this test is actually about; title generation itself
+    # is covered separately.
+
+    def _fail_get_llm() -> LLMProvider:
+        raise RuntimeError("no title provider for this test")
+
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", _fail_get_llm)
 
     query_response = await client.post("/query", json={"question": "a fresh question"})
     conversation_id = query_response.json()["conversation_id"]
@@ -97,3 +114,24 @@ async def test_list_conversations_is_empty_on_a_fresh_service(client: httpx.Asyn
 
     assert response.status_code == 200
     assert response.json()["conversations"] == []
+
+
+async def test_delete_conversation_removes_it_from_the_list(client: httpx.AsyncClient) -> None:
+    query_response = await client.post("/query", json={"question": "a question to delete"})
+    conversation_id = query_response.json()["conversation_id"]
+
+    delete_response = await client.delete(f"/conversations/{conversation_id}")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"status": "deleted", "conversation_id": conversation_id}
+    assert (await client.get(f"/conversations/{conversation_id}")).status_code == 404
+    remaining = (await client.get("/conversations")).json()["conversations"]
+    assert conversation_id not in [c["conversation_id"] for c in remaining]
+
+
+async def test_delete_conversation_returns_404_for_an_unknown_id(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.delete("/conversations/nonexistent")
+
+    assert response.status_code == 404

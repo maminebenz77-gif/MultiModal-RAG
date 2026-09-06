@@ -156,6 +156,67 @@ def test_list_conversations_orders_by_most_recently_active_and_carries_preview(
     assert summaries[0].message_count == 1
 
 
+def test_set_conversation_title_is_preferred_over_the_first_question(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    db.record_query(
+        "q-1", "what was the raw first question", "an answer", False, "hybrid_rrf",
+        conversation_id=conversation_id,
+    )
+
+    db.set_conversation_title(conversation_id, "A Generated Title")
+
+    summaries = db.list_conversations()
+    assert summaries[0].preview == "A Generated Title"
+
+
+def test_delete_conversation_removes_the_conversation_and_its_queries(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    db.record_query(
+        "q-1", "a question", "an answer", False, "hybrid_rrf", conversation_id=conversation_id
+    )
+
+    db.delete_conversation(conversation_id)
+
+    assert db.conversation_exists(conversation_id) is False
+    assert db.query_exists("q-1") is False
+    assert db.get_conversation_messages(conversation_id) == []
+
+
+def test_delete_conversation_removes_citations_and_feedback(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    db.record_query(
+        "q-1", "a question", "an answer ⟦1⟧", False, "hybrid_rrf",
+        conversation_id=conversation_id,
+        citations=[Citation(marker=1, chunk_id="chunk-a", source="doc.md", pages=[], slides=[])],
+    )
+    db.record_feedback("q-1", "up", None)
+
+    db.delete_conversation(conversation_id)
+
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        conn.row_factory = sqlite3.Row
+        assert conn.execute("SELECT 1 FROM citations WHERE query_id = 'q-1'").fetchone() is None
+        assert conn.execute("SELECT 1 FROM feedback WHERE query_id = 'q-1'").fetchone() is None
+
+
+def test_delete_conversation_leaves_other_conversations_alone(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    keep = db.create_conversation()
+    delete_me = db.create_conversation()
+    db.record_query("q-keep", "keep this", "answer", False, "hybrid_rrf", conversation_id=keep)
+    db.record_query(
+        "q-delete", "delete this", "answer", False, "hybrid_rrf", conversation_id=delete_me
+    )
+
+    db.delete_conversation(delete_me)
+
+    assert db.conversation_exists(keep) is True
+    assert db.query_exists("q-keep") is True
+
+
 def test_record_query_persists_citations_and_get_conversation_messages_reads_them_back(
     tmp_path: Path,
 ) -> None:

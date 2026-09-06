@@ -25,6 +25,10 @@ class _FakeLLM(LLMProvider):
 @pytest.fixture(autouse=True)
 def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
+    # Every /query call here creates a new conversation, which now also
+    # triggers a title-generation call (see routers/query.py) -- without
+    # this, that call would fall through to the real provider factory.
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", lambda: _FakeLLM())
 
 
 async def test_metrics_on_a_fresh_service_are_all_zero(client: httpx.AsyncClient) -> None:

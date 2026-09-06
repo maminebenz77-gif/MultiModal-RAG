@@ -135,6 +135,8 @@ if "conversation_id" not in st.session_state:
             st.query_params.pop("c", None)
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
+if "confirm_delete_conversation_id" not in st.session_state:
+    st.session_state.confirm_delete_conversation_id = None
 
 provider_catalog = _load_provider_catalog()
 
@@ -215,29 +217,58 @@ def _http_error_detail(exc: httpx.HTTPError) -> str:
 
 
 with st.sidebar:
-    st.subheader("💬 Previous conversations")
-    try:
-        _conversations_response = httpx.get(f"{api_base_url}/conversations", timeout=10.0)
-        _conversations_response.raise_for_status()
-        _conversations = _conversations_response.json()["conversations"]
-    except httpx.HTTPError:
-        _conversations = []
+    with st.expander("💬 Previous conversations", expanded=True):
+        try:
+            _conversations_response = httpx.get(f"{api_base_url}/conversations", timeout=10.0)
+            _conversations_response.raise_for_status()
+            _conversations = _conversations_response.json()["conversations"]
+        except httpx.HTTPError:
+            _conversations = []
 
-    if not _conversations:
-        st.caption("No previous conversations yet.")
-    else:
-        for _conversation in _conversations:
-            _preview = _conversation["preview"]
-            _label = _preview if len(_preview) <= 40 else _preview[:37] + "..."
-            _is_current = _conversation["conversation_id"] == st.session_state.conversation_id
-            if st.button(
-                _label,
-                key=f"load_conversation_{_conversation['conversation_id']}",
-                disabled=_is_current,
-                width="stretch",
-            ) and _load_conversation(_conversation["conversation_id"]):
-                st.query_params["c"] = _conversation["conversation_id"]
-                st.rerun()
+        if not _conversations:
+            st.caption("No previous conversations yet.")
+        else:
+            for _conversation in _conversations:
+                _cid = _conversation["conversation_id"]
+                _preview = _conversation["preview"]
+                _label = _preview if len(_preview) <= 40 else _preview[:37] + "..."
+                _is_current = _cid == st.session_state.conversation_id
+
+                if st.session_state.confirm_delete_conversation_id == _cid:
+                    st.caption(f'Delete "{_label}"? This cannot be undone.')
+                    _confirm_col, _cancel_col = st.columns(2)
+                    if _confirm_col.button(
+                        "Yes, delete", key=f"confirm_delete_{_cid}", type="primary"
+                    ):
+                        try:
+                            _del_response = httpx.delete(
+                                f"{api_base_url}/conversations/{_cid}", timeout=10.0
+                            )
+                            _del_response.raise_for_status()
+                            st.session_state.confirm_delete_conversation_id = None
+                            if _is_current:
+                                st.session_state.conversation_id = None
+                                st.session_state.turns = []
+                                st.query_params.pop("c", None)
+                            st.rerun()
+                        except httpx.HTTPError as exc:
+                            st.error(f"Delete failed: {_http_error_detail(exc)}")
+                    if _cancel_col.button("Cancel", key=f"cancel_delete_{_cid}"):
+                        st.session_state.confirm_delete_conversation_id = None
+                        st.rerun()
+                else:
+                    _load_col, _delete_col = st.columns([5, 1])
+                    if _load_col.button(
+                        _label,
+                        key=f"load_conversation_{_cid}",
+                        disabled=_is_current,
+                        width="stretch",
+                    ) and _load_conversation(_cid):
+                        st.query_params["c"] = _cid
+                        st.rerun()
+                    if _delete_col.button("🗑️", key=f"delete_conversation_{_cid}"):
+                        st.session_state.confirm_delete_conversation_id = _cid
+                        st.rerun()
 
     st.divider()
 
@@ -524,14 +555,15 @@ with st.sidebar:
             st.session_state.confirm_wipe = True
             st.rerun()
 
-st.title("Multimodal RAG Demo")
-
-conversation_col, _ = st.columns([1, 5])
-if conversation_col.button("New conversation"):
-    st.session_state.conversation_id = None
-    st.session_state.turns = []
-    st.query_params.pop("c", None)
-    st.rerun()
+_title_col, _new_conversation_col = st.columns([5, 1])
+_title_col.title("Multimodal RAG Demo")
+with _new_conversation_col:
+    st.write("")  # vertical nudge so the button lines up with the title text
+    if st.button("New conversation"):
+        st.session_state.conversation_id = None
+        st.session_state.turns = []
+        st.query_params.pop("c", None)
+        st.rerun()
 
 for turn in st.session_state.turns:
     with st.chat_message("user", avatar="🔵"):
@@ -564,16 +596,23 @@ for turn in st.session_state.turns:
 
         if turn["retrieved_chunks"]:
             with st.expander(f"Retrieved chunks ({len(turn['retrieved_chunks'])})"):
-                for chunk in turn["retrieved_chunks"]:
+                # Retrieved chunks share list position with citation markers
+                # (parse_answer() resolves ⟦N⟧ against this same list, so
+                # retrieved_chunks[i] IS marker i+1) -- reusing that number
+                # here keeps it consistent with the Citations section above,
+                # for free. Deliberately just a summary line: the raw
+                # flattened text and chunk_id aren't useful to see by
+                # default now that "Details" opens the real thing.
+                for i, chunk in enumerate(turn["retrieved_chunks"], start=1):
                     location = _location_suffix(chunk["pages"], chunk["slides"])
-                    st.markdown(f"**{chunk['source']}**{location} (score={chunk['score']:.3f})")
-                    st.caption(chunk["chunk_id"])
-                    st.text(chunk["text"])
-                    if st.button(
-                        "View details", key=f"view_{turn['query_id']}_{chunk['chunk_id']}"
+                    summary_col, details_col = st.columns([5, 1])
+                    summary_col.markdown(
+                        f"⟦{i}⟧ **{chunk['source']}**{location} — score {chunk['score']:.3f}"
+                    )
+                    if details_col.button(
+                        "Details", key=f"view_{turn['query_id']}_{chunk['chunk_id']}"
                     ):
                         _show_chunk_detail(chunk)
-                    st.divider()
 
         fb_up, fb_down = st.columns(2)
         if fb_up.button("👍", key=f"fb_up_{turn['query_id']}"):

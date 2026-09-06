@@ -86,10 +86,12 @@ class Database:
             """
             CREATE TABLE IF NOT EXISTS conversations (
                 conversation_id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                title TEXT
             )
             """
         )
+        Database._ensure_column(conn, "conversations", "title", "TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS queries (
@@ -299,6 +301,32 @@ class Database:
             ).fetchone()
         return row is not None
 
+    def delete_conversation(self, conversation_id: str) -> None:
+        """Deletes a conversation and everything hanging off it. No
+        ON DELETE CASCADE in this schema, so the order matters:
+        feedback and citations both reference queries, which reference
+        the conversation -- deleting outside-in avoids ever leaving an
+        orphaned row that would dangle after a partial failure."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM feedback
+                WHERE query_id IN (SELECT query_id FROM queries WHERE conversation_id = ?)
+                """,
+                (conversation_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM citations
+                WHERE query_id IN (SELECT query_id FROM queries WHERE conversation_id = ?)
+                """,
+                (conversation_id,),
+            )
+            conn.execute("DELETE FROM queries WHERE conversation_id = ?", (conversation_id,))
+            conn.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?", (conversation_id,)
+            )
+
     def get_recent_turns(self, conversation_id: str, limit: int) -> list[tuple[str, str]]:
         """Last `limit` (question, answer) pairs, oldest-first -- fed
         straight into AgentChain.answer()'s `history` parameter. Windowed
@@ -317,6 +345,13 @@ class Database:
             ).fetchall()
         return [(row["question"], row["answer"]) for row in reversed(rows)]
 
+    def set_conversation_title(self, conversation_id: str, title: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = ? WHERE conversation_id = ?",
+                (title, conversation_id),
+            )
+
     def list_conversations(self, limit: int = 20) -> list[ConversationSummaryOut]:
         """Conversations that have at least one recorded turn, most
         recently active first -- a conversation row created right before
@@ -327,8 +362,11 @@ class Database:
                 """
                 SELECT
                     c.conversation_id AS conversation_id,
-                    (SELECT question FROM queries WHERE conversation_id = c.conversation_id
-                        ORDER BY created_at LIMIT 1) AS preview,
+                    COALESCE(
+                        c.title,
+                        (SELECT question FROM queries WHERE conversation_id = c.conversation_id
+                            ORDER BY created_at LIMIT 1)
+                    ) AS preview,
                     (SELECT COUNT(*) FROM queries WHERE conversation_id = c.conversation_id)
                         AS message_count,
                     (SELECT MAX(created_at) FROM queries WHERE conversation_id = c.conversation_id)

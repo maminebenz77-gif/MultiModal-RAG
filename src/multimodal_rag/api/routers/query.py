@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from ...config import get_settings
 from ...device import resolve_device
 from ...generation.agent import AgentChain
+from ...generation.title import generate_title
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
@@ -41,13 +42,17 @@ the server owns the full conversation, it's a windowed read instead."""
 @contextmanager
 def _temporary_llm_provider(llm: LLMProvider):
     from ...generation import agent as agent_module
+    from ...generation import title as title_module
 
     original_agent_llm = agent_module.get_llm
+    original_title_llm = title_module.get_llm
     agent_module.get_llm = lambda: llm
+    title_module.get_llm = lambda: llm
     try:
         yield
     finally:
         agent_module.get_llm = original_agent_llm
+        title_module.get_llm = original_title_llm
 
 
 def _build_retriever_for_request(
@@ -100,6 +105,7 @@ async def query(
 
     if request.conversation_id is None:
         conversation_id = await run_in_threadpool(db.create_conversation)
+        is_new_conversation = True
     else:
         exists = await run_in_threadpool(db.conversation_exists, request.conversation_id)
         if not exists:
@@ -108,6 +114,7 @@ async def query(
                 detail=f"No conversation with id={request.conversation_id!r}",
             )
         conversation_id = request.conversation_id
+        is_new_conversation = False
     history = await run_in_threadpool(db.get_recent_turns, conversation_id, _HISTORY_WINDOW)
 
     agent = AgentChain(
@@ -118,20 +125,23 @@ async def query(
         resolve_parent_context=True,
     )
 
+    llm_override: LLMProvider | None = None
+    overrides = request.runtime_overrides
+    if overrides is not None and overrides.llm is not None:
+        chosen: ProviderOverride = overrides.llm
+        llm_override = llm_from_override(
+            provider=chosen.provider,
+            model=chosen.model,
+            base_url=chosen.base_url,
+            api_key=chosen.api_key,
+            allow_external=allow_external,
+        )
+
     try:
-        overrides = request.runtime_overrides
-        if overrides is not None and overrides.llm is not None:
-            chosen: ProviderOverride = overrides.llm
-            llm = llm_from_override(
-                provider=chosen.provider,
-                model=chosen.model,
-                base_url=chosen.base_url,
-                api_key=chosen.api_key,
-                allow_external=allow_external,
-            )
+        if llm_override is not None:
 
             def _answer_with_override():
-                with _temporary_llm_provider(llm):
+                with _temporary_llm_provider(llm_override):
                     return agent.answer(request.question, history, request.doc_ids)
 
             result = await run_in_threadpool(_answer_with_override)
@@ -160,6 +170,25 @@ async def query(
         needs_clarification=result.needs_clarification,
         citations=result.citations,
     )
+
+    if is_new_conversation:
+        # Nice-to-have, not core to the response -- generate_title() is
+        # fail-soft (returns None rather than raising) and a missing
+        # title just leaves the picker showing the raw first question.
+        # Reuses this request's LLM override, if any, so the title comes
+        # from the same model the answer did rather than silently
+        # falling back to the .env default.
+        if llm_override is not None:
+
+            def _generate_title_with_override() -> str | None:
+                with _temporary_llm_provider(llm_override):
+                    return generate_title(request.question, result.answer)
+
+            title = await run_in_threadpool(_generate_title_with_override)
+        else:
+            title = await run_in_threadpool(generate_title, request.question, result.answer)
+        if title:
+            await run_in_threadpool(db.set_conversation_title, conversation_id, title)
 
     return QueryResponse(
         query_id=query_id,

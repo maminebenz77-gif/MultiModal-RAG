@@ -39,6 +39,14 @@ def test_previous_conversations_falls_back_gracefully_when_api_is_unreachable() 
     assert any("No previous conversations yet" in c.value for c in at.sidebar.caption)
 
 
+def test_previous_conversations_is_a_collapsible_sidebar_section() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    labels = [e.label for e in at.sidebar.expander]
+    assert "💬 Previous conversations" in labels
+
+
 def test_ingest_without_a_file_shows_a_warning() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)

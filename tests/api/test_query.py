@@ -55,6 +55,10 @@ class _FakeLLM(LLMProvider):
 @pytest.fixture(autouse=True)
 def _fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
+    # Every test here that creates a new conversation now also triggers a
+    # title-generation call (see routers/query.py) -- without this, that
+    # call would fall through to the real, unmocked provider factory.
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", lambda: _FakeLLM())
 
 
 async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient) -> None:
@@ -271,3 +275,40 @@ async def test_query_runtime_overrides_use_llm_provider_from_request(
 
     assert response.status_code == 200
     assert response.json()["answer"] == "Override answer ⟦1⟧."
+
+
+async def test_new_conversation_triggers_a_title_generation_call(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title_llm = _FakeLLM("Generated Title")
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", lambda: title_llm)
+
+    response = await client.post("/query", json={"question": "first question"})
+
+    assert response.status_code == 200
+    conversation_id = response.json()["conversation_id"]
+    assert title_llm.last_messages is not None
+
+    listed = await client.get("/conversations")
+    match = next(
+        c for c in listed.json()["conversations"] if c["conversation_id"] == conversation_id
+    )
+    assert match["preview"] == "Generated Title"
+
+
+async def test_continuing_a_conversation_does_not_trigger_a_second_title_call(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title_llm = _FakeLLM("Generated Title")
+    monkeypatch.setattr("multimodal_rag.generation.title.get_llm", lambda: title_llm)
+
+    first = await client.post("/query", json={"question": "first question"})
+    conversation_id = first.json()["conversation_id"]
+    title_llm.last_messages = None  # reset after the first (expected) call
+
+    await client.post(
+        "/query",
+        json={"question": "a follow-up question", "conversation_id": conversation_id},
+    )
+
+    assert title_llm.last_messages is None

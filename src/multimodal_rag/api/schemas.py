@@ -200,8 +200,9 @@ class ConversationResponse(BaseModel):
 class ConversationSummaryOut(BaseModel):
     conversation_id: str
     preview: str
-    """The conversation's first question -- enough to recognize it in a
-    picker without fetching the full turn history."""
+    """An LLM-generated title once one exists (see generation/title.py),
+    otherwise the conversation's raw first question -- enough to
+    recognize it in a picker without fetching the full turn history."""
 
     message_count: int
     updated_at: datetime
@@ -211,6 +212,11 @@ class ConversationSummaryOut(BaseModel):
 class ConversationListResponse(BaseModel):
     conversations: list[ConversationSummaryOut]
     """Most recently active first (see GET /conversations)."""
+
+
+class ConversationDeleteResponse(BaseModel):
+    status: Literal["deleted"]
+    conversation_id: str
 
 
 class FeedbackRequest(BaseModel):
