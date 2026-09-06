@@ -29,6 +29,7 @@ from typing import Literal
 
 from ..generation.schema import Citation
 from .schemas import (
+    ChunkElementOut,
     CitationOut,
     ConversationMessageOut,
     ConversationSummaryOut,
@@ -135,10 +136,16 @@ class Database:
                 source TEXT NOT NULL,
                 pages TEXT NOT NULL,
                 slides TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                elements TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (query_id, marker)
             )
             """
         )
+        # Self-healed for the same reason as queries.conversation_id above:
+        # an already-existing citations table needs these added directly.
+        Database._ensure_column(conn, "citations", "text", "TEXT NOT NULL DEFAULT ''")
+        Database._ensure_column(conn, "citations", "elements", "TEXT NOT NULL DEFAULT '[]'")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
@@ -272,8 +279,9 @@ class Database:
             for citation in citations or []:
                 conn.execute(
                     """
-                    INSERT INTO citations (query_id, marker, chunk_id, source, pages, slides)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO citations
+                        (query_id, marker, chunk_id, source, pages, slides, text, elements)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         query_id,
@@ -282,6 +290,8 @@ class Database:
                         citation.source,
                         json.dumps(citation.pages),
                         json.dumps(citation.slides),
+                        citation.text,
+                        json.dumps([e.model_dump() for e in citation.elements]),
                     ),
                 )
 
@@ -412,6 +422,10 @@ class Database:
                                 source=c["source"],
                                 pages=json.loads(c["pages"]),
                                 slides=json.loads(c["slides"]),
+                                text=c["text"],
+                                elements=[
+                                    ChunkElementOut(**e) for e in json.loads(c["elements"])
+                                ],
                             )
                             for c in citation_rows
                         ],

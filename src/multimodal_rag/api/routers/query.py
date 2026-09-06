@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
+from ...chunking.schema import ChunkElement
 from ...config import get_settings
 from ...device import resolve_device
 from ...generation.agent import AgentChain
@@ -53,6 +54,17 @@ def _temporary_llm_provider(llm: LLMProvider):
     finally:
         agent_module.get_llm = original_agent_llm
         title_module.get_llm = original_title_llm
+
+
+def _to_chunk_element_out(e: ChunkElement) -> ChunkElementOut:
+    return ChunkElementOut(
+        type=e.type,
+        text=e.text,
+        image_base64=e.image_base64,
+        description=e.description,
+        page=e.page,
+        slide=e.slide,
+    )
 
 
 def _build_retriever_for_request(
@@ -202,6 +214,8 @@ async def query(
                 source=c.source,
                 pages=c.pages,
                 slides=c.slides,
+                text=c.text,
+                elements=[_to_chunk_element_out(e) for e in c.elements],
             )
             for c in result.citations
         ],
@@ -216,17 +230,7 @@ async def query(
                 source=c.source,
                 pages=c.pages,
                 slides=c.slides,
-                elements=[
-                    ChunkElementOut(
-                        type=e.type,
-                        text=e.text,
-                        image_base64=e.image_base64,
-                        description=e.description,
-                        page=e.page,
-                        slide=e.slide,
-                    )
-                    for e in c.elements
-                ],
+                elements=[_to_chunk_element_out(e) for e in c.elements],
             )
             for c in result.retrieved_chunks
         ],

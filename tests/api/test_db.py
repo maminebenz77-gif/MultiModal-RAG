@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 
 from multimodal_rag.api.db import Database
+from multimodal_rag.chunking.schema import ChunkElement
 from multimodal_rag.generation.schema import Citation
 
 
@@ -295,3 +296,85 @@ def test_needs_clarification_and_conversation_id_self_heal_onto_an_existing_quer
 
     messages = db.get_conversation_messages(conversation_id)
     assert messages[0].needs_clarification is True
+
+
+def test_citation_text_and_elements_round_trip(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    conversation_id = db.create_conversation()
+    elements = [
+        ChunkElement(type="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |"),
+        ChunkElement(type="image", image_base64="aGVsbG8=", description="A photo."),
+    ]
+    citations = [
+        Citation(
+            marker=1, chunk_id="chunk-a", source="doc.md", pages=[2], slides=[],
+            text="the full chunk text", elements=elements,
+        ),
+    ]
+
+    db.record_query(
+        "q-1", "a question", "an answer ⟦1⟧", False, "hybrid_rrf",
+        conversation_id=conversation_id, citations=citations,
+    )
+
+    messages = db.get_conversation_messages(conversation_id)
+
+    citation = messages[0].citations[0]
+    assert citation.text == "the full chunk text"
+    assert [(e.type, e.text, e.image_base64, e.description) for e in citation.elements] == [
+        ("table", "| A | B |\n| --- | --- |\n| 1 | 2 |", None, None),
+        ("image", None, "aGVsbG8=", "A photo."),
+    ]
+
+
+def test_citation_text_and_elements_self_heal_onto_an_existing_citations_table(
+    tmp_path: Path,
+) -> None:
+    """Regression test: a citations table created before text/elements
+    existed must still work once the new Database code runs against it."""
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE queries (
+            query_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            refused INTEGER NOT NULL,
+            retrieval_method TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            conversation_id TEXT,
+            needs_clarification INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE citations (
+            query_id TEXT NOT NULL,
+            marker INTEGER NOT NULL,
+            chunk_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            pages TEXT NOT NULL,
+            slides TEXT NOT NULL,
+            PRIMARY KEY (query_id, marker)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    conversation_id = db.create_conversation()
+    citations = [
+        Citation(marker=1, chunk_id="chunk-a", source="doc.md", text="some text"),
+    ]
+
+    # Must not raise "no such column" -- this is the whole point of the test.
+    db.record_query(
+        "q-1", "a question", "an answer ⟦1⟧", False, "hybrid_rrf",
+        conversation_id=conversation_id, citations=citations,
+    )
+
+    messages = db.get_conversation_messages(conversation_id)
+    assert messages[0].citations[0].text == "some text"

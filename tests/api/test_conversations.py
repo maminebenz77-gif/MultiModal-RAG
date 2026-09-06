@@ -74,7 +74,12 @@ async def test_get_conversation_returns_the_turn_with_its_citations(
     assert message["refused"] is False
     assert message["needs_clarification"] is False
     assert len(message["citations"]) == 1
-    assert message["citations"][0]["marker"] == 1
+    citation = message["citations"][0]
+    assert citation["marker"] == 1
+    # The whole point: a reloaded conversation's citation carries enough
+    # to show real chunk detail, not just marker/source/location.
+    assert citation["text"]
+    assert citation["elements"]
 
 
 async def test_get_conversation_returns_404_for_an_unknown_id(client: httpx.AsyncClient) -> None:

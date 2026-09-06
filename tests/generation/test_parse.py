@@ -1,16 +1,24 @@
+from multimodal_rag.chunking.schema import ChunkElement
 from multimodal_rag.generation.parse import parse_answer
 from multimodal_rag.generation.prompt import REFUSAL_TEXT
 from multimodal_rag.stores.schema import SearchResult
 
 
-def _result(chunk_id: str, source: str = "doc.md", pages: list[int] | None = None) -> SearchResult:
+def _result(
+    chunk_id: str,
+    source: str = "doc.md",
+    pages: list[int] | None = None,
+    text: str = "text",
+    elements: list[ChunkElement] | None = None,
+) -> SearchResult:
     return SearchResult(
         chunk_id=chunk_id,
         score=1.0,
-        text="text",
+        text=text,
         source=source,
         doc_id=source,
         element_types=["title"],
+        elements=elements or [],
         pages=pages or [],
     )
 
@@ -99,3 +107,13 @@ def test_mixed_native_and_alternate_citation_markers_both_resolve() -> None:
     context = [_result("a"), _result("b")]
     result = parse_answer("First ⟦1⟧, second【2†source】.", context)
     assert [c.marker for c in result.citations] == [1, 2]
+
+
+def test_citation_carries_the_chunks_text_and_elements() -> None:
+    elements = [ChunkElement(type="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |")]
+    context = [_result("a", text="the full chunk text", elements=elements)]
+
+    result = parse_answer("Answer ⟦1⟧.", context)
+
+    assert result.citations[0].text == "the full chunk text"
+    assert result.citations[0].elements == elements

@@ -44,6 +44,8 @@ def parse_answer(raw_answer: str, context_results: list[SearchResult]) -> RagAns
             source=context_results[number - 1].source,
             pages=context_results[number - 1].pages,
             slides=context_results[number - 1].slides,
+            text=context_results[number - 1].text,
+            elements=context_results[number - 1].elements,
         )
         for number in cited_numbers
         if 1 <= number <= len(context_results)

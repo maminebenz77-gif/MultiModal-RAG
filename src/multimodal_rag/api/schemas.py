@@ -118,14 +118,6 @@ class QueryRequest(BaseModel):
     the backend uses the active .env profile defaults."""
 
 
-class CitationOut(BaseModel):
-    marker: int
-    chunk_id: str
-    source: str
-    pages: list[int]
-    slides: list[int]
-
-
 class ChunkElementOut(BaseModel):
     type: str
     text: str | None = None
@@ -133,6 +125,21 @@ class ChunkElementOut(BaseModel):
     description: str | None = None
     page: int | None = None
     slide: int | None = None
+
+
+class CitationOut(BaseModel):
+    marker: int
+    chunk_id: str
+    source: str
+    pages: list[int]
+    slides: list[int]
+    text: str = ""
+    elements: list[ChunkElementOut] = []
+    """A snapshot of the cited chunk's own text/elements, persisted
+    alongside the citation (see api/db.py) so a reloaded conversation
+    can still show real chunk detail -- an actual table, an actual
+    image -- not just the bare marker/source/location. Empty for
+    citations recorded before this field existed."""
 
 
 class RetrievedChunkOut(BaseModel):
@@ -144,11 +151,11 @@ class RetrievedChunkOut(BaseModel):
     slides: list[int]
     elements: list[ChunkElementOut] = []
     """The chunk's real constituent parts (title/paragraph/table/image),
-    for rendering it as more than its flattened `text` -- see
-    generation/schema.py's Citation, which shares a chunk_id with these
-    so a citation can be matched to its full detail here. Empty for
+    for rendering it as more than its flattened `text`. Empty for
     chunks produced before this field existed (not yet re-ingested) or
-    by flatten-first chunking strategies."""
+    by flatten-first chunking strategies. This is the full retrieved-
+    candidate set, live-turn-only (not persisted) -- see CitationOut
+    for the cited subset, which IS persisted."""
 
 
 class QueryResponse(BaseModel):

@@ -78,6 +78,11 @@ async def test_query_returns_an_answer_with_citations(client: httpx.AsyncClient)
     assert body["refused"] is False
     assert len(body["citations"]) == 1
     assert body["citations"][0]["marker"] == 1
+    # A citation carries a full snapshot of the chunk it points to, not
+    # just marker/source/location -- this is what lets a reloaded
+    # conversation still show real chunk detail.
+    assert body["citations"][0]["text"]
+    assert body["citations"][0]["elements"]
     assert "query_id" in body
     assert len(body["retrieved_chunks"]) >= 1
     assert "text" in body["retrieved_chunks"][0]

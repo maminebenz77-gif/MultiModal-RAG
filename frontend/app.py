@@ -111,9 +111,11 @@ def _load_conversation(conversation_id: str) -> bool:
     except httpx.HTTPError:
         return False
     st.session_state.conversation_id = conversation_id
-    # retrieved_chunks isn't persisted server-side (only citations are --
-    # see api/db.py) so a reloaded turn simply has none; a turn generated
-    # later this session still does.
+    # retrieved_chunks (the full, mostly-uncited candidate set) isn't
+    # persisted server-side -- only citations are, but citations carry a
+    # full text/elements snapshot of their own (see api/db.py), so a
+    # reloaded turn's citation buttons still work; only the "Retrieved
+    # chunks (N)" expander is empty for a reloaded turn.
     st.session_state.turns = [
         {**message, "retrieved_chunks": []} for message in resp.json()["messages"]
     ]
@@ -578,21 +580,18 @@ for turn in st.session_state.turns:
 
         if turn["citations"]:
             st.markdown("**Citations**")
-            _chunks_by_id = {c["chunk_id"]: c for c in turn["retrieved_chunks"]}
+            # Citations now carry their own text/elements snapshot (see
+            # api/db.py), so this works identically whether the turn is
+            # live or reloaded -- no more looking a chunk up in
+            # retrieved_chunks (empty for a reloaded turn) or disabling
+            # the button when that lookup comes up empty.
             for c in turn["citations"]:
                 location = _location_suffix(c["pages"], c["slides"])
-                _cited_chunk = _chunks_by_id.get(c["chunk_id"])
                 if st.button(
                     f"⟦{c['marker']}⟧ {c['source']}{location}",
                     key=f"cite_{turn['query_id']}_{c['marker']}",
-                    disabled=_cited_chunk is None,
-                    help=(
-                        None
-                        if _cited_chunk is not None
-                        else "Chunk detail isn't available for a reloaded conversation."
-                    ),
                 ):
-                    _show_chunk_detail(_cited_chunk)
+                    _show_chunk_detail(c)
 
         if turn["retrieved_chunks"]:
             with st.expander(f"Retrieved chunks ({len(turn['retrieved_chunks'])})"):

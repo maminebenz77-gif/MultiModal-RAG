@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel
 
+from ..chunking.schema import ChunkElement
 from ..stores.schema import SearchResult
 
 
@@ -13,6 +14,14 @@ class Citation(BaseModel):
     source: str
     pages: list[int] = []
     slides: list[int] = []
+
+    text: str = ""
+    elements: list[ChunkElement] = []
+    """A snapshot of the cited chunk's own text/elements at the moment it
+    was cited -- persisted (see api/db.py's citations table) so a
+    reloaded conversation can still show real chunk detail, not just
+    the bare marker/source/location, even if the corpus has since
+    changed or that chunk no longer exists there."""
 
 
 class RagAnswer(BaseModel):
