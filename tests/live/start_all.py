@@ -31,7 +31,24 @@ def _try_start_stores_with_docker() -> bool:
         return False
 
     try:
-        subprocess.run(["docker", "compose", "up", "-d"], cwd=PROJECT_ROOT, check=True)
+        # Named explicitly, NOT a bare `up -d` -- docker-compose.yml also
+        # defines an `api` service (the containerized deployment path,
+        # meant to be run as `-f docker-compose.yml -f
+        # docker-compose.local.yml`, which is what actually supplies
+        # RAG_ENV/.env.local). A bare `up -d` here would start that `api`
+        # container with neither override, so it crash-loops on missing
+        # Settings fields (llm_provider, embed_provider, ...) while also
+        # squatting on port 8000 -- exactly the port this script's own
+        # native uvicorn process below needs, and _is_port_open() can't
+        # tell a working backend from a crash-looping one, only that
+        # *something* is listening. This script only ever wants the
+        # stores from Compose; the backend/frontend it starts itself,
+        # natively, below.
+        subprocess.run(
+            ["docker", "compose", "up", "-d", "qdrant", "elasticsearch"],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
     except (subprocess.CalledProcessError, OSError) as exc:
         print(f"Docker unavailable or failed ({exc}); falling back to local services.")
         return False

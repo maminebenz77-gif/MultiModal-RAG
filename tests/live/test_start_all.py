@@ -73,3 +73,30 @@ def test_wait_for_managed_port_reports_early_process_exit(monkeypatch) -> None:
         assert str(exc) == "Backend exited with code 7 before opening port 8000"
     else:
         raise AssertionError("Expected an early process-exit error")
+
+
+def test_docker_start_only_targets_qdrant_and_elasticsearch_not_api(monkeypatch) -> None:
+    """Regression test: docker-compose.yml also defines an `api` service --
+    the separate containerized-deployment path, meant to be run with an
+    override (`-f docker-compose.yml -f docker-compose.local.yml`) that
+    supplies RAG_ENV/.env.local. A bare `docker compose up -d` here
+    would start that `api` service with neither override, so it
+    crash-loops on missing Settings fields (llm_provider, embed_provider,
+    ...) while also squatting on port 8000 -- exactly what this script's
+    own native uvicorn process below needs, and _is_port_open() can't
+    tell a working backend from a crash-looping one. Caught live:
+    start_all.py reported everything running, but /ingest failed because
+    the "backend" it found on port 8000 was the crash-looping container."""
+    run_calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None, check=None):
+        run_calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(start_all.shutil, "which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(start_all.subprocess, "run", fake_run)
+
+    result = start_all._try_start_stores_with_docker()
+
+    assert result is True
+    assert run_calls == [["docker", "compose", "up", "-d", "qdrant", "elasticsearch"]]
