@@ -1,4 +1,5 @@
-"""Streamlit demo UI for the RAG API.
+"""Streamlit demo UI for the RAG API -- a real chat, not a single
+question/answer form.
 
 Deliberately talks to the API only over HTTP (httpx), never imports
 `multimodal_rag` directly -- the API is the real boundary between
@@ -8,7 +9,7 @@ this keeps that true in practice, not just on paper.
 Run: `uv run streamlit run frontend/app.py`
 
 Streamlit re-runs this whole script top-to-bottom on every widget
-interaction -- the last query's result has to live in
+interaction -- the conversation transcript has to live in
 st.session_state, or it would vanish the moment you touched an
 unrelated widget (like the retrieval-method dropdown).
 """
@@ -96,10 +97,32 @@ st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 api_base_url = get_frontend_settings().api_base_url
 provider_defaults = get_frontend_provider_defaults()
 
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
 if "conversation_id" not in st.session_state:
+    # The conversation_id lives in the URL (?c=...), not just session
+    # state, so a browser refresh can resume it -- the backend already
+    # owns the full history (see api/db.py), this just fetches it once
+    # on load. A stale/unknown id (e.g. a bookmarked link after the DB
+    # was wiped) must not break the page: fall back to a fresh
+    # conversation exactly like the /health check below already falls
+    # back to "Status: unreachable" rather than raising.
+    _url_conversation_id = st.query_params.get("c")
     st.session_state.conversation_id = None
+    st.session_state.turns = []
+    if _url_conversation_id:
+        try:
+            _resp = httpx.get(
+                f"{api_base_url}/conversations/{_url_conversation_id}", timeout=10.0
+            )
+            _resp.raise_for_status()
+            st.session_state.conversation_id = _url_conversation_id
+            # retrieved_chunks isn't persisted server-side (only
+            # citations are -- see api/db.py) so a reloaded turn simply
+            # has none; a turn generated later this session still does.
+            st.session_state.turns = [
+                {**message, "retrieved_chunks": []} for message in _resp.json()["messages"]
+            ]
+        except httpx.HTTPError:
+            st.query_params.pop("c", None)
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
 
@@ -114,19 +137,19 @@ def _location_suffix(pages: list[int], slides: list[int]) -> str:
     return ""
 
 
-def _submit_feedback(query_id: str, rating: str, comment: str) -> None:
+def _submit_feedback(query_id: str, rating: str) -> None:
     try:
         response = httpx.post(
             f"{api_base_url}/feedback",
-            json={"query_id": query_id, "rating": rating, "comment": comment or None},
+            json={"query_id": query_id, "rating": rating, "comment": None},
             timeout=30.0,
         )
         response.raise_for_status()
         st.toast("Feedback recorded, thank you!")
-        # The Metrics panel above (in script order) already ran and read
-        # the pre-feedback counts this render -- st.toast() is specifically
-        # designed to survive an immediate rerun, so the confirmation still
-        # shows even though the script restarts right after.
+        # The Metrics panel (in script order) already ran and read the
+        # pre-feedback counts this render -- st.toast() is specifically
+        # designed to survive an immediate rerun, so the confirmation
+        # still shows even though the script restarts right after.
         st.rerun()
     except httpx.HTTPError as exc:
         st.error(f"Feedback failed: {exc}")
@@ -223,6 +246,14 @@ with st.sidebar:
         )
 
     runtime_overrides = _runtime_overrides_payload(st.session_state)
+
+    with st.expander("Retrieval settings", expanded=False):
+        method_label = st.selectbox(
+            "Retrieval method", list(_METHOD_OPTIONS.keys()), index=3
+        )
+        top_k = st.number_input("top_k", min_value=1, max_value=20, value=5)
+
+    retrieval_method, rerank = _METHOD_OPTIONS[method_label]
 
     st.divider()
     st.header("Ingest a document")
@@ -363,87 +394,112 @@ with st.sidebar:
         if failures:
             st.error("Failed:\n" + "\n".join(failures))
 
+    st.divider()
+    with st.expander("📈 Metrics"):
+        try:
+            metrics = httpx.get(f"{api_base_url}/metrics", timeout=10.0).json()
+            tile_cols = st.columns(2)
+            tile_cols[0].metric("Documents", metrics["total_documents"])
+            tile_cols[1].metric("Chunks", metrics["total_chunks"])
+            tile_cols = st.columns(2)
+            tile_cols[0].metric("Queries", metrics["total_queries"])
+            tile_cols[1].metric("Refusal rate", f"{metrics['refusal_rate']:.0%}")
+            tile_cols = st.columns(2)
+            tile_cols[0].metric("👍 Helpful", metrics["feedback_up"])
+            tile_cols[1].metric("👎 Not helpful", metrics["feedback_down"])
+        except httpx.HTTPError as exc:
+            st.error(f"Could not load metrics: {exc}")
+
+    with st.expander("📚 Documents in the corpus"):
+        try:
+            documents = httpx.get(f"{api_base_url}/documents", timeout=10.0).json()["documents"]
+            if documents:
+                st.dataframe(
+                    [
+                        {
+                            "Filename": d["filename"],
+                            "Parent chunks": d["num_parent_chunks"],
+                            "Child chunks": d["num_child_chunks"],
+                            "Ingested at": d["ingested_at"],
+                        }
+                        for d in documents
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No documents ingested yet.")
+        except httpx.HTTPError as exc:
+            st.error(f"Could not load documents: {exc}")
+
+        if st.session_state.confirm_wipe:
+            st.warning("This deletes every ingested document and chunk. This cannot be undone.")
+            confirm_col, cancel_col = st.columns(2)
+            if confirm_col.button("Yes, wipe everything", type="primary"):
+                try:
+                    response = httpx.delete(f"{api_base_url}/documents", timeout=60.0)
+                    response.raise_for_status()
+                    body = response.json()
+                    st.session_state.confirm_wipe = False
+                    st.toast(
+                        f"Wiped {body['documents_deleted']} document(s), "
+                        f"{body['chunks_deleted']} chunk(s)."
+                    )
+                    st.rerun()
+                except httpx.HTTPError as exc:
+                    st.error(f"Wipe failed: {exc}")
+            if cancel_col.button("Cancel"):
+                st.session_state.confirm_wipe = False
+                st.rerun()
+        elif st.button("🗑️ Wipe all ingested documents"):
+            st.session_state.confirm_wipe = True
+            st.rerun()
+
 st.title("Multimodal RAG Demo")
 
 conversation_col, _ = st.columns([1, 5])
 if conversation_col.button("New conversation"):
     st.session_state.conversation_id = None
-    st.session_state.last_result = None
+    st.session_state.turns = []
+    st.query_params.pop("c", None)
     st.rerun()
 
-with st.expander("📈 Metrics"):
-    try:
-        metrics = httpx.get(f"{api_base_url}/metrics", timeout=10.0).json()
-        tile_cols = st.columns(6)
-        tile_cols[0].metric("Documents", metrics["total_documents"])
-        tile_cols[1].metric("Chunks", metrics["total_chunks"])
-        tile_cols[2].metric("Queries", metrics["total_queries"])
-        tile_cols[3].metric("Refusal rate", f"{metrics['refusal_rate']:.0%}")
-        tile_cols[4].metric("👍 Helpful", metrics["feedback_up"])
-        tile_cols[5].metric("👎 Not helpful", metrics["feedback_down"])
-    except httpx.HTTPError as exc:
-        st.error(f"Could not load metrics: {exc}")
-
-with st.expander("📚 Documents in the corpus"):
-    try:
-        documents = httpx.get(f"{api_base_url}/documents", timeout=10.0).json()["documents"]
-        if documents:
-            st.dataframe(
-                [
-                    {
-                        "Filename": d["filename"],
-                        "Parent chunks": d["num_parent_chunks"],
-                        "Child chunks": d["num_child_chunks"],
-                        "Ingested at": d["ingested_at"],
-                    }
-                    for d in documents
-                ],
-                width="stretch",
-                hide_index=True,
-            )
+for turn in st.session_state.turns:
+    with st.chat_message("user"):
+        st.write(turn["question"])
+    with st.chat_message("assistant"):
+        if turn["needs_clarification"]:
+            st.info(turn["answer"])
+        elif turn["refused"]:
+            st.warning(turn["answer"])
         else:
-            st.caption("No documents ingested yet.")
-    except httpx.HTTPError as exc:
-        st.error(f"Could not load documents: {exc}")
+            st.write(turn["answer"])
 
-    if st.session_state.confirm_wipe:
-        st.warning("This deletes every ingested document and chunk. This cannot be undone.")
-        confirm_col, cancel_col = st.columns(2)
-        if confirm_col.button("Yes, wipe everything", type="primary"):
-            try:
-                response = httpx.delete(f"{api_base_url}/documents", timeout=60.0)
-                response.raise_for_status()
-                body = response.json()
-                st.session_state.confirm_wipe = False
-                st.toast(
-                    f"Wiped {body['documents_deleted']} document(s), "
-                    f"{body['chunks_deleted']} chunk(s)."
-                )
-                st.rerun()
-            except httpx.HTTPError as exc:
-                st.error(f"Wipe failed: {exc}")
-        if cancel_col.button("Cancel"):
-            st.session_state.confirm_wipe = False
-            st.rerun()
-    elif st.button("🗑️ Wipe all ingested documents"):
-        st.session_state.confirm_wipe = True
-        st.rerun()
+        if turn["citations"]:
+            st.markdown("**Citations**")
+            for c in turn["citations"]:
+                location = _location_suffix(c["pages"], c["slides"])
+                st.markdown(f"⟦{c['marker']}⟧ **{c['source']}**{location}")
 
-with st.form("query_form"):
-    question = st.text_input("Question")
-    col1, col2 = st.columns(2)
-    with col1:
-        method_label = st.selectbox(
-            "Retrieval method", list(_METHOD_OPTIONS.keys()), index=3
-        )
-    with col2:
-        top_k = st.number_input("top_k", min_value=1, max_value=20, value=5)
-    ask_submitted = st.form_submit_button("Ask")
+        if turn["retrieved_chunks"]:
+            with st.expander(f"Retrieved chunks ({len(turn['retrieved_chunks'])})"):
+                for chunk in turn["retrieved_chunks"]:
+                    location = _location_suffix(chunk["pages"], chunk["slides"])
+                    st.markdown(f"**{chunk['source']}**{location} (score={chunk['score']:.3f})")
+                    st.caption(chunk["chunk_id"])
+                    st.text(chunk["text"])
+                    st.divider()
 
-if ask_submitted and question.strip():
-    retrieval_method, rerank = _METHOD_OPTIONS[method_label]
+        fb_up, fb_down = st.columns(2)
+        if fb_up.button("👍", key=f"fb_up_{turn['query_id']}"):
+            _submit_feedback(turn["query_id"], "up")
+        if fb_down.button("👎", key=f"fb_down_{turn['query_id']}"):
+            _submit_feedback(turn["query_id"], "down")
+
+prompt = st.chat_input("Ask a question")
+if prompt and prompt.strip():
     query_payload = {
-        "question": question,
+        "question": prompt,
         "conversation_id": st.session_state.conversation_id,
         "retrieval_method": retrieval_method,
         "top_k": top_k,
@@ -458,8 +514,10 @@ if ask_submitted and question.strip():
             timeout=120.0,
         )
         response.raise_for_status()
-        st.session_state.last_result = response.json()
-        st.session_state.conversation_id = st.session_state.last_result["conversation_id"]
+        body = response.json()
+        st.session_state.conversation_id = body["conversation_id"]
+        st.query_params["c"] = body["conversation_id"]
+        st.session_state.turns.append({**body, "question": prompt})
         # Same reason as the feedback rerun above: the backend recorded
         # this query (and its refusal/method) before this response came
         # back, but the Metrics panel already rendered earlier in this
@@ -468,33 +526,3 @@ if ask_submitted and question.strip():
         st.rerun()
     except httpx.HTTPError as exc:
         st.error(f"Query failed: {_http_error_detail(exc)}")
-
-result = st.session_state.last_result
-if result is not None:
-    st.subheader("Answer")
-    if result["refused"]:
-        st.warning(result["answer"])
-    else:
-        st.write(result["answer"])
-
-    if result["citations"]:
-        st.markdown("**Citations**")
-        for c in result["citations"]:
-            location = _location_suffix(c["pages"], c["slides"])
-            st.markdown(f"⟦{c['marker']}⟧ **{c['source']}**{location}")
-
-    st.markdown("**Was this helpful?**")
-    comment = st.text_input("Comment (optional)", key="feedback_comment")
-    fb_col1, fb_col2 = st.columns(2)
-    if fb_col1.button("👍 Helpful"):
-        _submit_feedback(result["query_id"], "up", comment)
-    if fb_col2.button("👎 Not helpful"):
-        _submit_feedback(result["query_id"], "down", comment)
-
-    with st.expander(f"Retrieved chunks ({len(result['retrieved_chunks'])})"):
-        for chunk in result["retrieved_chunks"]:
-            location = _location_suffix(chunk["pages"], chunk["slides"])
-            st.markdown(f"**{chunk['source']}**{location} (score={chunk['score']:.3f})")
-            st.caption(chunk["chunk_id"])
-            st.text(chunk["text"])
-            st.divider()

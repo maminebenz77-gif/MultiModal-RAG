@@ -88,34 +88,34 @@ def test_wipe_button_shows_a_confirmation_before_actually_wiping() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    wipe_button = next(b for b in at.main.button if "Wipe all" in b.label)
+    wipe_button = next(b for b in at.sidebar.button if "Wipe all" in b.label)
     wipe_button.click()
     at.run(timeout=30)
 
     assert not at.exception
     assert any("cannot be undone" in w.value for w in at.warning)
-    assert any(b.label == "Yes, wipe everything" for b in at.main.button)
+    assert any(b.label == "Yes, wipe everything" for b in at.sidebar.button)
 
 
 def test_wipe_confirmation_cancel_returns_to_the_normal_view() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    next(b for b in at.main.button if "Wipe all" in b.label).click()
+    next(b for b in at.sidebar.button if "Wipe all" in b.label).click()
     at.run(timeout=30)
-    next(b for b in at.main.button if b.label == "Cancel").click()
+    next(b for b in at.sidebar.button if b.label == "Cancel").click()
     at.run(timeout=30)
 
     assert not at.exception
     assert at.session_state["confirm_wipe"] is False
-    assert any("Wipe all" in b.label for b in at.main.button)
+    assert any("Wipe all" in b.label for b in at.sidebar.button)
 
 
 def test_metrics_and_documents_panels_render_without_exceptions() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    labels = [e.label for e in at.main.expander]
+    labels = [e.label for e in at.sidebar.expander]
     assert "📈 Metrics" in labels
     assert "📚 Documents in the corpus" in labels
     assert not at.exception
@@ -125,21 +125,36 @@ def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    at.text_input[0].set_value("")
-    at.button(key="FormSubmitter:query_form-Ask").click()
-    at.run(timeout=30)
+    at.chat_input[0].set_value("").run(timeout=30)
 
     assert not at.exception
-    assert at.session_state["last_result"] is None
+    assert at.session_state["turns"] == []
 
 
 def test_new_conversation_clears_session_history() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
     at.session_state["conversation_id"] = "some-conversation-id"
+    at.session_state["turns"] = [{"question": "Earlier", "answer": "Answer"}]
 
     next(b for b in at.main.button if b.label == "New conversation").click()
     at.run(timeout=30)
 
     assert not at.exception
     assert at.session_state["conversation_id"] is None
+    assert at.session_state["turns"] == []
+
+
+def test_resuming_from_an_unknown_conversation_id_in_the_url_starts_fresh() -> None:
+    """No real API is listening in this test environment (see the module
+    docstring), so a resume attempt fails exactly like the /health check
+    already does elsewhere in the app -- this exercises that the
+    fallback (start a fresh conversation, drop the stale query param)
+    doesn't raise, without needing to mock httpx."""
+    at = AppTest.from_file(_APP_PATH)
+    at.query_params["c"] = "some-unknown-id"
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["conversation_id"] is None
+    assert at.session_state["turns"] == []
