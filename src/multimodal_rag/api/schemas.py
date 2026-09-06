@@ -181,6 +181,22 @@ class ConversationResponse(BaseModel):
     /conversations/{conversation_id})."""
 
 
+class ConversationSummaryOut(BaseModel):
+    conversation_id: str
+    preview: str
+    """The conversation's first question -- enough to recognize it in a
+    picker without fetching the full turn history."""
+
+    message_count: int
+    updated_at: datetime
+    """When its most recent turn was recorded."""
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummaryOut]
+    """Most recently active first (see GET /conversations)."""
+
+
 class FeedbackRequest(BaseModel):
     query_id: str
     rating: Literal["up", "down"]

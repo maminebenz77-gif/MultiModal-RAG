@@ -1,6 +1,7 @@
-"""GET /conversations/{conversation_id} -- covers what test_query.py
-doesn't: reading a conversation's full turn history (with citations)
-back out, and the 404 for an unknown id.
+"""GET /conversations and GET /conversations/{conversation_id} -- covers
+what test_query.py doesn't: listing recent conversations for a picker,
+reading a conversation's full turn history (with citations) back out,
+and the 404 for an unknown id.
 """
 
 import httpx
@@ -72,3 +73,27 @@ async def test_get_conversation_returns_404_for_an_unknown_id(client: httpx.Asyn
     response = await client.get("/conversations/nonexistent")
 
     assert response.status_code == 404
+
+
+async def test_list_conversations_includes_a_newly_created_one_with_preview(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FakeLLM())
+
+    query_response = await client.post("/query", json={"question": "a fresh question"})
+    conversation_id = query_response.json()["conversation_id"]
+
+    response = await client.get("/conversations")
+
+    assert response.status_code == 200
+    conversations = response.json()["conversations"]
+    match = next(c for c in conversations if c["conversation_id"] == conversation_id)
+    assert match["preview"] == "a fresh question"
+    assert match["message_count"] == 1
+
+
+async def test_list_conversations_is_empty_on_a_fresh_service(client: httpx.AsyncClient) -> None:
+    response = await client.get("/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["conversations"] == []

@@ -118,6 +118,44 @@ def test_get_recent_turns_only_includes_this_conversation(tmp_path: Path) -> Non
     assert db.get_recent_turns(conversation_a, limit=10) == [("question a", "answer a")]
 
 
+def test_list_conversations_excludes_conversations_with_no_turns(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    empty_conversation = db.create_conversation()
+    active_conversation = db.create_conversation()
+    db.record_query(
+        "q-1", "a question", "an answer", False, "hybrid_rrf",
+        conversation_id=active_conversation,
+    )
+
+    summaries = db.list_conversations()
+
+    ids = [s.conversation_id for s in summaries]
+    assert active_conversation in ids
+    assert empty_conversation not in ids
+
+
+def test_list_conversations_orders_by_most_recently_active_and_carries_preview(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    older = db.create_conversation()
+    db.record_query(
+        "q-older", "older question", "older answer", False, "hybrid_rrf",
+        conversation_id=older,
+    )
+    newer = db.create_conversation()
+    db.record_query(
+        "q-newer", "newer question", "newer answer", False, "hybrid_rrf",
+        conversation_id=newer,
+    )
+
+    summaries = db.list_conversations()
+
+    assert [s.conversation_id for s in summaries] == [newer, older]
+    assert summaries[0].preview == "newer question"
+    assert summaries[0].message_count == 1
+
+
 def test_record_query_persists_citations_and_get_conversation_messages_reads_them_back(
     tmp_path: Path,
 ) -> None:

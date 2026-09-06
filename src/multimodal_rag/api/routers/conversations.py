@@ -1,7 +1,8 @@
-"""GET /conversations/{conversation_id}: fetch a conversation's full
-turn history, each with its own citations -- for reloading/resuming a
-conversation (see the frontend chat UI) rather than relying on the
-client to have kept it.
+"""GET /conversations: list recent conversations (preview + activity), for
+a "previous conversations" picker. GET /conversations/{conversation_id}:
+fetch one conversation's full turn history, each with its own citations
+-- for reloading/resuming a conversation (see the frontend chat UI)
+rather than relying on the client to have kept it.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,9 +10,15 @@ from starlette.concurrency import run_in_threadpool
 
 from ..db import Database
 from ..dependencies import get_db
-from ..schemas import ConversationResponse
+from ..schemas import ConversationListResponse, ConversationResponse
 
 router = APIRouter()
+
+
+@router.get("/conversations", response_model=ConversationListResponse)
+async def list_conversations(db: Database = Depends(get_db)) -> ConversationListResponse:
+    conversations = await run_in_threadpool(db.list_conversations)
+    return ConversationListResponse(conversations=conversations)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)

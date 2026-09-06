@@ -31,6 +31,7 @@ from ..generation.schema import Citation
 from .schemas import (
     CitationOut,
     ConversationMessageOut,
+    ConversationSummaryOut,
     DocumentSummary,
     IngestResponse,
     MetricsResponse,
@@ -315,6 +316,39 @@ class Database:
                 (conversation_id, limit),
             ).fetchall()
         return [(row["question"], row["answer"]) for row in reversed(rows)]
+
+    def list_conversations(self, limit: int = 20) -> list[ConversationSummaryOut]:
+        """Conversations that have at least one recorded turn, most
+        recently active first -- a conversation row created right before
+        a /query call that then failed has nothing worth resuming, so
+        it's excluded rather than showing up as an empty entry."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    c.conversation_id AS conversation_id,
+                    (SELECT question FROM queries WHERE conversation_id = c.conversation_id
+                        ORDER BY created_at LIMIT 1) AS preview,
+                    (SELECT COUNT(*) FROM queries WHERE conversation_id = c.conversation_id)
+                        AS message_count,
+                    (SELECT MAX(created_at) FROM queries WHERE conversation_id = c.conversation_id)
+                        AS updated_at
+                FROM conversations c
+                WHERE EXISTS (SELECT 1 FROM queries WHERE conversation_id = c.conversation_id)
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            ConversationSummaryOut(
+                conversation_id=row["conversation_id"],
+                preview=row["preview"],
+                message_count=row["message_count"],
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in rows
+        ]
 
     def get_conversation_messages(self, conversation_id: str) -> list[ConversationMessageOut]:
         with self._connect() as conn:

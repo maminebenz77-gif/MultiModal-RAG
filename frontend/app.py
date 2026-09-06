@@ -97,31 +97,40 @@ st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 api_base_url = get_frontend_settings().api_base_url
 provider_defaults = get_frontend_provider_defaults()
 
+
+def _load_conversation(conversation_id: str) -> bool:
+    """Fetches a conversation's turn history and loads it into session
+    state; returns False (leaving state untouched) if the id doesn't
+    resolve. Shared by URL-based resume on page load and the sidebar's
+    "previous conversations" picker -- one fetch-and-populate path, not
+    two copies of it."""
+    try:
+        resp = httpx.get(f"{api_base_url}/conversations/{conversation_id}", timeout=10.0)
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return False
+    st.session_state.conversation_id = conversation_id
+    # retrieved_chunks isn't persisted server-side (only citations are --
+    # see api/db.py) so a reloaded turn simply has none; a turn generated
+    # later this session still does.
+    st.session_state.turns = [
+        {**message, "retrieved_chunks": []} for message in resp.json()["messages"]
+    ]
+    return True
+
+
 if "conversation_id" not in st.session_state:
     # The conversation_id lives in the URL (?c=...), not just session
-    # state, so a browser refresh can resume it -- the backend already
-    # owns the full history (see api/db.py), this just fetches it once
-    # on load. A stale/unknown id (e.g. a bookmarked link after the DB
-    # was wiped) must not break the page: fall back to a fresh
-    # conversation exactly like the /health check below already falls
-    # back to "Status: unreachable" rather than raising.
+    # state, so a browser refresh can resume it. A stale/unknown id (e.g.
+    # a bookmarked link after the DB was wiped) must not break the page:
+    # fall back to a fresh conversation exactly like the /health check
+    # below already falls back to "Status: unreachable" rather than
+    # raising.
     _url_conversation_id = st.query_params.get("c")
     st.session_state.conversation_id = None
     st.session_state.turns = []
     if _url_conversation_id:
-        try:
-            _resp = httpx.get(
-                f"{api_base_url}/conversations/{_url_conversation_id}", timeout=10.0
-            )
-            _resp.raise_for_status()
-            st.session_state.conversation_id = _url_conversation_id
-            # retrieved_chunks isn't persisted server-side (only
-            # citations are -- see api/db.py) so a reloaded turn simply
-            # has none; a turn generated later this session still does.
-            st.session_state.turns = [
-                {**message, "retrieved_chunks": []} for message in _resp.json()["messages"]
-            ]
-        except httpx.HTTPError:
+        if not _load_conversation(_url_conversation_id):
             st.query_params.pop("c", None)
 if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
@@ -172,6 +181,32 @@ def _http_error_detail(exc: httpx.HTTPError) -> str:
 
 
 with st.sidebar:
+    st.subheader("💬 Previous conversations")
+    try:
+        _conversations_response = httpx.get(f"{api_base_url}/conversations", timeout=10.0)
+        _conversations_response.raise_for_status()
+        _conversations = _conversations_response.json()["conversations"]
+    except httpx.HTTPError:
+        _conversations = []
+
+    if not _conversations:
+        st.caption("No previous conversations yet.")
+    else:
+        for _conversation in _conversations:
+            _preview = _conversation["preview"]
+            _label = _preview if len(_preview) <= 40 else _preview[:37] + "..."
+            _is_current = _conversation["conversation_id"] == st.session_state.conversation_id
+            if st.button(
+                _label,
+                key=f"load_conversation_{_conversation['conversation_id']}",
+                disabled=_is_current,
+                width="stretch",
+            ) and _load_conversation(_conversation["conversation_id"]):
+                st.query_params["c"] = _conversation["conversation_id"]
+                st.rerun()
+
+    st.divider()
+
     with st.expander("Runtime providers", expanded=False):
         st.caption("These values override backend .env defaults for this UI session only.")
 
@@ -465,9 +500,9 @@ if conversation_col.button("New conversation"):
     st.rerun()
 
 for turn in st.session_state.turns:
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🔵"):
         st.write(turn["question"])
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🤖"):
         if turn["needs_clarification"]:
             st.info(turn["answer"])
         elif turn["refused"]:

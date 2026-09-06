@@ -28,6 +28,17 @@ def test_app_renders_title_and_sidebar() -> None:
     assert any(h.value == "Ingest a document" for h in at.sidebar.header)
 
 
+def test_previous_conversations_falls_back_gracefully_when_api_is_unreachable() -> None:
+    """No real API is listening in this test environment (see the module
+    docstring) -- GET /conversations must degrade to an empty list
+    rather than raising, same discipline as the other sidebar API calls."""
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("No previous conversations yet" in c.value for c in at.sidebar.caption)
+
+
 def test_ingest_without_a_file_shows_a_warning() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
