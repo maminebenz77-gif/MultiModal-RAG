@@ -101,6 +101,18 @@ def test_child_inherits_parent_element_types() -> None:
     assert child.metadata.element_types == ["title", "paragraph"]
 
 
+def test_child_inherits_parent_elements() -> None:
+    elements = [
+        _el(ElementType.TITLE, 5, "Section A"),
+        _el(ElementType.PARAGRAPH, 6, "Body."),
+    ]
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+    parent = next(c for c in chunks if c.parent_id is None)
+    child = next(c for c in chunks if c.parent_id is not None)
+    assert child.metadata.elements == parent.metadata.elements
+    assert [e.type for e in child.metadata.elements] == ["title", "paragraph"]
+
+
 def test_child_inherits_parent_pages() -> None:
     elements = [
         _el(ElementType.TITLE, 5, "Section A", page=2),

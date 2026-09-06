@@ -1,5 +1,16 @@
+import base64
+import io
+
+from PIL import Image
+
 from multimodal_rag.chunking.structure_aware import StructureAwareChunker
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
+
+
+def _make_png(width: int, height: int) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color="red").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _el(
@@ -8,10 +19,14 @@ def _el(
     text: str | None = None,
     page: int | None = None,
     slide: int | None = None,
+    image_bytes: bytes | None = None,
+    description: str | None = None,
 ) -> Element:
     return Element(
         type=el_type,
         text=text,
+        image_bytes=image_bytes,
+        description=description,
         metadata=ElementMetadata(
             source_file="doc.md", position=position, page=page, slide=slide
         ),
@@ -122,3 +137,49 @@ def test_pages_and_slides_empty_when_source_has_neither() -> None:
     chunks = StructureAwareChunker().chunk(elements)
     assert chunks[0].metadata.pages == []
     assert chunks[0].metadata.slides == []
+
+
+def test_elements_captures_title_and_paragraph_text() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.PARAGRAPH, 1, "Body of A."),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert [e.type for e in chunks[0].metadata.elements] == ["title", "paragraph"]
+    assert [e.text for e in chunks[0].metadata.elements] == ["Section A", "Body of A."]
+
+
+def test_elements_captures_table_markdown_text() -> None:
+    table_text = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.TABLE, 1, table_text),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    table_element = chunks[0].metadata.elements[1]
+    assert table_element.type == "table"
+    assert table_element.text == table_text
+
+
+def test_elements_captures_downscaled_image_and_description() -> None:
+    image_bytes = _make_png(2000, 1000)
+    elements = [
+        _el(ElementType.TITLE, 0, "Section A"),
+        _el(ElementType.IMAGE, 1, image_bytes=image_bytes, description="A red rectangle."),
+    ]
+    chunks = StructureAwareChunker().chunk(elements)
+    image_element = chunks[0].metadata.elements[1]
+
+    assert image_element.type == "image"
+    assert image_element.description == "A red rectangle."
+    assert image_element.text is None
+    assert image_element.image_base64 is not None
+    decoded = base64.b64decode(image_element.image_base64)
+    resized = Image.open(io.BytesIO(decoded))
+    assert max(resized.width, resized.height) <= 512
+
+
+def test_elements_image_base64_is_none_when_no_bytes_were_captured() -> None:
+    elements = [_el(ElementType.IMAGE, 0, description="Missing bytes.")]
+    chunks = StructureAwareChunker().chunk(elements)
+    assert chunks[0].metadata.elements[0].image_base64 is None

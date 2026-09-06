@@ -29,7 +29,7 @@ import uuid
 
 from qdrant_client import QdrantClient, models
 
-from ..chunking.schema import Chunk, ChunkMetadata
+from ..chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from ..providers.schema import EmbeddingVector, assert_single_model
 from ..retry import retry_with_backoff
 from .base import VectorStore
@@ -230,6 +230,7 @@ class QdrantStore(VectorStore):
                 "source": chunk.metadata.source_file,
                 "doc_id": chunk.metadata.source_file,
                 "element_types": chunk.metadata.element_types,
+                "elements": [e.model_dump() for e in chunk.metadata.elements],
                 "pages": chunk.metadata.pages,
                 "slides": chunk.metadata.slides,
                 "model_id": vector.model_id,
@@ -271,6 +272,7 @@ class QdrantStore(VectorStore):
                 source=point.payload["source"],
                 doc_id=point.payload["doc_id"],
                 element_types=point.payload["element_types"],
+                elements=[ChunkElement(**e) for e in point.payload.get("elements", [])],
                 pages=point.payload.get("pages", []),
                 slides=point.payload.get("slides", []),
                 parent_id=point.payload.get("parent_id"),
@@ -361,6 +363,7 @@ class QdrantStore(VectorStore):
             metadata=ChunkMetadata(
                 source_file=payload["source"],
                 element_types=payload["element_types"],
+                elements=[ChunkElement(**e) for e in payload.get("elements", [])],
                 pages=payload.get("pages", []),
                 slides=payload.get("slides", []),
             ),

@@ -66,6 +66,7 @@ class ParentChildChunker(Chunker):
                                 source_file=parent.metadata.source_file,
                                 element_positions=parent.metadata.element_positions,
                                 element_types=parent.metadata.element_types,
+                                elements=parent.metadata.elements,
                                 pages=parent.metadata.pages,
                                 slides=parent.metadata.slides,
                             ),

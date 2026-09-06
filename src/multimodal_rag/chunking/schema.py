@@ -3,6 +3,38 @@
 from pydantic import BaseModel
 
 
+class ChunkElement(BaseModel):
+    """A snapshot of one Element (ingestion/schema.py) that fed a chunk
+    -- kept around so a chunk can later be displayed as an assembly of
+    its real parts (an actual rendered table, an actual image) rather
+    than only the flattened `Chunk.text` blob. Same best-effort rule as
+    the rest of ChunkMetadata: populated by strategies that walk the
+    Element list directly, empty for flatten-first ones."""
+
+    type: str
+    """An ElementType value ("title" | "paragraph" | "table" | "image" |
+    "chart"), kept as a plain str (not the enum) so this schema has no
+    import dependency on the ingestion layer -- same reasoning as
+    ChunkMetadata.element_types already being list[str]."""
+
+    text: str | None = None
+    """Title/paragraph text, or a table already rendered as markdown --
+    same content ChunkMetadata.element_types would already tell you WAS
+    a table, just now with the actual content to render as one."""
+
+    image_base64: str | None = None
+    """A downscaled thumbnail, image/chart elements only -- see
+    image_utils.downscale_image(). None for every other type, and for
+    an image/chart whose bytes weren't available at ingest time."""
+
+    description: str | None = None
+    """Vision-generated caption, image/chart elements only -- shown
+    alongside image_base64, not instead of it."""
+
+    page: int | None = None
+    slide: int | None = None
+
+
 class ChunkMetadata(BaseModel):
     source_file: str
     element_positions: list[int] = []
@@ -18,6 +50,17 @@ class ChunkMetadata(BaseModel):
     (TITLE, PARAGRAPH, TABLE, ...) — a single "the type" isn't always
     well-defined, so this is a list, not one value. Same best-effort
     rule as element_positions."""
+
+    elements: list[ChunkElement] = []
+    """The actual elements behind element_types, in order -- lets a
+    caller render this chunk as its real constituent parts instead of
+    just the flattened text. Same best-effort rule as element_positions/
+    element_types. A parent-child child chunk carries its PARENT's
+    elements verbatim (see ParentChildChunker) -- a child is an
+    arbitrary character-range slice of the parent's flattened text, so
+    precise per-child element attribution isn't attempted here, same
+    pre-existing approximation element_types/pages/slides already make
+    for children."""
 
     pages: list[int] = []
     slides: list[int] = []

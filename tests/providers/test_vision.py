@@ -6,11 +6,7 @@ import warnings
 import pytest
 from PIL import Image
 
-from multimodal_rag.providers.vision import (
-    InternalServerVisionProvider,
-    LiteLLMVisionProvider,
-    _downscale_if_needed,
-)
+from multimodal_rag.providers.vision import InternalServerVisionProvider, LiteLLMVisionProvider
 
 _TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -97,30 +93,6 @@ def test_internal_server_vision_provider_describe_is_unimplemented() -> None:
     provider = InternalServerVisionProvider(base_url="http://10.0.0.5:8080")
     with pytest.raises(NotImplementedError):
         provider.describe(_TINY_PNG)
-
-
-class TestDownscaleIfNeeded:
-    def test_small_image_is_returned_unchanged(self) -> None:
-        small = _make_png(100, 100)
-        assert _downscale_if_needed(small, max_dimension=1024) == small
-
-    def test_large_image_is_shrunk_to_max_dimension(self) -> None:
-        large = _make_png(3000, 1500)
-        result = _downscale_if_needed(large, max_dimension=1024)
-
-        assert result != large
-        resized = Image.open(io.BytesIO(result))
-        assert max(resized.width, resized.height) == 1024
-
-    def test_aspect_ratio_is_preserved(self) -> None:
-        large = _make_png(3000, 1500)  # 2:1
-        result = _downscale_if_needed(large, max_dimension=1024)
-        resized = Image.open(io.BytesIO(result))
-        assert resized.width / resized.height == pytest.approx(2.0, rel=0.02)
-
-    def test_undecodable_bytes_are_returned_unchanged(self) -> None:
-        garbage = b"not an image at all"
-        assert _downscale_if_needed(garbage, max_dimension=1024) == garbage
 
 
 class TestLiteLLMVisionProviderDownscaling:

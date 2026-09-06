@@ -21,7 +21,14 @@ from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
 from ..db import Database
 from ..dependencies import get_app_state, get_db, get_retriever
-from ..schemas import CitationOut, ProviderOverride, QueryRequest, QueryResponse, RetrievedChunkOut
+from ..schemas import (
+    ChunkElementOut,
+    CitationOut,
+    ProviderOverride,
+    QueryRequest,
+    QueryResponse,
+    RetrievedChunkOut,
+)
 
 router = APIRouter()
 
@@ -180,6 +187,17 @@ async def query(
                 source=c.source,
                 pages=c.pages,
                 slides=c.slides,
+                elements=[
+                    ChunkElementOut(
+                        type=e.type,
+                        text=e.text,
+                        image_base64=e.image_base64,
+                        description=e.description,
+                        page=e.page,
+                        slide=e.slide,
+                    )
+                    for e in c.elements
+                ],
             )
             for c in result.retrieved_chunks
         ],

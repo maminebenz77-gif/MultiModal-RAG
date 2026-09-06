@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from multimodal_rag.chunking.schema import Chunk, ChunkMetadata
+from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
 
 _INDEX = "test_index"
@@ -27,6 +27,7 @@ def _chunk(
     pages: list[int] | None = None,
     parent_id: str | None = None,
     is_parent: bool = False,
+    elements: list[ChunkElement] | None = None,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
@@ -37,6 +38,7 @@ def _chunk(
             source_file=source,
             element_positions=[0],
             element_types=["title"],
+            elements=elements or [],
             pages=pages or [],
         ),
     )
@@ -179,6 +181,25 @@ def test_parent_id_is_none_when_chunk_has_no_parent(store: ElasticsearchStore) -
     store.index_chunks([_chunk("doc.md::a::0", "stored content")])
     results = store.search("stored content", top_k=1)
     assert results[0].parent_id is None
+
+
+def test_elements_round_trip_through_search(store: ElasticsearchStore) -> None:
+    elements = [
+        ChunkElement(type="title", text="Section A"),
+        ChunkElement(type="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |"),
+        ChunkElement(type="image", image_base64="aGVsbG8=", description="A photo."),
+    ]
+    store.index_chunks([_chunk("doc.md::a::0", "stored content", elements=elements)])
+
+    results = store.search("stored content", top_k=1)
+
+    assert results[0].elements == elements
+
+
+def test_elements_defaults_to_empty_list_when_absent(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "stored content")])
+    results = store.search("stored content", top_k=1)
+    assert results[0].elements == []
 
 
 def test_is_parent_chunks_are_excluded_from_search(store: ElasticsearchStore) -> None:

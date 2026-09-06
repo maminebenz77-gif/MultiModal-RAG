@@ -23,7 +23,7 @@ built now.
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
-from ..chunking.schema import Chunk
+from ..chunking.schema import Chunk, ChunkElement
 from ..retry import retry_with_backoff
 from .base import KeywordStore
 from .schema import SearchResult
@@ -57,6 +57,11 @@ class ElasticsearchStore(KeywordStore):
                     "source": {"type": "keyword"},
                     "doc_id": {"type": "keyword"},
                     "element_types": {"type": "keyword"},
+                    # Stored and returned verbatim, never analyzed or
+                    # indexed -- nothing ever needs to full-text-search
+                    # inside a base64 thumbnail or an element's own text
+                    # (that's what the top-level `text` field is for).
+                    "elements": {"type": "object", "enabled": False},
                     "pages": {"type": "integer"},
                     "slides": {"type": "integer"},
                     "parent_id": {"type": "keyword"},
@@ -87,6 +92,7 @@ class ElasticsearchStore(KeywordStore):
                     "source": chunk.metadata.source_file,
                     "doc_id": chunk.metadata.source_file,
                     "element_types": chunk.metadata.element_types,
+                    "elements": [e.model_dump() for e in chunk.metadata.elements],
                     "pages": chunk.metadata.pages,
                     "slides": chunk.metadata.slides,
                     "parent_id": chunk.parent_id,
@@ -128,6 +134,7 @@ class ElasticsearchStore(KeywordStore):
                 source=hit["_source"]["source"],
                 doc_id=hit["_source"]["doc_id"],
                 element_types=hit["_source"]["element_types"],
+                elements=[ChunkElement(**e) for e in hit["_source"].get("elements", [])],
                 pages=hit["_source"].get("pages", []),
                 slides=hit["_source"].get("slides", []),
                 parent_id=hit["_source"].get("parent_id"),

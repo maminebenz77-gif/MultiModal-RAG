@@ -12,11 +12,40 @@ visible in the strategy comparison rather than being hidden by a hybrid
 fallback.
 """
 
+import base64
+
+from ..image_utils import downscale_image
 from ..ingestion.schema import Element, ElementType
 from .base import Chunker
 from .ids import chunk_id
-from .schema import Chunk, ChunkMetadata
+from .schema import Chunk, ChunkElement, ChunkMetadata
 from .text import element_text
+
+# A detail-view thumbnail needs far less resolution than a vision-model
+# input (providers/vision.py uses 1024) -- this is purely for on-screen
+# preview, and a smaller image keeps the store payload compact.
+_THUMBNAIL_MAX_DIMENSION = 512
+
+
+def _to_chunk_element(element: Element) -> ChunkElement:
+    if element.type in (ElementType.IMAGE, ElementType.CHART):
+        image_base64 = None
+        if element.image_bytes:
+            thumbnail = downscale_image(element.image_bytes, _THUMBNAIL_MAX_DIMENSION)
+            image_base64 = base64.b64encode(thumbnail).decode("ascii")
+        return ChunkElement(
+            type=element.type.value,
+            image_base64=image_base64,
+            description=element.description,
+            page=element.metadata.page,
+            slide=element.metadata.slide,
+        )
+    return ChunkElement(
+        type=element.type.value,
+        text=element.text,
+        page=element.metadata.page,
+        slide=element.metadata.slide,
+    )
 
 
 class StructureAwareChunker(Chunker):
@@ -31,6 +60,7 @@ class StructureAwareChunker(Chunker):
             text = "\n\n".join(t for el in section if (t := element_text(el)))
             positions = [el.metadata.position for el in section]
             types = list(dict.fromkeys(el.type.value for el in section))
+            chunk_elements = [_to_chunk_element(el) for el in section]
             pages = list(
                 dict.fromkeys(el.metadata.page for el in section if el.metadata.page is not None)
             )
@@ -45,6 +75,7 @@ class StructureAwareChunker(Chunker):
                         source_file=source_file,
                         element_positions=positions,
                         element_types=types,
+                        elements=chunk_elements,
                         pages=pages,
                         slides=slides,
                     ),

@@ -126,6 +126,15 @@ class CitationOut(BaseModel):
     slides: list[int]
 
 
+class ChunkElementOut(BaseModel):
+    type: str
+    text: str | None = None
+    image_base64: str | None = None
+    description: str | None = None
+    page: int | None = None
+    slide: int | None = None
+
+
 class RetrievedChunkOut(BaseModel):
     chunk_id: str
     score: float
@@ -133,6 +142,13 @@ class RetrievedChunkOut(BaseModel):
     source: str
     pages: list[int]
     slides: list[int]
+    elements: list[ChunkElementOut] = []
+    """The chunk's real constituent parts (title/paragraph/table/image),
+    for rendering it as more than its flattened `text` -- see
+    generation/schema.py's Citation, which shares a chunk_id with these
+    so a citation can be matched to its full detail here. Empty for
+    chunks produced before this field existed (not yet re-ingested) or
+    by flatten-first chunking strategies."""
 
 
 class QueryResponse(BaseModel):

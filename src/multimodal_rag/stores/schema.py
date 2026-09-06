@@ -5,6 +5,8 @@ possible to compare or later combine BM25 and vector results directly.
 
 from pydantic import BaseModel
 
+from ..chunking.schema import ChunkElement
+
 
 class SearchResult(BaseModel):
     chunk_id: str
@@ -13,6 +15,12 @@ class SearchResult(BaseModel):
     source: str
     doc_id: str
     element_types: list[str]
+    elements: list[ChunkElement] = []
+    """The actual elements behind element_types -- see
+    ChunkMetadata.elements. Empty for chunks produced before this field
+    existed (not yet re-ingested) or by flatten-first chunking
+    strategies."""
+
     pages: list[int] = []
     slides: list[int] = []
     """Page/slide numbers the chunk came from — needed for citations.

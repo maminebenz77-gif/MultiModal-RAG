@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from multimodal_rag.chunking.schema import Chunk, ChunkMetadata
+from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from multimodal_rag.providers.schema import EmbeddingVector
 from multimodal_rag.stores.qdrant_store import ModelMismatchError, QdrantStore, UpsertBatchError
 
@@ -29,6 +29,7 @@ def _chunk(
     pages: list[int] | None = None,
     parent_id: str | None = None,
     is_parent: bool = False,
+    elements: list[ChunkElement] | None = None,
 ) -> Chunk:
     return Chunk(
         id=chunk_id,
@@ -39,6 +40,7 @@ def _chunk(
             source_file=source,
             element_positions=[0],
             element_types=["title"],
+            elements=elements or [],
             pages=pages or [],
         ),
     )
@@ -292,6 +294,27 @@ def test_parent_id_is_none_when_chunk_has_no_parent(store: QdrantStore) -> None:
     assert results[0].parent_id is None
 
 
+def test_elements_round_trip_through_search(store: QdrantStore) -> None:
+    elements = [
+        ChunkElement(type="title", text="Section A"),
+        ChunkElement(type="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |"),
+        ChunkElement(type="image", image_base64="aGVsbG8=", description="A photo."),
+    ]
+    store.upsert(
+        [_chunk("doc.md::a::0", "stored", elements=elements)], [_vector([1.0, 0.0, 0.0, 0.0])]
+    )
+
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+
+    assert results[0].elements == elements
+
+
+def test_elements_defaults_to_empty_list_when_absent(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+    assert results[0].elements == []
+
+
 def test_is_parent_chunks_are_excluded_from_search(store: QdrantStore) -> None:
     store.upsert(
         [
@@ -325,6 +348,17 @@ def test_get_by_chunk_id_returns_the_matching_chunk(store: QdrantStore) -> None:
     assert fetched.id == "doc.md::parent::0"
     assert fetched.text == "parent text"
     assert fetched.metadata.pages == [1, 2]
+
+
+def test_get_by_chunk_id_includes_elements(store: QdrantStore) -> None:
+    elements = [ChunkElement(type="title", text="Section A")]
+    store.upsert(
+        [_chunk("doc.md::parent::0", "parent text", elements=elements)],
+        [_vector([1.0, 0.0, 0.0, 0.0])],
+    )
+    fetched = store.get_by_chunk_id("doc.md::parent::0")
+    assert fetched is not None
+    assert fetched.metadata.elements == elements
 
 
 def test_get_by_chunk_id_returns_none_for_unknown_id(store: QdrantStore) -> None:

@@ -14,8 +14,9 @@ st.session_state, or it would vanish the moment you touched an
 unrelated widget (like the retrieval-method dropdown).
 """
 
-import sys
+import base64
 import json
+import sys
 from pathlib import Path
 
 # `streamlit run` puts this script's own directory on sys.path
@@ -144,6 +145,39 @@ def _location_suffix(pages: list[int], slides: list[int]) -> str:
     if slides:
         return f", slide {', '.join(str(s) for s in slides)}"
     return ""
+
+
+def _render_chunk_element(element: dict) -> None:
+    element_type = element["type"]
+    if element_type in ("image", "chart"):
+        if element.get("image_base64"):
+            st.image(base64.b64decode(element["image_base64"]))
+        if element.get("description"):
+            st.caption(element["description"])
+    elif element_type == "title":
+        st.markdown(f"**{element.get('text') or ''}**")
+    else:
+        st.markdown(element.get("text") or "")
+
+
+@st.dialog("Chunk detail", width="large")
+def _show_chunk_detail(chunk: dict) -> None:
+    location = _location_suffix(chunk["pages"], chunk["slides"])
+    st.caption(f"{chunk['source']}{location}")
+    st.caption(chunk["chunk_id"])
+    st.divider()
+    if chunk["elements"]:
+        # Reconstructed from the chunk's actual elements (see
+        # chunking/schema.py's ChunkElement) -- a table renders as an
+        # actual table, an image as an actual image, not the flattened
+        # text blob below.
+        for element in chunk["elements"]:
+            _render_chunk_element(element)
+    else:
+        # Pre-existing corpus content, ingested before elements existed,
+        # or produced by a flatten-first chunking strategy -- falls back
+        # to the flattened text rather than showing nothing.
+        st.text(chunk["text"])
 
 
 def _submit_feedback(query_id: str, rating: str) -> None:
@@ -512,9 +546,21 @@ for turn in st.session_state.turns:
 
         if turn["citations"]:
             st.markdown("**Citations**")
+            _chunks_by_id = {c["chunk_id"]: c for c in turn["retrieved_chunks"]}
             for c in turn["citations"]:
                 location = _location_suffix(c["pages"], c["slides"])
-                st.markdown(f"⟦{c['marker']}⟧ **{c['source']}**{location}")
+                _cited_chunk = _chunks_by_id.get(c["chunk_id"])
+                if st.button(
+                    f"⟦{c['marker']}⟧ {c['source']}{location}",
+                    key=f"cite_{turn['query_id']}_{c['marker']}",
+                    disabled=_cited_chunk is None,
+                    help=(
+                        None
+                        if _cited_chunk is not None
+                        else "Chunk detail isn't available for a reloaded conversation."
+                    ),
+                ):
+                    _show_chunk_detail(_cited_chunk)
 
         if turn["retrieved_chunks"]:
             with st.expander(f"Retrieved chunks ({len(turn['retrieved_chunks'])})"):
@@ -523,6 +569,10 @@ for turn in st.session_state.turns:
                     st.markdown(f"**{chunk['source']}**{location} (score={chunk['score']:.3f})")
                     st.caption(chunk["chunk_id"])
                     st.text(chunk["text"])
+                    if st.button(
+                        "View details", key=f"view_{turn['query_id']}_{chunk['chunk_id']}"
+                    ):
+                        _show_chunk_detail(chunk)
                     st.divider()
 
         fb_up, fb_down = st.columns(2)

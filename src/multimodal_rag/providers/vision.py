@@ -2,12 +2,11 @@
 
 import asyncio
 import base64
-import io
 
 import litellm
 import magic
-from PIL import Image
 
+from ..image_utils import downscale_image
 from .base import VisionProvider
 
 _DEFAULT_PROMPT = (
@@ -27,35 +26,6 @@ def _ensure_current_event_loop() -> asyncio.AbstractEventLoop | None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop
-
-
-def _downscale_if_needed(image_bytes: bytes, max_dimension: int) -> bytes:
-    """Cap the image's longest edge at max_dimension before it gets
-    base64-inlined into a request. Vision API cost scales with image
-    resolution, not with how large the source file happens to be, so a
-    4000px screenshot pays for detail a caption doesn't need.
-
-    Returns the original bytes unchanged if the image is already small
-    enough, or if it can't be decoded (fails closed to "send as-is"
-    rather than breaking the whole describe() call over a resize step
-    that was only ever meant to save money).
-    """
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        image.load()
-    except Exception:
-        return image_bytes
-
-    if max(image.width, image.height) <= max_dimension:
-        return image_bytes
-
-    scale = max_dimension / max(image.width, image.height)
-    new_size = (round(image.width * scale), round(image.height * scale))
-    resized = image.resize(new_size, Image.Resampling.LANCZOS)
-
-    buffer = io.BytesIO()
-    resized.save(buffer, format=image.format or "PNG")
-    return buffer.getvalue()
 
 
 class LiteLLMVisionProvider(VisionProvider):
@@ -88,7 +58,7 @@ class LiteLLMVisionProvider(VisionProvider):
     def describe(self, image_bytes: bytes, prompt: str | None = None) -> str:
         owned_loop = _ensure_current_event_loop()
         try:
-            image_bytes = _downscale_if_needed(image_bytes, self._max_dimension)
+            image_bytes = downscale_image(image_bytes, self._max_dimension)
             mime_type = magic.from_buffer(image_bytes, mime=True)
             encoded = base64.b64encode(image_bytes).decode("ascii")
             response = litellm.completion(
