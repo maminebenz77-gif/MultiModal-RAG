@@ -76,6 +76,22 @@ class HybridIndexer:
                 chunk_ids=chunk_ids,
             ) from exc
 
+    def delete_document(self, doc_id: str) -> int:
+        """Wipe every chunk belonging to one document from both stores --
+        same union-then-delete approach as delete_all(), scoped to
+        chunk_ids that start with this doc_id (chunk_id =
+        f"{doc_id}::{strategy}::{index}::{hash}", see chunking/ids.py;
+        doc_id itself is a fixed-length sha256 hex digest, so a plain
+        startswith() can't collide between two different documents --
+        same check already used in routers/ingest.py's re-ingestion
+        diffing). Returns how many distinct chunk_ids were deleted."""
+        chunk_ids = sorted(
+            {cid for cid in self._vector_store.list_chunk_ids() if cid.startswith(doc_id)}
+            | {cid for cid in self._keyword_store.list_chunk_ids() if cid.startswith(doc_id)}
+        )
+        self.delete(chunk_ids)
+        return len(chunk_ids)
+
     def delete_all(self) -> int:
         """Wipe every chunk from both stores -- the store side of a full
         corpus reset (see api.db.Database.wipe_documents() for the

@@ -139,6 +139,8 @@ if "confirm_wipe" not in st.session_state:
     st.session_state.confirm_wipe = False
 if "confirm_delete_conversation_id" not in st.session_state:
     st.session_state.confirm_delete_conversation_id = None
+if "confirm_delete_doc_id" not in st.session_state:
+    st.session_state.confirm_delete_doc_id = None
 
 provider_catalog = _load_provider_catalog()
 
@@ -516,19 +518,38 @@ with st.sidebar:
         try:
             documents = httpx.get(f"{api_base_url}/documents", timeout=10.0).json()["documents"]
             if documents:
-                st.dataframe(
-                    [
-                        {
-                            "Filename": d["filename"],
-                            "Parent chunks": d["num_parent_chunks"],
-                            "Child chunks": d["num_child_chunks"],
-                            "Ingested at": d["ingested_at"],
-                        }
-                        for d in documents
-                    ],
-                    width="stretch",
-                    hide_index=True,
-                )
+                for _doc in documents:
+                    _doc_id = _doc["doc_id"]
+                    if st.session_state.confirm_delete_doc_id == _doc_id:
+                        st.caption(f'Delete "{_doc["filename"]}"? This cannot be undone.')
+                        _confirm_col, _cancel_col = st.columns(2)
+                        if _confirm_col.button(
+                            "Yes, delete", key=f"confirm_delete_doc_{_doc_id}", type="primary"
+                        ):
+                            try:
+                                _del_response = httpx.delete(
+                                    f"{api_base_url}/documents/{_doc_id}", timeout=60.0
+                                )
+                                _del_response.raise_for_status()
+                                st.session_state.confirm_delete_doc_id = None
+                                st.toast(
+                                    f"Deleted {_del_response.json()['chunks_deleted']} chunk(s)."
+                                )
+                                st.rerun()
+                            except httpx.HTTPError as exc:
+                                st.error(f"Delete failed: {_http_error_detail(exc)}")
+                        if _cancel_col.button("Cancel", key=f"cancel_delete_doc_{_doc_id}"):
+                            st.session_state.confirm_delete_doc_id = None
+                            st.rerun()
+                    else:
+                        _info_col, _delete_col = st.columns([5, 1])
+                        _info_col.markdown(
+                            f"**{_doc['filename']}** — {_doc['num_parent_chunks']} parent, "
+                            f"{_doc['num_child_chunks']} child chunks"
+                        )
+                        if _delete_col.button("🗑️", key=f"delete_doc_{_doc_id}"):
+                            st.session_state.confirm_delete_doc_id = _doc_id
+                            st.rerun()
             else:
                 st.caption("No documents ingested yet.")
         except httpx.HTTPError as exc:

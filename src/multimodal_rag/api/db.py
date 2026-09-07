@@ -245,6 +245,14 @@ class Database:
             conn.execute("DELETE FROM documents")
         return int(deleted)
 
+    def delete_document(self, doc_id: str) -> None:
+        """Deletes one row from `documents` -- the sqlite side of a
+        single-document delete (see HybridIndexer.delete_document() for
+        the store side). Same "leave query/feedback history alone"
+        reasoning as wipe_documents(), just scoped to one document."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+
     def record_query(
         self,
         query_id: str,

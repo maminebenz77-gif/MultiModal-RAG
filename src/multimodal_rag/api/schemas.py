@@ -76,6 +76,14 @@ class WipeResponse(BaseModel):
     the corpus itself is reset."""
 
 
+class DocumentDeleteResponse(BaseModel):
+    status: Literal["deleted"]
+    doc_id: str
+    chunks_deleted: int
+    """Query/feedback history referencing this document (if any) is NOT
+    touched -- same reasoning as WipeResponse."""
+
+
 class ProviderOverride(BaseModel):
     provider: str
     model: str

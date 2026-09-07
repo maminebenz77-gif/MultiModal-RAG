@@ -63,6 +63,17 @@ def test_wipe_documents_deletes_all_rows_and_returns_the_count(tmp_path: Path) -
     assert db.list_documents() == []
 
 
+def test_delete_document_removes_only_that_row(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.upsert_document("doc-a", "a.md", "hash-a", 1, 1)
+    db.upsert_document("doc-b", "b.md", "hash-b", 2, 2)
+
+    db.delete_document("doc-a")
+
+    assert db.get_document("doc-a") is None
+    assert db.get_document("doc-b") is not None
+
+
 def test_wipe_documents_does_not_touch_queries_or_feedback(tmp_path: Path) -> None:
     db = Database(tmp_path / "state.db")
     db.upsert_document("doc-a", "a.md", "hash-a", 1, 1)

@@ -132,6 +132,52 @@ def test_delete_all_also_cleans_up_drift_present_in_only_one_store(
     assert vector_store.list_chunk_ids() == []
 
 
+def test_delete_document_removes_only_that_documents_chunks(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index(
+        [
+            _chunk("doc-a::structure::0::hash1", "hello world"),
+            _chunk("doc-a::structure::1::hash2", "more of doc a"),
+            _chunk("doc-b::structure::0::hash3", "a different document"),
+        ],
+        [_vector([1.0, 0.0]), _vector([0.0, 1.0]), _vector([1.0, 1.0])],
+    )
+
+    deleted = indexer.delete_document("doc-a")
+
+    assert deleted == 2
+    assert vector_store.list_chunk_ids() == ["doc-b::structure::0::hash3"]
+    assert keyword_store.list_chunk_ids() == ["doc-b::structure::0::hash3"]
+
+
+def test_delete_document_also_cleans_up_drift_present_in_only_one_store(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    vector_store.upsert(
+        [_chunk("doc-a::structure::0::hash1", "hello")], [_vector([1.0, 0.0])]
+    )
+
+    indexer = HybridIndexer(vector_store, keyword_store)
+    deleted = indexer.delete_document("doc-a")
+
+    assert deleted == 1
+    assert vector_store.list_chunk_ids() == []
+
+
+def test_delete_document_with_no_matching_chunks_is_a_harmless_no_op(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    indexer = HybridIndexer(vector_store, keyword_store)
+    indexer.index([_chunk("doc-a::structure::0::hash1", "hello")], [_vector([1.0, 0.0])])
+
+    deleted = indexer.delete_document("doc-nonexistent")
+
+    assert deleted == 0
+    assert vector_store.list_chunk_ids() == ["doc-a::structure::0::hash1"]
+
+
 def test_delete_with_empty_list_is_a_no_op(
     vector_store: QdrantStore, keyword_store: ElasticsearchStore
 ) -> None:
