@@ -1,0 +1,62 @@
+[
+  {
+    "id": "p95-internal-gateway",
+    "question": "What was the P95 latency for the internal gateway?",
+    "expected_sources": ["chunking_demo.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "p99-internal-gateway-unanswerable",
+    "question": "What was the P99 latency for the internal gateway?",
+    "expected_sources": [],
+    "expect_refusal": true
+  },
+  {
+    "id": "warm-requests-count",
+    "question": "How many warm requests were used to compute each provider's average latency in the benchmark?",
+    "expected_sources": ["chunking_demo.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "local-config-hidden-cost",
+    "question": "What real-world cost does the local on-device configuration have that a latency-only comparison doesn't capture?",
+    "expected_sources": ["chunking_demo.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "recommended-future-benchmarking",
+    "question": "What future benchmarking work is recommended beyond this single benchmark?",
+    "expected_sources": ["chunking_demo.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "widest-avg-p95-gap",
+    "question": "Which provider had the widest gap between its average and P95 latency?",
+    "expected_sources": ["chunking_demo.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "avg-latency-openai-hosted",
+    "question": "What was the average latency for the OpenAI hosted model?",
+    "expected_sources": ["chunking_demo.md", "sample.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "fastest-provider-on-average",
+    "question": "Which provider was fastest on average in the latency benchmark?",
+    "expected_sources": ["chunking_demo.md", "sample.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "internal-gateway-network-hop",
+    "question": "Why does the internal gateway have meaningful latency at all, given that it's hosted inside the company's own network?",
+    "expected_sources": ["chunking_demo.md", "sample.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "latency-chart-image",
+    "question": "Is there a chart image visualizing the latency comparison, and if so what does it show?",
+    "expected_sources": ["sample.md"],
+    "expect_refusal": false
+  }
+]

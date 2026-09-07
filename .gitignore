@@ -33,6 +33,11 @@ data/*
 # these are version-controlled on purpose, for reproducibility.
 !data/samples/
 
+# ...and the evaluation golden sets -- also version-controlled on purpose,
+# so retrieval/generation scores are reproducible across machines.
+!data/golden_set.json
+!data/eval/
+
 # Frontend build output (once frontend/ has real code)
 frontend/node_modules/
 frontend/dist/
