@@ -30,9 +30,30 @@ from .retrieval_metrics import mrr, ndcg_at_k, recall_at_k
 
 _GOLDEN_SET_PATH = Path(__file__).resolve().parents[3] / "data" / "golden_set.json"
 _SAMPLE_DOCS_DIR = Path(__file__).resolve().parents[3] / "data" / "samples"
-_CORPUS_FILES = ["chunking_demo.md", "sample.md"]
+_CORPUS_FILES = [
+    "chunking_demo.md",
+    "sample.md",
+    # The remaining three exist purely as topically-distinct distractors --
+    # without them, the corpus was small enough (2 overlapping documents)
+    # that recall@5 saturated at 1.0 for every method regardless of ranking
+    # quality, since both documents almost always fit inside 5 slots
+    # anyway. These add real competition: same technical vocabulary
+    # ("latency", "embedding", "index") but genuinely different subjects,
+    # which is what actually stresses a retriever's ability to tell
+    # "relevant" from "just uses similar words."
+    "vector_index_strategies.md",
+    "chunking_strategy_notes.md",
+    "embedding_service_postmortem.md",
+]
 _COLLECTION = "retrieval_eval"
-_TOP_K = 5
+_TOP_K = 3
+"""Deliberately smaller than the 5-document corpus. recall_at_k can only
+ever fail to find a relevant document when there are more documents in
+the corpus than fit in top-k -- at _TOP_K >= corpus size, every method
+trivially returns every document and recall@k saturates at ~1.0 for all
+of them regardless of ranking quality (this is exactly what happened at
+_TOP_K=5 against this same 5-document corpus; caught by actually running
+it, not by reasoning about it up front)."""
 
 
 def _load_golden_set() -> list[dict[str, Any]]:

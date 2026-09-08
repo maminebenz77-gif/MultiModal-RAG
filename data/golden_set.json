@@ -58,5 +58,53 @@
     "question": "Is there a chart image visualizing the latency comparison, and if so what does it show?",
     "expected_sources": ["sample.md"],
     "expect_refusal": false
+  },
+  {
+    "id": "hnsw-recall-latency-tradeoff",
+    "question": "According to the internal indexing notes, what recall and query latency did HNSW achieve in the benchmark?",
+    "expected_sources": ["vector_index_strategies.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "vector-store-default-index",
+    "question": "What vector index type does this project's vector store default to, and why?",
+    "expected_sources": ["vector_index_strategies.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "ivf-operational-downside",
+    "question": "What operational downside does IVF indexing have compared to HNSW, according to the notes?",
+    "expected_sources": ["vector_index_strategies.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "hnsw-query-latency-hard-distractor",
+    "question": "What was the average query latency achieved by HNSW indexing?",
+    "expected_sources": ["vector_index_strategies.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "fixed-size-chunking-downside",
+    "question": "What's a known downside of fixed-size chunking mentioned in the chunking field notes?",
+    "expected_sources": ["chunking_strategy_notes.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "parent-child-citation-precision-gain",
+    "question": "By roughly how many percentage points did parent-child chunking improve citation precision over flat fixed-size chunking, according to the internal comparison?",
+    "expected_sources": ["chunking_strategy_notes.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "embedding-outage-root-cause",
+    "question": "What caused the embedding service outage described in the postmortem?",
+    "expected_sources": ["embedding_service_postmortem.md"],
+    "expect_refusal": false
+  },
+  {
+    "id": "embedding-outage-bm25-impact",
+    "question": "During the embedding service outage, was keyword (BM25) search affected?",
+    "expected_sources": ["embedding_service_postmortem.md"],
+    "expect_refusal": false
   }
 ]
