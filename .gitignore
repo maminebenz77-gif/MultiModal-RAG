@@ -10,6 +10,7 @@ venv/
 
 # uv
 .uv-cache/
+.model-cache/
 
 # Tooling caches
 .mypy_cache/

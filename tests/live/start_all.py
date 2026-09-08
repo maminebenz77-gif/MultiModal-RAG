@@ -83,6 +83,27 @@ def _is_port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
+def _wait_for_managed_port(
+    process: subprocess.Popen | None,
+    host: str,
+    port: int,
+    service: str,
+    timeout: float = 60.0,
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_port_open(host, port):
+            return True
+        if process is not None:
+            exit_code = process.poll()
+            if exit_code is not None:
+                raise RuntimeError(
+                    f"{service} exited with code {exit_code} before opening port {port}"
+                )
+        time.sleep(0.25)
+    return False
+
+
 def main() -> None:
     store_mode = _start_stores()
 
@@ -103,7 +124,9 @@ def main() -> None:
             env=backend_env,
         )
 
-    if not _wait_for_port("127.0.0.1", _BACKEND_PORT, timeout=60.0):
+    if not _wait_for_managed_port(
+        backend, "127.0.0.1", _BACKEND_PORT, "Backend", timeout=60.0
+    ):
         raise RuntimeError("Backend did not open port 8000 within 60s")
 
     frontend = None
@@ -132,7 +155,9 @@ def main() -> None:
         )
 
     # Launch the UI only once Streamlit is actually listening.
-    if _wait_for_port("127.0.0.1", _FRONTEND_PORT, timeout=60.0):
+    if _wait_for_managed_port(
+        frontend, "127.0.0.1", _FRONTEND_PORT, "Streamlit", timeout=60.0
+    ):
         webbrowser.open("http://127.0.0.1:8501", new=2)
     else:
         print("Streamlit did not open port 8501 within 60s; check its logs above.")

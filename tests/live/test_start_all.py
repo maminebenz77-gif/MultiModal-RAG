@@ -36,6 +36,13 @@ def test_start_all_waits_for_store_and_backend_ports(monkeypatch) -> None:
 
     monkeypatch.setattr(start_all, "_start_stores", lambda: "local")
     monkeypatch.setattr(start_all, "_wait_for_port", fake_wait_for_port)
+    monkeypatch.setattr(
+        start_all,
+        "_wait_for_managed_port",
+        lambda process, host, port, service, timeout=60.0: fake_wait_for_port(
+            host, port, timeout
+        ),
+    )
     monkeypatch.setattr(start_all, "_is_port_open", fake_is_port_open)
     monkeypatch.setattr(start_all.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(start_all.webbrowser, "open", lambda url, new=2: opened_urls.append(url))
@@ -49,3 +56,20 @@ def test_start_all_waits_for_store_and_backend_ports(monkeypatch) -> None:
     assert any(cmd[:3] == ["uv", "run", "uvicorn"] for cmd in popen_calls)
     assert any(cmd[:3] == ["uv", "run", "streamlit"] for cmd in popen_calls)
     assert opened_urls == ["http://127.0.0.1:8501"]
+
+
+def test_wait_for_managed_port_reports_early_process_exit(monkeypatch) -> None:
+    class ExitedProc:
+        def poll(self):
+            return 7
+
+    monkeypatch.setattr(start_all, "_is_port_open", lambda host, port: False)
+
+    try:
+        start_all._wait_for_managed_port(
+            ExitedProc(), "127.0.0.1", 8000, "Backend", timeout=1.0
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "Backend exited with code 7 before opening port 8000"
+    else:
+        raise AssertionError("Expected an early process-exit error")
