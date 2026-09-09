@@ -18,14 +18,16 @@ class FakeLLM(LLMProvider):
         self._responses = list(responses)
         self._final_text = final_text
         self.last_messages: list[dict] | None = None
+        self.tool_choices: list[str | dict | None] = []
 
     def generate(self, messages: list[dict[str, str]]) -> str:
         self.last_messages = messages
         assert self._final_text is not None, "generate() called without max_tool_rounds exhausted"
         return self._final_text
 
-    def generate_with_tools(self, messages, tools) -> ToolResponse:
+    def generate_with_tools(self, messages, tools, tool_choice=None) -> ToolResponse:
         self.last_messages = messages
+        self.tool_choices.append(tool_choice)
         return self._responses.pop(0)
 
 
@@ -86,6 +88,89 @@ def test_no_tool_call_returns_direct_answer_without_retrieving(
     assert result.citations == []
     assert result.needs_clarification is False
     assert retriever.calls == []
+
+
+def test_first_round_refusal_falls_back_to_searching_the_original_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "What was the latency?"
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content="I don't know based on the available documents."),
+            ToolResponse(content="The latency was 220ms ⟦1⟧."),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({question: [_result("a", "220ms latency")]})
+    result = AgentChain(retriever).answer(question)
+
+    assert result.answer == "The latency was 220ms ⟦1⟧."
+    assert [citation.chunk_id for citation in result.citations] == ["a"]
+    assert retriever.calls[0]["query"] == question
+
+
+def test_refusal_after_empty_search_forces_one_reformulated_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "latency")]),
+            ToolResponse(content="I don't know based on the available documents."),
+            ToolResponse(content=None, tool_calls=[_tool_call("call_2", "response time")]),
+            ToolResponse(content="The latency was 220ms ⟦1⟧."),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"latency": [], "response time": [_result("a", "220ms latency")]})
+    result = AgentChain(retriever).answer("What was the latency?")
+
+    assert result.answer == "The latency was 220ms ⟦1⟧."
+    assert [call["query"] for call in retriever.calls] == ["latency", "response time"]
+    assert fake_llm.tool_choices == [None, None, "required", None]
+
+
+def test_refusal_after_nonempty_evidence_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = "I don't know based on the available documents."
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "warranty")]),
+            ToolResponse(content=refusal),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"warranty": [_result("a", "30-day return window")]})
+    result = AgentChain(retriever).answer("What is the warranty period?")
+
+    assert result.answer == refusal
+    assert result.refused is True
+    assert len(retriever.calls) == 1
+
+
+def test_empty_reformulation_is_attempted_only_once_before_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = "I don't know based on the available documents."
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "latency")]),
+            ToolResponse(content=refusal),
+            ToolResponse(content=None, tool_calls=[_tool_call("call_2", "response time")]),
+            ToolResponse(content=refusal),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"latency": [], "response time": []})
+    result = AgentChain(retriever).answer("What was the latency?")
+
+    assert result.refused is True
+    assert [call["query"] for call in retriever.calls] == ["latency", "response time"]
+    assert fake_llm.tool_choices.count("required") == 1
 
 
 def test_single_tool_call_then_answer(monkeypatch: pytest.MonkeyPatch) -> None:

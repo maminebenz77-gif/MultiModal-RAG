@@ -57,18 +57,24 @@ class LiteLLMProvider(LLMProvider):
         return content
 
     def generate_with_tools(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ToolResponse:
         owned_loop = _ensure_current_event_loop()
         try:
             with traced_generation("generate_with_tools", self._model, messages) as generation:
-                response = litellm.completion(
+                kwargs = dict(
                     model=self._model,
                     messages=messages,
                     tools=tools,
                     base_url=self._base_url,
                     api_key=self._api_key,
                 )
+                if tool_choice is not None:
+                    kwargs["tool_choice"] = tool_choice
+                response = litellm.completion(**kwargs)
                 message = response.choices[0].message
                 tool_calls = [
                     ToolCall(

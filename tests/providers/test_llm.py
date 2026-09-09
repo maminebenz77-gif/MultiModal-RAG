@@ -63,6 +63,33 @@ def test_litellm_provider_normalizes_model_with_openai_prefix_for_base_url(
     assert captured_kwargs["model"] == "openai/gemma4"
 
 
+def test_litellm_provider_forwards_required_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs = {}
+
+    class FakeMessage:
+        content = None
+        tool_calls = []
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    def fake_completion(**kwargs: object) -> FakeResponse:
+        captured_kwargs.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("multimodal_rag.providers.llm.litellm.completion", fake_completion)
+
+    provider = LiteLLMProvider(model="gpt-4o-mini")
+    provider.generate_with_tools([], [], tool_choice="required")
+
+    assert captured_kwargs["tool_choice"] == "required"
+
+
 def test_internal_server_llm_requires_base_url() -> None:
     with pytest.raises(ValueError, match="base_url"):
         InternalServerLLM(base_url=None)

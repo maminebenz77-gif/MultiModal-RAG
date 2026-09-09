@@ -19,11 +19,15 @@ class LLMProvider(ABC):
         """Send a chat-style message list and return the model's text reply."""
 
     def generate_with_tools(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ToolResponse:
         """Send a chat-style message list plus OpenAI-style function-tool
         schemas, and return either a text reply or the tool call(s) the
-        model wants made.
+        model wants made. `tool_choice` optionally constrains that decision
+        for calls where application control flow requires a tool invocation.
 
         Concrete, not abstract, with a NotImplementedError default --
         unlike generate(), not every provider needs to support this, and

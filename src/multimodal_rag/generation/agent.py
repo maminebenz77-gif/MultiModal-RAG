@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..providers.factory import get_llm
-from ..providers.schema import ToolResponse
+from ..providers.schema import ToolCall, ToolResponse
 from ..retrieval.schema import RetrievalMethod
 from ..stores.schema import SearchResult
 from .chain import RetrieverLike
@@ -107,6 +107,9 @@ sub-questions and call search_knowledge_base separately for each one, rather tha
 search trying to cover both.
 - If a result set wasn't enough, call the tool again with a different, more focused query -- \
 across rounds if needed, not just within one.
+- You may refuse only after searching. If a search returns no evidence, do not treat that as \
+proof that the corpus lacks the answer: reformulate the query with materially different terms \
+and search once more before refusing.
 - You have up to {max_tool_rounds} ROUNDS of searching for this message -- a round is one turn \
 where you may call search_knowledge_base one or more times at once (e.g. one call per \
 sub-question in a compound request costs a single round, not one round each). Use a new round \
@@ -204,15 +207,67 @@ class AgentChain:
         messages = self._build_initial_messages(message, history or [])
         context: list[SearchResult] = []
         seen_chunk_ids: dict[str, int] = {}
+        searches_performed = 0
+        force_search_next_round = False
+        forced_reformulation_used = False
 
         for round_index in range(1, self._max_tool_rounds + 1):
-            response = get_llm().generate_with_tools(messages, tools=[_SEARCH_TOOL])
+            llm = get_llm()
+            if force_search_next_round:
+                response = llm.generate_with_tools(
+                    messages, tools=[_SEARCH_TOOL], tool_choice="required"
+                )
+            else:
+                response = llm.generate_with_tools(messages, tools=[_SEARCH_TOOL])
+            force_search_next_round = False
 
             if not response.tool_calls:
-                return self._finalize(response.content or "", context)
+                raw_content = response.content or ""
+                is_refusal = raw_content.strip().lower() == REFUSAL_TEXT.lower()
+                if not is_refusal:
+                    return self._finalize(raw_content, context)
+
+                if searches_performed == 0:
+                    # No evidence exists yet, so an evidence-based refusal is
+                    # logically premature. Seed the loop with the user's own
+                    # question instead of returning it.
+                    response = ToolResponse(
+                        content=None,
+                        tool_calls=[
+                            ToolCall(
+                                id="fallback_search_1",
+                                name="search_knowledge_base",
+                                arguments={"query": message},
+                            )
+                        ],
+                    )
+                elif (
+                    not context
+                    and not forced_reformulation_used
+                    and round_index < self._max_tool_rounds
+                ):
+                    # One empty search is not proof that the corpus lacks the
+                    # answer. Require one materially different query, but only
+                    # once; the normal round cap still guarantees termination.
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "The previous search returned no evidence. Call "
+                                "search_knowledge_base now with one materially different, "
+                                "reformulated query. Do not answer or refuse in this round."
+                            ),
+                        }
+                    )
+                    force_search_next_round = True
+                    forced_reformulation_used = True
+                    continue
+                else:
+                    return self._finalize(raw_content, context)
 
             messages.append(self._assistant_tool_call_message(response))
             for call in response.tool_calls:
+                searches_performed += 1
                 results = self._retriever.retrieve(
                     call.arguments["query"],
                     method=self._method,
