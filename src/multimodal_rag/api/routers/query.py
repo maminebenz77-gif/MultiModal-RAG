@@ -7,6 +7,7 @@ one per request is the simplest way to let each call choose its own
 method/top_k against the one shared Retriever singleton.
 """
 
+import time
 import uuid
 from contextlib import contextmanager
 
@@ -149,6 +150,7 @@ async def query(
             allow_external=allow_external,
         )
 
+    start_time = time.perf_counter()
     try:
         if llm_override is not None:
 
@@ -169,6 +171,12 @@ async def query(
     except Exception as exc:
         # Model/provider/network failures should not leak as raw 500s.
         raise HTTPException(status_code=503, detail=f"Query generation failed: {exc}") from exc
+    latency_ms = (time.perf_counter() - start_time) * 1000
+    # Measured around the WHOLE agent.answer() call, not a single LLM
+    # generation -- a compound question can trigger multiple search/
+    # generate rounds (see agent.py's max_tool_rounds), and "latency of
+    # this query" means the full round-trip the caller actually waited
+    # through, not just its last completion call.
 
     query_id = str(uuid.uuid4())
     await run_in_threadpool(
@@ -181,6 +189,7 @@ async def query(
         conversation_id=conversation_id,
         needs_clarification=result.needs_clarification,
         citations=result.citations,
+        latency_ms=latency_ms,
     )
 
     if is_new_conversation:

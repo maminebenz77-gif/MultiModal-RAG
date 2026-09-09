@@ -103,7 +103,8 @@ class Database:
                 retrieval_method TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 conversation_id TEXT REFERENCES conversations(conversation_id),
-                needs_clarification INTEGER NOT NULL DEFAULT 0
+                needs_clarification INTEGER NOT NULL DEFAULT 0,
+                latency_ms REAL
             )
             """
         )
@@ -116,6 +117,12 @@ class Database:
         Database._ensure_column(
             conn, "queries", "needs_clarification", "INTEGER NOT NULL DEFAULT 0"
         )
+        # No NOT NULL/DEFAULT here on purpose -- a query recorded before
+        # this column existed has genuinely unknown latency, and AVG()
+        # in metrics() already skips NULLs. Defaulting old rows to 0
+        # would silently drag avg_latency_ms down instead of just being
+        # honest that we don't know.
+        Database._ensure_column(conn, "queries", "latency_ms", "REAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS feedback (
@@ -264,14 +271,15 @@ class Database:
         conversation_id: str | None = None,
         needs_clarification: bool = False,
         citations: list[Citation] | None = None,
+        latency_ms: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO queries
                     (query_id, question, answer, refused, retrieval_method, created_at,
-                     conversation_id, needs_clarification)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     conversation_id, needs_clarification, latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query_id,
@@ -282,6 +290,7 @@ class Database:
                     datetime.now(UTC).isoformat(),
                     conversation_id,
                     int(needs_clarification),
+                    latency_ms,
                 ),
             )
             for citation in citations or []:
@@ -475,6 +484,13 @@ class Database:
             total_queries, total_refused = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(refused), 0) FROM queries"
             ).fetchone()
+            # AVG() over a column that's NULL for every pre-migration row
+            # (see latency_ms's self-heal above) ignores those NULLs on its
+            # own -- no COALESCE needed to exclude them, only to turn "no
+            # rows with a known latency at all" into 0.0 instead of None.
+            avg_latency_ms = conn.execute(
+                "SELECT COALESCE(AVG(latency_ms), 0) FROM queries"
+            ).fetchone()[0]
             feedback_up = conn.execute(
                 "SELECT COUNT(*) FROM feedback WHERE rating = 'up'"
             ).fetchone()[0]
@@ -483,6 +499,9 @@ class Database:
             ).fetchone()[0]
 
         refusal_rate = (total_refused / total_queries) if total_queries else 0.0
+        feedback_rate = (
+            (feedback_up + feedback_down) / total_queries if total_queries else 0.0
+        )
         return MetricsResponse(
             total_documents=total_documents,
             total_chunks=total_chunks,
@@ -490,4 +509,6 @@ class Database:
             refusal_rate=refusal_rate,
             feedback_up=feedback_up,
             feedback_down=feedback_down,
+            avg_latency_ms=avg_latency_ms,
+            feedback_rate=feedback_rate,
         )

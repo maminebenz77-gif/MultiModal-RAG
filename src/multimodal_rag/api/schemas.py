@@ -252,6 +252,18 @@ class MetricsResponse(BaseModel):
     refusal_rate: float
     feedback_up: int
     feedback_down: int
+    avg_latency_ms: float
+    """Average of queries.latency_ms across every recorded query that has
+    one -- 0.0 if none do yet (a fresh database, or every row predates
+    this column). Deliberately just the average, not p50/p95 -- this
+    endpoint stays the cheap, always-on local summary; percentile
+    breakdowns and cost-per-query are a separate, heavier concern."""
+
+    feedback_rate: float
+    """(feedback_up + feedback_down) / total_queries -- what fraction of
+    queries got ANY explicit feedback at all, not the up/down split
+    (that's feedback_up/feedback_down already). 0.0 when there are no
+    queries yet."""
 
 
 class HealthResponse(BaseModel):

@@ -389,3 +389,64 @@ def test_citation_text_and_elements_self_heal_onto_an_existing_citations_table(
 
     messages = db.get_conversation_messages(conversation_id)
     assert messages[0].citations[0].text == "some text"
+
+
+def test_metrics_averages_latency_across_recorded_queries(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.record_query("q-1", "a", "answer a", False, "hybrid_rrf", latency_ms=100.0)
+    db.record_query("q-2", "b", "answer b", False, "hybrid_rrf", latency_ms=300.0)
+
+    assert db.metrics().avg_latency_ms == 200.0
+
+
+def test_metrics_latency_is_zero_when_no_query_has_a_recorded_latency(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.record_query("q-1", "a", "answer a", False, "hybrid_rrf")
+
+    assert db.metrics().avg_latency_ms == 0.0
+
+
+def test_metrics_feedback_rate_reflects_the_fraction_of_queries_with_any_feedback(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.record_query("q-1", "a", "answer a", False, "hybrid_rrf")
+    db.record_query("q-2", "b", "answer b", False, "hybrid_rrf")
+    db.record_feedback("q-1", "up", None)
+
+    assert db.metrics().feedback_rate == 0.5
+
+
+def test_latency_ms_self_heals_onto_an_existing_queries_table(tmp_path: Path) -> None:
+    """Regression test: a queries table created before latency_ms existed
+    must still work once the new Database code runs against it, and old
+    rows (NULL latency_ms) must not drag avg_latency_ms toward 0."""
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE queries (
+            query_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            refused INTEGER NOT NULL,
+            retrieval_method TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            conversation_id TEXT,
+            needs_clarification INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO queries VALUES "
+        "('q-old', 'old q', 'old a', 0, 'hybrid_rrf', '2020-01-01T00:00:00', NULL, 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    # Must not raise "no such column" -- this is the whole point of the test.
+    db.record_query("q-new", "new q", "new a", False, "hybrid_rrf", latency_ms=150.0)
+
+    assert db.metrics().avg_latency_ms == 150.0
+    assert db.metrics().total_queries == 2

@@ -42,6 +42,8 @@ async def test_metrics_on_a_fresh_service_are_all_zero(client: httpx.AsyncClient
         "refusal_rate": 0.0,
         "feedback_up": 0,
         "feedback_down": 0,
+        "avg_latency_ms": 0.0,
+        "feedback_rate": 0.0,
     }
 
 
@@ -60,6 +62,8 @@ async def test_metrics_reflect_ingestion_queries_and_feedback(client: httpx.Asyn
     assert body["total_queries"] == 1
     assert body["feedback_up"] == 1
     assert body["feedback_down"] == 0
+    assert body["avg_latency_ms"] > 0
+    assert body["feedback_rate"] == 1.0
 
 
 async def test_refusal_rate_reflects_refused_queries(
