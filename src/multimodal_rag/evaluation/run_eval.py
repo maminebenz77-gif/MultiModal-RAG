@@ -81,6 +81,19 @@ class _MethodScores:
     faithfulness: float
     relevance: float
     hallucination_rate: float
+    refusal_accuracy: float
+    """Fraction of expect_refusal items (e.g. the P99 question, where only
+    P95 exists) the chain correctly declined to answer. Deliberately NOT
+    scored via score_faithfulness/score_relevance -- those judge whether a
+    SUBSTANTIVE answer is grounded/on-topic, and a refusal is neither; a
+    question-aware faithfulness judge shown "P95 exists, P99 doesn't" could
+    easily reason "a related fact is right there, this refusal seems
+    unnecessary" and reward exactly the P95-for-P99 substitution failure
+    the agent's own system prompt (generation/agent.py) explicitly forbids.
+    This is the real test of hallucination resistance on the hardest
+    case -- a topically-close question with no real answer -- and it's a
+    plain correctness check (did the chain refuse, yes or no), not an
+    LLM-judged score."""
     false_refusals: int
     """Golden items NOT marked expect_refusal that the chain refused to
     answer anyway -- a real failure mode (the method found nothing usable
@@ -118,6 +131,7 @@ def _ingest_one(filename: str) -> list[Chunk]:
 def _score_method(
     retriever: Retriever,
     items: list[dict[str, Any]],
+    refusal_items: list[dict[str, Any]],
     method: RetrievalMethod,
     *,
     rerank: bool,
@@ -159,6 +173,10 @@ def _score_method(
         except JudgeParseError:
             judge_failures += 1
 
+    correct_refusals = sum(
+        1 for item in refusal_items if chain.answer(item["question"]).refused
+    )
+
     n = len(items)
     hallucination_rate = (
         sum(1 for s in faithfulness_scores if s < _HALLUCINATION_THRESHOLD)
@@ -176,6 +194,7 @@ def _score_method(
         else 0.0,
         relevance=sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0,
         hallucination_rate=hallucination_rate,
+        refusal_accuracy=correct_refusals / len(refusal_items) if refusal_items else 0.0,
         false_refusals=false_refusals,
         judge_failures=judge_failures,
     )
@@ -190,6 +209,7 @@ def _print_table(rows: list[_MethodScores]) -> None:
         ("Faithful", 10, ".3f"),
         ("Relevant", 10, ".3f"),
         ("Halluc.", 9, ".3f"),
+        ("RefusalAcc", 11, ".3f"),
     ]
     header = "".join(f"{name:<{width}}" for name, width, _ in columns)
     print(f"\n{header}")
@@ -203,6 +223,7 @@ def _print_table(rows: list[_MethodScores]) -> None:
             row.faithfulness,
             row.relevance,
             row.hallucination_rate,
+            row.refusal_accuracy,
         ]
         line = "".join(
             f"{value:<{width}}" if fmt == "<" else f"{value:<{width}{fmt}}"
@@ -218,11 +239,11 @@ def _print_table(rows: list[_MethodScores]) -> None:
 
 def main() -> None:
     golden_set = _load_golden_set()
-    retrieval_items = [item for item in golden_set if not item["expect_refusal"]]
+    answerable_items = [item for item in golden_set if not item["expect_refusal"]]
+    refusal_items = [item for item in golden_set if item["expect_refusal"]]
     print(
         f"Loaded {len(golden_set)} golden items "
-        f"({len(retrieval_items)} usable for retrieval/generation metrics -- "
-        f"the rest are refusal-only, no expected_sources to score against)."
+        f"({len(answerable_items)} answerable, {len(refusal_items)} expect-refusal)."
     )
 
     chunks = [chunk for filename in _CORPUS_FILES for chunk in _ingest_one(filename)]
@@ -239,7 +260,7 @@ def main() -> None:
     retriever = Retriever(vector_store, keyword_store, embedder)
 
     rows = [
-        _score_method(retriever, retrieval_items, method, rerank=False)
+        _score_method(retriever, answerable_items, refusal_items, method, rerank=False)
         for method in RetrievalMethod
     ]
 
@@ -251,7 +272,11 @@ def main() -> None:
         reranked_retriever = Retriever(vector_store, keyword_store, embedder, reranker=reranker)
         rows.append(
             _score_method(
-                reranked_retriever, retrieval_items, RetrievalMethod.HYBRID_RRF, rerank=True
+                reranked_retriever,
+                answerable_items,
+                refusal_items,
+                RetrievalMethod.HYBRID_RRF,
+                rerank=True,
             )
         )
 
