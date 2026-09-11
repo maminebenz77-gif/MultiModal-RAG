@@ -6,6 +6,7 @@ from typing import Any
 
 import litellm
 
+from ..tracing import record_generation_result, traced_generation
 from .base import LLMProvider
 from .schema import ToolCall, ToolResponse
 
@@ -40,48 +41,56 @@ class LiteLLMProvider(LLMProvider):
     def generate(self, messages: list[dict[str, str]]) -> str:
         owned_loop = _ensure_current_event_loop()
         try:
-            response = litellm.completion(
-                model=self._model,
-                messages=messages,
-                base_url=self._base_url,
-                api_key=self._api_key,
-            )
+            with traced_generation("generate", self._model, messages) as generation:
+                response = litellm.completion(
+                    model=self._model,
+                    messages=messages,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                )
+                content = response.choices[0].message.content or ""
+                record_generation_result(generation, response, content)
         finally:
             if owned_loop is not None:
                 owned_loop.close()
                 asyncio.set_event_loop(None)
-        content = response.choices[0].message.content
-        return content or ""
+        return content
 
     def generate_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> ToolResponse:
         owned_loop = _ensure_current_event_loop()
         try:
-            response = litellm.completion(
-                model=self._model,
-                messages=messages,
-                tools=tools,
-                base_url=self._base_url,
-                api_key=self._api_key,
-            )
+            with traced_generation("generate_with_tools", self._model, messages) as generation:
+                response = litellm.completion(
+                    model=self._model,
+                    messages=messages,
+                    tools=tools,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                )
+                message = response.choices[0].message
+                tool_calls = [
+                    ToolCall(
+                        id=call.id,
+                        name=call.function.name,
+                        # LiteLLM (like the raw OpenAI schema it mirrors) hands
+                        # back arguments as a JSON string, not a parsed object
+                        # -- decode it once here so nothing downstream
+                        # re-implements this.
+                        arguments=json.loads(call.function.arguments),
+                    )
+                    for call in (message.tool_calls or [])
+                ]
+                result = ToolResponse(content=message.content, tool_calls=tool_calls)
+                record_generation_result(
+                    generation, response, result.model_dump(mode="json")
+                )
         finally:
             if owned_loop is not None:
                 owned_loop.close()
                 asyncio.set_event_loop(None)
-        message = response.choices[0].message
-        tool_calls = [
-            ToolCall(
-                id=call.id,
-                name=call.function.name,
-                # LiteLLM (like the raw OpenAI schema it mirrors) hands back
-                # arguments as a JSON string, not a parsed object -- decode
-                # it once here so nothing downstream re-implements this.
-                arguments=json.loads(call.function.arguments),
-            )
-            for call in (message.tool_calls or [])
-        ]
-        return ToolResponse(content=message.content, tool_calls=tool_calls)
+        return result
 
     @staticmethod
     def _normalize_model(model: str, base_url: str | None) -> str:

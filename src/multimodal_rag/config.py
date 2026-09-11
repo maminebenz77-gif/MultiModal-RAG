@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     reranker_base_url: str | None = None
     reranker_api_key: str | None = None
 
+    # Langfuse tracing -- entirely optional observability, not a first-class
+    # provider. Unset (the default) means tracing.py's client construction
+    # returns None and every trace/generation/event call becomes a no-op --
+    # this must never be required for the app to run.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str | None = None
+
     # Vector / search stores
     qdrant_url: str
     elastic_url: str
@@ -151,6 +159,9 @@ class Settings(BaseSettings):
         "reranker_model",
         "reranker_base_url",
         "reranker_api_key",
+        "langfuse_public_key",
+        "langfuse_secret_key",
+        "langfuse_host",
         mode="before",
     )
     @classmethod

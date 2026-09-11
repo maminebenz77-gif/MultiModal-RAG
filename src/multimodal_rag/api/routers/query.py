@@ -22,6 +22,7 @@ from ...generation.title import generate_title
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
+from ...tracing import log_search_event, traced_query
 from ..db import Database
 from ..dependencies import get_app_state, get_db, get_retriever
 from ..schemas import (
@@ -150,19 +151,30 @@ async def query(
             allow_external=allow_external,
         )
 
+    query_id = str(uuid.uuid4())
     start_time = time.perf_counter()
     try:
-        if llm_override is not None:
+        with traced_query(conversation_id, query_id):
+            if llm_override is not None:
 
-            def _answer_with_override():
-                with _temporary_llm_provider(llm_override):
-                    return agent.answer(request.question, history, request.doc_ids)
+                def _answer_with_override():
+                    with _temporary_llm_provider(llm_override):
+                        return agent.answer(
+                            request.question,
+                            history,
+                            request.doc_ids,
+                            on_tool_call=lambda _round, q, results: log_search_event(q, results),
+                        )
 
-            result = await run_in_threadpool(_answer_with_override)
-        else:
-            result = await run_in_threadpool(
-                agent.answer, request.question, history, request.doc_ids
-            )
+                result = await run_in_threadpool(_answer_with_override)
+            else:
+                result = await run_in_threadpool(
+                    agent.answer,
+                    request.question,
+                    history,
+                    request.doc_ids,
+                    lambda _round, q, results: log_search_event(q, results),
+                )
     except ValueError as exc:
         # Retriever._rerank raises this when rerank=True but no Reranker
         # is configured for this deployment -- a config gap, not a bad
@@ -178,7 +190,6 @@ async def query(
     # this query" means the full round-trip the caller actually waited
     # through, not just its last completion call.
 
-    query_id = str(uuid.uuid4())
     await run_in_threadpool(
         db.record_query,
         query_id,

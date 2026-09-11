@@ -31,6 +31,7 @@ dependencies = [
     "unstructured[pdf]>=0.24.1",
     "unstructured-inference>=0.8.0",
     "uvicorn[standard]>=0.52.1",
+    "langfuse>=4.15.2",
 ]
 
 [project.scripts]
