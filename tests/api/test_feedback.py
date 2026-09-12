@@ -9,7 +9,9 @@ class _FakeLLM(LLMProvider):
     def generate(self, messages: list[dict[str, str]]) -> str:
         return "Fixed answer ⟦1⟧."
 
-    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+    def generate_with_tools(
+        self, messages: list[dict[str, str]], tools, tool_choice=None
+    ) -> ToolResponse:
         return ToolResponse(content="Fixed answer ⟦1⟧.", tool_calls=[])
 
 

@@ -24,7 +24,9 @@ class _FakeLLM(LLMProvider):
     def generate(self, messages: list[dict[str, str]]) -> str:
         return self._response
 
-    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+    def generate_with_tools(
+        self, messages: list[dict[str, str]], tools, tool_choice=None
+    ) -> ToolResponse:
         if not self._searched:
             self._searched = True
             return ToolResponse(

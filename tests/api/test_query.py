@@ -34,7 +34,9 @@ class _FakeLLM(LLMProvider):
         self.last_messages = messages
         return self._response
 
-    def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+    def generate_with_tools(
+        self, messages: list[dict[str, str]], tools, tool_choice=None
+    ) -> ToolResponse:
         self.last_messages = messages
         if not self._searched:
             self._searched = True
@@ -235,7 +237,9 @@ async def test_query_returns_503_when_llm_provider_fails(
         def generate(self, messages: list[dict[str, str]]) -> str:
             raise RuntimeError("upstream model unavailable")
 
-        def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+        def generate_with_tools(
+            self, messages: list[dict[str, str]], tools, tool_choice=None
+        ) -> ToolResponse:
             raise RuntimeError("upstream model unavailable")
 
     monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: _FailingLLM())
@@ -255,7 +259,9 @@ async def test_query_runtime_overrides_use_llm_provider_from_request(
         def generate(self, messages: list[dict[str, str]]) -> str:
             return "Override answer ⟦1⟧."
 
-        def generate_with_tools(self, messages: list[dict[str, str]], tools) -> ToolResponse:
+        def generate_with_tools(
+            self, messages: list[dict[str, str]], tools, tool_choice=None
+        ) -> ToolResponse:
             return ToolResponse(content="Override answer ⟦1⟧.", tool_calls=[])
 
     monkeypatch.setattr(
