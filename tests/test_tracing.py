@@ -48,28 +48,79 @@ def test_get_langfuse_client_returns_none_when_only_one_key_is_set(
     assert tracing.get_langfuse_client() is None
 
 
-def test_get_langfuse_client_constructs_a_client_when_both_keys_are_set(
+def test_get_langfuse_client_constructs_a_client_when_host_is_explicit_and_internal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tracing, "get_settings", lambda: _settings("pub", "sec"))
+    monkeypatch.setattr(
+        tracing, "get_settings", lambda: _settings("pub", "sec", langfuse_host="http://localhost:3000")
+    )
     fake_client = MagicMock()
     with patch.object(tracing, "Langfuse", return_value=fake_client) as mock_langfuse:
         client = tracing.get_langfuse_client()
 
     assert client is fake_client
     mock_langfuse.assert_called_once_with(
-        public_key="pub", secret_key="sec", host=None, timeout=tracing._TIMEOUT_SECONDS
+        public_key="pub",
+        secret_key="sec",
+        host="http://localhost:3000",
+        timeout=tracing._TIMEOUT_SECONDS,
     )
 
 
-def test_get_langfuse_client_is_blocked_when_offline_and_host_defaults_to_the_public_cloud(
+def test_get_langfuse_client_returns_none_when_host_is_not_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # No LANGFUSE_HOST set -> the SDK would default to cloud.langfuse.com,
-    # a genuinely external host -- allow_external=False must catch this
-    # even though langfuse_host itself is None, not block on None alone.
+    # No silent default to the public cloud -- an unset host means tracing
+    # stays off, full stop, regardless of allow_external.
+    monkeypatch.setattr(tracing, "get_settings", lambda: _settings("pub", "sec"))
+
+    with patch.object(tracing, "Langfuse") as mock_langfuse:
+        client = tracing.get_langfuse_client()
+
+    assert client is None
+    mock_langfuse.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "cloud_host",
+    [
+        "https://cloud.langfuse.com",
+        "https://us.cloud.langfuse.com",
+        "https://eu.cloud.langfuse.com",
+    ],
+)
+def test_get_langfuse_client_refuses_the_public_langfuse_cloud_even_when_external_calls_are_allowed(
+    monkeypatch: pytest.MonkeyPatch, cloud_host: str
+) -> None:
+    # The whole point: allow_external=True (a normal, non-air-gapped
+    # profile -- e.g. a company laptop that's allowed to reach the
+    # company's own external LLM gateway) must NOT be read as "also fine
+    # to send real query/answer content to a third party's cloud."
     monkeypatch.setattr(
-        tracing, "get_settings", lambda: _settings("pub", "sec", allow_external=False)
+        tracing,
+        "get_settings",
+        lambda: _settings("pub", "sec", langfuse_host=cloud_host, allow_external=True),
+    )
+
+    with patch.object(tracing, "Langfuse") as mock_langfuse:
+        client = tracing.get_langfuse_client()
+
+    assert client is None
+    mock_langfuse.assert_not_called()
+
+
+def test_get_langfuse_client_is_blocked_when_offline_and_host_is_a_non_cloud_external_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A self-hosted instance that's still reachable only over the public
+    # internet -- allow_external=False should still catch this, same as
+    # every other external-facing provider in this project.
+    monkeypatch.setattr(
+        tracing,
+        "get_settings",
+        lambda: _settings(
+            "pub", "sec", langfuse_host="https://langfuse.example.com", allow_external=False
+        ),
     )
 
     with patch.object(tracing, "Langfuse") as mock_langfuse:
@@ -98,7 +149,9 @@ def test_get_langfuse_client_is_allowed_offline_when_host_is_internal(
 
 
 def test_get_langfuse_client_is_only_constructed_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tracing, "get_settings", lambda: _settings("pub", "sec"))
+    monkeypatch.setattr(
+        tracing, "get_settings", lambda: _settings("pub", "sec", langfuse_host="http://localhost:3000")
+    )
     with patch.object(tracing, "Langfuse", return_value=MagicMock()) as mock_langfuse:
         first = tracing.get_langfuse_client()
         second = tracing.get_langfuse_client()

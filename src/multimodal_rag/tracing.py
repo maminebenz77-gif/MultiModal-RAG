@@ -1,5 +1,13 @@
 """Optional Langfuse tracing -- entirely opt-in, no code path requires it.
 
+Never sends data to the public Langfuse Cloud, full stop -- not gated on
+allow_external, since "this profile may call our own company's external
+AI gateway" and "this profile may hand a third party's cloud our real
+query/answer content" are different questions with different answers.
+Tracing only activates once LANGFUSE_HOST is set explicitly to something
+that isn't cloud.langfuse.com (its regional variants included) --
+intended to be a self-hosted Langfuse instance you or your company run.
+
 Deliberately NOT wired through litellm's own `success_callback =
 ["langfuse"]` integration. litellm==1.85.0 (pinned deliberately, see
 config.py) only declares compatibility with the OLD v2 langfuse client
@@ -25,6 +33,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import litellm
 from langfuse import Langfuse, propagate_attributes
@@ -37,14 +46,18 @@ _TIMEOUT_SECONDS = 10
 more than once this session by a call with no bounded timeout hanging for
 hours; better to fail visibly than silently stall a request."""
 
-_DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
-"""The SDK's own default when `host=None` is passed to it. Resolved
-explicitly here, BEFORE the privacy guard check below, rather than left
-for the SDK to default internally -- otherwise a None host would look
-like "no network endpoint to check" to enforce_privacy_guard and skip
-the check entirely, while the constructed client silently phones home to
-the public cloud anyway. That's exactly the class of leak allow_external
-exists to prevent."""
+_LANGFUSE_CLOUD_HOSTS = {"cloud.langfuse.com", "us.cloud.langfuse.com", "eu.cloud.langfuse.com"}
+"""Blocked UNCONDITIONALLY, regardless of allow_external. allow_external
+is this project's "is this profile permitted to call ANY external
+service" switch -- true on a normal company laptop, since it needs to
+reach the company's own external LLM gateway. That is a completely
+different question from "may this specific data (real user questions/
+answers/retrieved content) be sent to a third-party's cloud," which must
+stay no even when the first answer is yes. If tracing is ever wanted
+against the public Langfuse Cloud, that has to be a deliberate, separate
+decision -- not a side effect of a profile flag set for an unrelated
+reason.
+"""
 
 _logger = logging.getLogger(__name__)
 
@@ -66,7 +79,33 @@ def get_langfuse_client() -> Langfuse | None:
     if settings.langfuse_public_key is None or settings.langfuse_secret_key is None:
         return None
 
-    host = settings.langfuse_host or _DEFAULT_LANGFUSE_HOST
+    # No silent default to the public cloud -- a host must be given
+    # explicitly, in full, by whoever configures this. The SDK itself
+    # defaults an unset host to "https://cloud.langfuse.com"; that
+    # default is refused here, not inherited, so tracing simply stays off
+    # until someone deliberately points it at a real (ideally
+    # self-hosted, internal) address.
+    host = settings.langfuse_host
+    if not host:
+        _logger.warning(
+            "Langfuse tracing disabled: LANGFUSE_PUBLIC_KEY/SECRET_KEY are set but "
+            "LANGFUSE_HOST is not. Refusing to default to the public Langfuse Cloud -- "
+            "set LANGFUSE_HOST explicitly (a self-hosted instance) to enable tracing."
+        )
+        return None
+
+    hostname = urlparse(host).hostname
+    if hostname is not None and hostname.lower() in _LANGFUSE_CLOUD_HOSTS:
+        _logger.warning(
+            "Langfuse tracing disabled: LANGFUSE_HOST=%r points at the public Langfuse "
+            "Cloud, which this project refuses to send data to regardless of "
+            "allow_external -- real query/answer/retrieved content is not something to "
+            "hand to a third party by default. Point LANGFUSE_HOST at a self-hosted "
+            "instance instead.",
+            host,
+        )
+        return None
+
     try:
         enforce_privacy_guard(host, settings.allow_external)
     except ExternalCallBlockedError:
@@ -75,7 +114,7 @@ def get_langfuse_client() -> Langfuse | None:
         # why traces never show up. Logged loudly, disabled quietly.
         _logger.warning(
             "Langfuse tracing disabled: allow_external=False and %r is not a "
-            "local/internal host. Set LANGFUSE_HOST to a self-hosted instance "
+            "local/internal host. Point LANGFUSE_HOST at a self-hosted instance "
             "on this network, or leave LANGFUSE_PUBLIC_KEY/SECRET_KEY unset.",
             host,
         )
@@ -84,7 +123,7 @@ def get_langfuse_client() -> Langfuse | None:
     return Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
-        host=settings.langfuse_host,
+        host=host,
         timeout=_TIMEOUT_SECONDS,
     )
 
