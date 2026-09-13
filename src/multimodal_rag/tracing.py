@@ -1,12 +1,17 @@
 """Optional Langfuse tracing -- entirely opt-in, no code path requires it.
 
-Never sends data to the public Langfuse Cloud, full stop -- not gated on
-allow_external, since "this profile may call our own company's external
-AI gateway" and "this profile may hand a third party's cloud our real
-query/answer content" are different questions with different answers.
-Tracing only activates once LANGFUSE_HOST is set explicitly to something
-that isn't cloud.langfuse.com (its regional variants included) --
-intended to be a self-hosted Langfuse instance you or your company run.
+Never sends data to the public Langfuse Cloud by default -- not gated on
+allow_external alone, since "this profile may call our own company's
+external AI gateway" and "this profile may hand a third party's cloud
+our real query/answer content" are different questions with different
+answers. Tracing only activates once LANGFUSE_HOST is set explicitly;
+the public cloud (cloud.langfuse.com and its regional variants) needs a
+SECOND, separate opt-in on top of that -- LANGFUSE_ALLOW_CLOUD_HOST=true
+-- for the rare, deliberate case where the cloud is genuinely fine (e.g.
+a personal dev machine with no confidential documents). Even with that
+opt-in, an air-gapped profile (allow_external=False) still refuses it,
+same as any other external host -- the cloud opt-in only removes the
+cloud-specific block, not the general one.
 
 Deliberately NOT wired through litellm's own `success_callback =
 ["langfuse"]` integration. litellm==1.85.0 (pinned deliberately, see
@@ -55,16 +60,18 @@ more than once this session by a call with no bounded timeout hanging for
 hours; better to fail visibly than silently stall a request."""
 
 _LANGFUSE_CLOUD_HOSTS = {"cloud.langfuse.com", "us.cloud.langfuse.com", "eu.cloud.langfuse.com"}
-"""Blocked UNCONDITIONALLY, regardless of allow_external. allow_external
-is this project's "is this profile permitted to call ANY external
-service" switch -- true on a normal company laptop, since it needs to
-reach the company's own external LLM gateway. That is a completely
-different question from "may this specific data (real user questions/
-answers/retrieved content) be sent to a third-party's cloud," which must
-stay no even when the first answer is yes. If tracing is ever wanted
-against the public Langfuse Cloud, that has to be a deliberate, separate
-decision -- not a side effect of a profile flag set for an unrelated
-reason.
+"""Blocked by default, regardless of allow_external -- allow_external is
+this project's "is this profile permitted to call ANY external service"
+switch, true on a normal company laptop since it needs to reach the
+company's own external LLM gateway. That is a completely different
+question from "may this specific data (real user questions/answers/
+retrieved content) be sent to a third-party's cloud," which must stay no
+even when the first answer is yes, UNLESS settings.langfuse_allow_cloud_host
+is also explicitly set -- the deliberate, separate opt-in for the rare
+case where the cloud genuinely is fine (see config.py). Even then,
+allow_external=False (an air-gapped profile) still wins: the cloud
+opt-in only lifts the cloud-specific block, not the general external-
+host guard below.
 """
 
 _logger = logging.getLogger(__name__)
@@ -130,13 +137,16 @@ def get_langfuse_client() -> Langfuse | None:
         return None
 
     hostname = urlparse(host).hostname
-    if hostname is not None and hostname.lower() in _LANGFUSE_CLOUD_HOSTS:
+    is_cloud_host = hostname is not None and hostname.lower() in _LANGFUSE_CLOUD_HOSTS
+    if is_cloud_host and not settings.langfuse_allow_cloud_host:
         _logger.warning(
             "Langfuse tracing disabled: LANGFUSE_HOST=%r points at the public Langfuse "
-            "Cloud, which this project refuses to send data to regardless of "
+            "Cloud, which this project refuses to send data to by default, regardless of "
             "allow_external -- real query/answer/retrieved content is not something to "
-            "hand to a third party by default. Point LANGFUSE_HOST at a self-hosted "
-            "instance instead.",
+            "hand to a third party without a deliberate decision to do so. Point "
+            "LANGFUSE_HOST at a self-hosted instance instead, or set "
+            "LANGFUSE_ALLOW_CLOUD_HOST=true if you've made that call for this "
+            "environment specifically.",
             host,
         )
         return None

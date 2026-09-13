@@ -23,12 +23,14 @@ def _settings(
     *,
     langfuse_host: str | None = None,
     allow_external: bool = True,
+    langfuse_allow_cloud_host: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         langfuse_public_key=public_key,
         langfuse_secret_key=secret_key,
         langfuse_host=langfuse_host,
         allow_external=allow_external,
+        langfuse_allow_cloud_host=langfuse_allow_cloud_host,
     )
 
 
@@ -100,6 +102,57 @@ def test_get_langfuse_client_refuses_the_public_langfuse_cloud_even_when_externa
         tracing,
         "get_settings",
         lambda: _settings("pub", "sec", langfuse_host=cloud_host, allow_external=True),
+    )
+
+    with patch.object(tracing, "Langfuse") as mock_langfuse:
+        client = tracing.get_langfuse_client()
+
+    assert client is None
+    mock_langfuse.assert_not_called()
+
+
+def test_get_langfuse_client_allows_the_public_cloud_when_explicitly_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The deliberate escape hatch: a profile that's both allow_external=True
+    # AND has explicitly set langfuse_allow_cloud_host=True (e.g. a personal
+    # dev machine with no confidential documents) is making a conscious,
+    # per-environment decision -- that's allowed to go through.
+    monkeypatch.setattr(
+        tracing,
+        "get_settings",
+        lambda: _settings(
+            "pub",
+            "sec",
+            langfuse_host="https://cloud.langfuse.com",
+            allow_external=True,
+            langfuse_allow_cloud_host=True,
+        ),
+    )
+
+    with patch.object(tracing, "Langfuse", return_value=MagicMock()) as mock_langfuse:
+        client = tracing.get_langfuse_client()
+
+    assert client is not None
+    mock_langfuse.assert_called_once()
+
+
+def test_get_langfuse_client_still_blocks_the_cloud_opt_in_on_an_air_gapped_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cloud opt-in only lifts the CLOUD-specific block -- it must not
+    # also bypass the general "air-gapped profiles call nothing external"
+    # guard. allow_external=False still wins.
+    monkeypatch.setattr(
+        tracing,
+        "get_settings",
+        lambda: _settings(
+            "pub",
+            "sec",
+            langfuse_host="https://cloud.langfuse.com",
+            allow_external=False,
+            langfuse_allow_cloud_host=True,
+        ),
     )
 
     with patch.object(tracing, "Langfuse") as mock_langfuse:

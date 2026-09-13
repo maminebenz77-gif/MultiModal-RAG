@@ -134,6 +134,17 @@ class Settings(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
+    langfuse_allow_cloud_host: bool = False
+    """The public Langfuse Cloud is refused unconditionally by default,
+    regardless of allow_external (see tracing.py) -- real query/answer/
+    retrieved content shouldn't go to a third party's cloud just because
+    a profile happens to be allowed to reach OTHER external services
+    (e.g. this project's own LLM gateway). This is the deliberate,
+    separate opt-in: set it True (in addition to allow_external already
+    being True) on a profile/machine where you've made a conscious call
+    that the public cloud is actually fine for this data -- e.g. a
+    personal dev machine with no confidential documents, never on a
+    profile that might ever see real company data."""
 
     # Vector / search stores
     qdrant_url: str
