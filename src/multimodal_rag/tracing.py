@@ -26,6 +26,14 @@ under the hood), which is also what lets it survive the
 `run_in_threadpool` boundary FastAPI uses to call the (synchronous) agent
 code -- no manual trace_id threading through LLMProvider's interface is
 needed, and no existing test's fake LLMProvider needs to change at all.
+
+Every actual call into the Langfuse SDK in this file is wrapped
+defensively: "not configured" (get_langfuse_client() returns None) was
+always a no-op, but "configured, then failing mid-request" (host
+unreachable, service down, a network blip) was not fully covered before
+-- a Langfuse hiccup could otherwise have broken a real, already-
+successful query. Every function here is safe to call whether or not
+Langfuse is reachable, full stop.
 """
 
 import logging
@@ -66,6 +74,33 @@ class _SearchResultLike(Protocol):
     source: str
     score: float
     chunk_id: str
+
+
+def _safe_enter(context_manager: Any) -> bool:
+    """Best-effort `__enter__` -- returns whether it actually succeeded,
+    so a caller can skip the matching `__exit__` if not. Never raises:
+    a context manager that fails to open (e.g. the SDK doing something
+    network-bound on entry) must not be able to take a real request
+    down with it.
+    """
+    try:
+        context_manager.__enter__()
+        return True
+    except Exception:
+        _logger.warning("Langfuse tracing failed to start; continuing without it.", exc_info=True)
+        return False
+
+
+def _safe_exit(context_manager: Any) -> None:
+    """Best-effort `__exit__`, for a context manager `_safe_enter` already
+    confirmed was opened. Never raises -- a failure closing a span must
+    never surface after the real work it wrapped already completed
+    (successfully or not).
+    """
+    try:
+        context_manager.__exit__(None, None, None)
+    except Exception:
+        _logger.warning("Langfuse tracing failed to close cleanly.", exc_info=True)
 
 
 @lru_cache(maxsize=1)
@@ -120,12 +155,26 @@ def get_langfuse_client() -> Langfuse | None:
         )
         return None
 
-    return Langfuse(
-        public_key=settings.langfuse_public_key,
-        secret_key=settings.langfuse_secret_key,
-        host=host,
-        timeout=_TIMEOUT_SECONDS,
-    )
+    try:
+        return Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=host,
+            timeout=_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # Caught, not just fail-soft-by-convention: this is @lru_cache'd,
+        # and lru_cache does NOT cache a raised exception -- an unguarded
+        # failure here would retry (and fail) on every single request
+        # forever, once Langfuse is configured but unreachable. Returning
+        # None instead is what actually gets cached, so this constructor
+        # runs at most once per process even when it fails.
+        _logger.warning(
+            "Langfuse tracing disabled: failed to construct a client for host %r.",
+            host,
+            exc_info=True,
+        )
+        return None
 
 
 @contextmanager
@@ -133,19 +182,27 @@ def traced_query(conversation_id: str, query_id: str) -> Iterator[None]:
     """Wraps one /query call as its own trace, grouped into a session per
     conversation -- every turn of a conversation becomes its own trace,
     all visible together under one session in the Langfuse UI. A no-op if
-    tracing isn't configured.
+    tracing isn't configured OR if opening the trace fails for any
+    reason -- either way, the wrapped query still runs normally.
     """
     client = get_langfuse_client()
     if client is None:
         yield
         return
-    with (
-        propagate_attributes(session_id=conversation_id, trace_name="query"),
-        client.start_as_current_observation(
-            name="query", as_type="span", metadata={"query_id": query_id}
-        ),
-    ):
+
+    attrs_cm = propagate_attributes(session_id=conversation_id, trace_name="query")
+    attrs_open = _safe_enter(attrs_cm)
+    span_cm = client.start_as_current_observation(
+        name="query", as_type="span", metadata={"query_id": query_id}
+    )
+    span_open = attrs_open and _safe_enter(span_cm)
+    try:
         yield
+    finally:
+        if span_open:
+            _safe_exit(span_cm)
+        if attrs_open:
+            _safe_exit(attrs_cm)
 
 
 def log_search_event(query: str, results: Sequence[_SearchResultLike]) -> None:
@@ -159,11 +216,16 @@ def log_search_event(query: str, results: Sequence[_SearchResultLike]) -> None:
     client = get_langfuse_client()
     if client is None:
         return
-    client.create_event(
-        name="search_knowledge_base",
-        input=query,
-        output=[{"source": r.source, "score": r.score, "chunk_id": r.chunk_id} for r in results],
-    )
+    try:
+        client.create_event(
+            name="search_knowledge_base",
+            input=query,
+            output=[
+                {"source": r.source, "score": r.score, "chunk_id": r.chunk_id} for r in results
+            ],
+        )
+    except Exception:
+        _logger.warning("Langfuse search-event logging failed; continuing.", exc_info=True)
 
 
 @contextmanager
@@ -171,17 +233,29 @@ def traced_generation(name: str, model: str, messages: list[dict[str, Any]]) -> 
     """Wraps one litellm.completion() call as a generation observation --
     real start/end timing, unlike log_search_event, plus the actual
     prompt as `input` (visible in the Langfuse UI). Yields None (a no-op)
-    if tracing isn't configured, so callers don't need to branch on
-    whether tracing is on.
+    if tracing isn't configured OR if opening the observation fails for
+    any reason -- callers don't need to branch on whether tracing is on;
+    they just need to treat None as "nothing to attach a result to" (see
+    record_generation_result).
     """
     client = get_langfuse_client()
     if client is None:
         yield None
         return
-    with client.start_as_current_observation(
+
+    span_cm = client.start_as_current_observation(
         name=name, as_type="generation", model=model, input=messages
-    ) as generation:
+    )
+    try:
+        generation = span_cm.__enter__()
+    except Exception:
+        _logger.warning("Langfuse tracing failed to start; continuing without it.", exc_info=True)
+        yield None
+        return
+    try:
         yield generation
+    finally:
+        _safe_exit(span_cm)
 
 
 def record_generation_result(generation: Any, response: Any, output: Any) -> None:
@@ -190,7 +264,10 @@ def record_generation_result(generation: Any, response: Any, output: Any) -> Non
     None (see traced_generation). Cost lookup is fail-soft on its own: an
     unrecognized/custom model just means no cost attached, not a broken
     trace -- same "nice-to-have, never blocks the real thing" precedent
-    as generation/title.py's generate_title().
+    as generation/title.py's generate_title(). The `.update()` call
+    itself is wrapped too -- this runs right after a real, successful LLM
+    response comes back, and a Langfuse hiccup here must not be able to
+    take that already-obtained answer down with it.
     """
     if generation is None:
         return
@@ -208,8 +285,11 @@ def record_generation_result(generation: Any, response: Any, output: Any) -> Non
         cost = litellm.completion_cost(completion_response=response)
     except Exception:
         cost = None
-    generation.update(
-        output=output,
-        usage_details=usage_details,
-        cost_details={"total": cost} if cost is not None else None,
-    )
+    try:
+        generation.update(
+            output=output,
+            usage_details=usage_details,
+            cost_details={"total": cost} if cost is not None else None,
+        )
+    except Exception:
+        _logger.warning("Langfuse generation-result logging failed; continuing.", exc_info=True)

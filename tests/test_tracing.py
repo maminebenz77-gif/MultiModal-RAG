@@ -148,6 +148,38 @@ def test_get_langfuse_client_is_allowed_offline_when_host_is_internal(
     mock_langfuse.assert_called_once()
 
 
+def test_get_langfuse_client_returns_none_when_construction_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulates Langfuse being unreachable (wrong host, service down,
+    # network blip) at the moment the client is first built.
+    monkeypatch.setattr(
+        tracing, "get_settings", lambda: _settings("pub", "sec", langfuse_host="http://localhost:3000")
+    )
+    with patch.object(tracing, "Langfuse", side_effect=ConnectionError("unreachable")):
+        client = tracing.get_langfuse_client()
+
+    assert client is None
+
+
+def test_get_langfuse_client_construction_failure_is_cached_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # lru_cache does NOT cache a raised exception -- get_langfuse_client()
+    # must catch the failure itself and return None, so THAT gets cached
+    # and construction isn't retried (and re-failed) on every request.
+    monkeypatch.setattr(
+        tracing, "get_settings", lambda: _settings("pub", "sec", langfuse_host="http://localhost:3000")
+    )
+    with patch.object(
+        tracing, "Langfuse", side_effect=ConnectionError("unreachable")
+    ) as mock_langfuse:
+        tracing.get_langfuse_client()
+        tracing.get_langfuse_client()
+
+    mock_langfuse.assert_called_once()
+
+
 def test_get_langfuse_client_is_only_constructed_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         tracing, "get_settings", lambda: _settings("pub", "sec", langfuse_host="http://localhost:3000")
@@ -182,6 +214,47 @@ def test_traced_query_propagates_session_id_and_opens_a_span_when_configured(
     )
 
 
+def test_traced_query_still_runs_the_body_when_opening_the_span_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.side_effect = ConnectionError(
+        "unreachable"
+    )
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+    body_ran = False
+
+    with tracing.traced_query("conv-1", "query-1"):
+        body_ran = True  # must still happen -- the whole point of this fix
+
+    assert body_ran
+
+
+def test_traced_query_swallows_a_failure_closing_the_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__exit__.side_effect = ConnectionError(
+        "unreachable"
+    )
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    with tracing.traced_query("conv-1", "query-1"):
+        pass  # must not raise on exit either
+
+
+def test_traced_query_still_propagates_a_real_exception_from_the_wrapped_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The critical safety property in the other direction: tracing must
+    # never swallow a REAL error from the actual query -- only failures
+    # in the tracing machinery itself.
+    fake_client = MagicMock()
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    with pytest.raises(ValueError, match="real business error"):
+        with tracing.traced_query("conv-1", "query-1"):
+            raise ValueError("real business error")
+
+
 def test_log_search_event_is_a_noop_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: None)
 
@@ -202,6 +275,16 @@ def test_log_search_event_creates_an_event_with_result_summaries_when_configured
         input="a query",
         output=[{"source": "doc.md", "score": 0.9, "chunk_id": "doc.md::0::hash"}],
     )
+
+
+def test_log_search_event_swallows_a_failure_creating_the_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.create_event.side_effect = ConnectionError("unreachable")
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    tracing.log_search_event("a query", [])  # must not raise
 
 
 def test_traced_generation_yields_none_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,6 +309,36 @@ def test_traced_generation_starts_a_generation_observation_when_configured(
     fake_client.start_as_current_observation.assert_called_once_with(
         name="generate", as_type="generation", model="gpt-4o-mini", input=messages
     )
+
+
+def test_traced_generation_yields_none_when_opening_the_observation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.side_effect = ConnectionError(
+        "unreachable"
+    )
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+    body_ran = False
+
+    with tracing.traced_generation("generate", "gpt-4o-mini", []) as generation:
+        body_ran = True
+        assert generation is None  # nothing to attach a result to
+
+    assert body_ran
+
+
+def test_traced_generation_swallows_a_failure_closing_the_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__exit__.side_effect = ConnectionError(
+        "unreachable"
+    )
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    with tracing.traced_generation("generate", "gpt-4o-mini", []):
+        pass  # must not raise on exit
 
 
 def test_record_generation_result_is_a_noop_when_generation_is_none() -> None:
@@ -258,3 +371,13 @@ def test_record_generation_result_tolerates_a_failing_cost_lookup() -> None:
     generation.update.assert_called_once_with(
         output="the answer", usage_details=None, cost_details=None
     )
+
+
+def test_record_generation_result_swallows_a_failure_calling_update() -> None:
+    # This runs right after a real, successful LLM response comes back --
+    # a Langfuse hiccup here must not be able to take that answer down.
+    generation = MagicMock()
+    generation.update.side_effect = ConnectionError("unreachable")
+    response = SimpleNamespace(usage=None)
+
+    tracing.record_generation_result(generation, response, output="the answer")  # must not raise
