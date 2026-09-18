@@ -42,14 +42,14 @@ Langfuse is reachable, full stop.
 """
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urlparse
 
 import litellm
-from langfuse import Langfuse, propagate_attributes
+from langfuse import Langfuse, ObservationTypeLiteral, propagate_attributes
 
 from .config import get_settings
 from .privacy_guard import ExternalCallBlockedError, enforce_privacy_guard
@@ -75,12 +75,6 @@ host guard below.
 """
 
 _logger = logging.getLogger(__name__)
-
-
-class _SearchResultLike(Protocol):
-    source: str
-    score: float
-    chunk_id: str
 
 
 def _safe_enter(context_manager: Any) -> bool:
@@ -215,34 +209,78 @@ def traced_query(conversation_id: str, query_id: str) -> Iterator[None]:
             _safe_exit(attrs_cm)
 
 
-def log_search_event(query: str, results: Sequence[_SearchResultLike]) -> None:
-    """Records one search_knowledge_base round as a point-in-time event --
-    not a span, since AgentChain's on_tool_call hook (see generation/
-    agent.py) fires AFTER the search already completed, with no start
-    time available to measure a real duration against. A no-op if tracing
-    isn't configured. Nests under whatever span/trace is currently
-    active, same as everything else here.
+@contextmanager
+def traced_span(
+    name: str,
+    *,
+    as_type: ObservationTypeLiteral = "span",
+    input: Any = None,
+    metadata: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    """Generic child observation -- nests under whatever's currently
+    active (a `traced_query` trace, another `traced_span`, etc.). This
+    is what gives retrieval real per-step timing: Retriever.retrieve()
+    (retrieval/retriever.py) wraps its actual embedder/Qdrant/
+    Elasticsearch/reranker calls in one of these each, so their
+    durations are real measurements, not estimates from a callback that
+    fires after the fact (the previous approach here, log_search_event,
+    which this superseded -- an event has no start time to measure a
+    duration against).
+
+    `as_type` should be one of Langfuse's real observation types where
+    one fits -- "embedding" for an embedding call, "retriever" for a
+    retrieval step -- so the UI renders it meaningfully rather than as
+    an undifferentiated generic span.
+
+    Same safety contract as traced_generation: yields None (a no-op) if
+    tracing isn't configured or opening the observation fails for any
+    reason, so callers don't need to branch on whether tracing is on.
     """
     client = get_langfuse_client()
     if client is None:
+        yield None
+        return
+
+    # The SDK statically overloads this method per literal as_type value,
+    # which a genuinely generic wrapper (as_type passed in as a variable,
+    # not a literal at each call site's source line) can never satisfy --
+    # every concrete call in this codebase passes a real literal, so this
+    # is a real typing limitation of wrapping an overloaded API, not a
+    # masked bug.
+    span_cm = client.start_as_current_observation(
+        name=name, as_type=as_type, input=input, metadata=metadata  # type: ignore[arg-type]
+    )
+    try:
+        observation = span_cm.__enter__()
+    except Exception:
+        _logger.warning("Langfuse tracing failed to start; continuing without it.", exc_info=True)
+        yield None
         return
     try:
-        client.create_event(
-            name="search_knowledge_base",
-            input=query,
-            output=[
-                {"source": r.source, "score": r.score, "chunk_id": r.chunk_id} for r in results
-            ],
-        )
+        yield observation
+    finally:
+        _safe_exit(span_cm)
+
+
+def update_span_output(observation: Any, output: Any) -> None:
+    """Best-effort: attaches `output` to an in-flight span/observation
+    (see traced_span), once it's known. A no-op if `observation` is
+    None. Never raises -- a Langfuse hiccup here must not be able to
+    take down real work that already completed.
+    """
+    if observation is None:
+        return
+    try:
+        observation.update(output=output)
     except Exception:
-        _logger.warning("Langfuse search-event logging failed; continuing.", exc_info=True)
+        _logger.warning("Langfuse span-output logging failed; continuing.", exc_info=True)
 
 
 @contextmanager
 def traced_generation(name: str, model: str, messages: list[dict[str, Any]]) -> Iterator[Any]:
-    """Wraps one litellm.completion() call as a generation observation --
-    real start/end timing, unlike log_search_event, plus the actual
-    prompt as `input` (visible in the Langfuse UI). Yields None (a no-op)
+    """Wraps one litellm.completion() call as a generation observation,
+    plus the actual prompt as `input` (visible in the Langfuse UI).
+    Yields None (a no-op)
     if tracing isn't configured OR if opening the observation fails for
     any reason -- callers don't need to branch on whether tracing is on;
     they just need to treat None as "nothing to attach a result to" (see

@@ -22,7 +22,7 @@ from ...generation.title import generate_title
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
-from ...tracing import log_search_event, traced_query
+from ...tracing import traced_query
 from ..db import Database
 from ..dependencies import get_app_state, get_db, get_retriever
 from ..schemas import (
@@ -159,21 +159,12 @@ async def query(
 
                 def _answer_with_override():
                     with _temporary_llm_provider(llm_override):
-                        return agent.answer(
-                            request.question,
-                            history,
-                            request.doc_ids,
-                            on_tool_call=lambda _round, q, results: log_search_event(q, results),
-                        )
+                        return agent.answer(request.question, history, request.doc_ids)
 
                 result = await run_in_threadpool(_answer_with_override)
             else:
                 result = await run_in_threadpool(
-                    agent.answer,
-                    request.question,
-                    history,
-                    request.doc_ids,
-                    lambda _round, q, results: log_search_event(q, results),
+                    agent.answer, request.question, history, request.doc_ids
                 )
     except ValueError as exc:
         # Retriever._rerank raises this when rerank=True but no Reranker

@@ -2,13 +2,47 @@
 optional reranker), called many times with different queries/methods —
 method selection happens per call via the `method` parameter, not by
 swapping which Retriever you constructed.
+
+Every retrieve() call is traced (see tracing.py) -- one "retriever" span
+covering the whole call, with the actual embedder/Qdrant/Elasticsearch/
+reranker calls each as their own child span, so a trace shows real
+per-step timing rather than one undifferentiated duration. This is a
+no-op when Langfuse isn't configured (see tracing.py's own contract), so
+it costs nothing here -- one cheap None-check per call -- when tracing
+is off, which is true for the vast majority of callers (run_eval.py,
+demo.py, most tests).
 """
 
+from typing import Any
+
 from ..providers.base import EmbeddingProvider, Reranker
+from ..providers.schema import EmbeddingVector
 from ..similarity import cosine_similarity
 from ..stores.base import KeywordStore, VectorStore
 from ..stores.schema import SearchResult
+from ..tracing import traced_span, update_span_output
 from .schema import RetrievalMethod
+
+_TEXT_PREVIEW_LENGTH = 300
+"""A trace should be legible in the Langfuse UI, not a dump of the full
+resolved parent text (up to 8000 characters -- see
+_resolve_parent_context) or the chunk's full base64-image-bearing
+elements. A preview is what you'd actually want to eyeball; the real
+content is still one click away in the app itself."""
+
+
+def _summarize_results(results: list[SearchResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "chunk_id": r.chunk_id,
+            "source": r.source,
+            "score": r.score,
+            "pages": r.pages,
+            "slides": r.slides,
+            "text_preview": r.text[:_TEXT_PREVIEW_LENGTH],
+        }
+        for r in results
+    ]
 
 
 class Retriever:
@@ -36,41 +70,50 @@ class Retriever:
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
     ) -> list[SearchResult]:
-        # Reranking and doc_id filtering both need a broader candidate set
-        # than the final top_k to still have top_k left over afterward.
-        pool_size = candidate_pool if (rerank or doc_ids is not None) else top_k
+        with traced_span(
+            "retrieve",
+            as_type="retriever",
+            input=query,
+            metadata={"method": method.value, "top_k": top_k, "rerank": rerank},
+        ) as span:
+            # Reranking and doc_id filtering both need a broader candidate
+            # set than the final top_k to still have top_k left over
+            # afterward.
+            pool_size = candidate_pool if (rerank or doc_ids is not None) else top_k
 
-        if method == RetrievalMethod.COSINE:
-            results = self._cosine(query, pool_size)
-        elif method == RetrievalMethod.MMR:
-            results = self._mmr(query, pool_size, mmr_lambda, candidate_pool)
-        elif method == RetrievalMethod.BM25:
-            results = self._bm25(query, pool_size)
-        elif method == RetrievalMethod.HYBRID_RRF:
-            results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool)
-        else:
-            raise ValueError(f"Unknown retrieval method: {method!r}")
+            if method == RetrievalMethod.COSINE:
+                results = self._cosine(query, pool_size)
+            elif method == RetrievalMethod.MMR:
+                results = self._mmr(query, pool_size, mmr_lambda, candidate_pool)
+            elif method == RetrievalMethod.BM25:
+                results = self._bm25(query, pool_size)
+            elif method == RetrievalMethod.HYBRID_RRF:
+                results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool)
+            else:
+                raise ValueError(f"Unknown retrieval method: {method!r}")
 
-        if doc_ids is not None:
-            # Post-retrieval filter, not a native store query -- fine at
-            # this corpus size, would need real store-level filtering
-            # (Qdrant payload filter / ES bool query) to scale.
-            allowed = set(doc_ids)
-            results = [r for r in results if r.doc_id in allowed]
+            if doc_ids is not None:
+                # Post-retrieval filter, not a native store query -- fine at
+                # this corpus size, would need real store-level filtering
+                # (Qdrant payload filter / ES bool query) to scale.
+                allowed = set(doc_ids)
+                results = [r for r in results if r.doc_id in allowed]
 
-        if rerank:
-            # Always runs on precise CHILD text, never parent text --
-            # parent chunks can never appear here at all, since
-            # VectorStore/KeywordStore.search() exclude is_parent=True
-            # chunks natively. Parent context is substituted in
-            # afterward, only for the results that actually made the cut.
-            results = self._rerank(query, results, top_k)
-        else:
-            results = results[:top_k]
+            if rerank:
+                # Always runs on precise CHILD text, never parent text --
+                # parent chunks can never appear here at all, since
+                # VectorStore/KeywordStore.search() exclude is_parent=True
+                # chunks natively. Parent context is substituted in
+                # afterward, only for the results that actually made the cut.
+                results = self._rerank(query, results, top_k)
+            else:
+                results = results[:top_k]
 
-        if resolve_parent_context:
-            results = self._resolve_parent_context(results)
-        return results
+            if resolve_parent_context:
+                results = self._resolve_parent_context(results)
+
+            update_span_output(span, _summarize_results(results))
+            return results
 
     def _resolve_parent_context(self, results: list[SearchResult]) -> list[SearchResult]:
         """For each result that's a child chunk (has parent_id set),
@@ -101,19 +144,41 @@ class Retriever:
             resolved.append(result.model_copy(update={"text": parent.text}))
         return resolved
 
+    def _embed(self, query: str) -> EmbeddingVector:
+        with traced_span("embed_query", as_type="embedding", input=query):
+            return self._embedder.embed([query])[0]
+
+    def _vector_search(
+        self, query: str, query_vector: EmbeddingVector, **kwargs: Any
+    ) -> list[SearchResult]:
+        with traced_span(
+            "qdrant_search", as_type="span", input=query, metadata=dict(kwargs)
+        ) as span:
+            results = self._vector_store.search(query_vector, **kwargs)
+            update_span_output(span, _summarize_results(results))
+            return results
+
+    def _keyword_search(self, query: str, top_k: int) -> list[SearchResult]:
+        with traced_span(
+            "elasticsearch_search", as_type="span", input=query, metadata={"top_k": top_k}
+        ) as span:
+            results = self._keyword_store.search(query, top_k=top_k)
+            update_span_output(span, _summarize_results(results))
+            return results
+
     def _cosine(self, query: str, top_k: int) -> list[SearchResult]:
-        query_vector = self._embedder.embed([query])[0]
-        return self._vector_store.search(query_vector, top_k=top_k)
+        query_vector = self._embed(query)
+        return self._vector_search(query, query_vector, top_k=top_k)
 
     def _bm25(self, query: str, top_k: int) -> list[SearchResult]:
-        return self._keyword_store.search(query, top_k=top_k)
+        return self._keyword_search(query, top_k)
 
     def _mmr(
         self, query: str, top_k: int, mmr_lambda: float, candidate_pool: int
     ) -> list[SearchResult]:
-        query_vector = self._embedder.embed([query])[0]
-        candidates = self._vector_store.search(
-            query_vector, top_k=candidate_pool, with_vectors=True
+        query_vector = self._embed(query)
+        candidates = self._vector_search(
+            query, query_vector, top_k=candidate_pool, with_vectors=True
         )
         if not candidates:
             return []
@@ -142,9 +207,9 @@ class Retriever:
     def _hybrid_rrf(
         self, query: str, top_k: int, rrf_k: int, candidate_pool: int
     ) -> list[SearchResult]:
-        query_vector = self._embedder.embed([query])[0]
-        vector_results = self._vector_store.search(query_vector, top_k=candidate_pool)
-        keyword_results = self._keyword_store.search(query, top_k=candidate_pool)
+        query_vector = self._embed(query)
+        vector_results = self._vector_search(query, query_vector, top_k=candidate_pool)
+        keyword_results = self._keyword_search(query, candidate_pool)
 
         # Fused by RANK, not raw score -- a BM25 score and a cosine score
         # aren't measuring the same thing and can't be meaningfully
@@ -172,5 +237,10 @@ class Retriever:
             raise ValueError("rerank=True requires a Reranker to be provided to the Retriever.")
         if not candidates:
             return []
-        order = self._reranker.rerank(query, [c.text for c in candidates])
-        return [candidates[i] for i in order[:top_k]]
+        with traced_span(
+            "rerank", as_type="span", input=query, metadata={"candidates": len(candidates)}
+        ) as span:
+            order = self._reranker.rerank(query, [c.text for c in candidates])
+            reranked = [candidates[i] for i in order[:top_k]]
+            update_span_output(span, _summarize_results(reranked))
+            return reranked

@@ -7,14 +7,25 @@ import pytest
 from multimodal_rag import tracing
 
 
+def _clear_langfuse_client_cache() -> None:
+    # Some tests in this file monkeypatch tracing.get_langfuse_client
+    # itself (replacing the whole function with a plain lambda) -- if
+    # this runs while that replacement is still in effect, the real
+    # function's .cache_clear() is gone. A no-op fallback is correct
+    # either way: no attribute means nothing of ours to clear.
+    cache_clear = getattr(tracing.get_langfuse_client, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _clear_client_cache() -> Iterator[None]:
     # get_langfuse_client() is @lru_cache'd (once per process, by design --
     # see its docstring) -- tests need a fresh cache each time or they'd
     # leak a mocked client (or None) across unrelated tests.
-    tracing.get_langfuse_client.cache_clear()
+    _clear_langfuse_client_cache()
     yield
-    tracing.get_langfuse_client.cache_clear()
+    _clear_langfuse_client_cache()
 
 
 def _settings(
@@ -308,36 +319,80 @@ def test_traced_query_still_propagates_a_real_exception_from_the_wrapped_body(
             raise ValueError("real business error")
 
 
-def test_log_search_event_is_a_noop_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_traced_span_yields_none_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: None)
 
-    tracing.log_search_event("a query", [])  # must not raise
+    with tracing.traced_span("qdrant_search") as span:
+        assert span is None
 
 
-def test_log_search_event_creates_an_event_with_result_summaries_when_configured(
+def test_traced_span_starts_an_observation_with_the_given_type_and_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = MagicMock()
+    fake_observation = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.return_value = (
+        fake_observation
+    )
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
-    result = SimpleNamespace(source="doc.md", score=0.9, chunk_id="doc.md::0::hash")
 
-    tracing.log_search_event("a query", [result])
+    with tracing.traced_span(
+        "qdrant_search", as_type="span", input="a query", metadata={"top_k": 5}
+    ) as span:
+        assert span is fake_observation
 
-    fake_client.create_event.assert_called_once_with(
-        name="search_knowledge_base",
-        input="a query",
-        output=[{"source": "doc.md", "score": 0.9, "chunk_id": "doc.md::0::hash"}],
+    fake_client.start_as_current_observation.assert_called_once_with(
+        name="qdrant_search", as_type="span", input="a query", metadata={"top_k": 5}
     )
 
 
-def test_log_search_event_swallows_a_failure_creating_the_event(
+def test_traced_span_yields_none_when_opening_the_observation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = MagicMock()
-    fake_client.create_event.side_effect = ConnectionError("unreachable")
+    fake_client.start_as_current_observation.return_value.__enter__.side_effect = ConnectionError(
+        "unreachable"
+    )
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+    body_ran = False
+
+    with tracing.traced_span("qdrant_search") as span:
+        body_ran = True
+        assert span is None
+
+    assert body_ran
+
+
+def test_traced_span_swallows_a_failure_closing_the_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__exit__.side_effect = ConnectionError(
+        "unreachable"
+    )
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
 
-    tracing.log_search_event("a query", [])  # must not raise
+    with tracing.traced_span("qdrant_search"):
+        pass  # must not raise on exit
+
+
+def test_update_span_output_is_a_noop_when_observation_is_none() -> None:
+    tracing.update_span_output(None, output={"a": 1})  # must not raise
+
+
+def test_update_span_output_attaches_output() -> None:
+    observation = MagicMock()
+
+    tracing.update_span_output(observation, output={"chunks": []})
+
+    observation.update.assert_called_once_with(output={"chunks": []})
+
+
+def test_update_span_output_swallows_a_failure_calling_update() -> None:
+    observation = MagicMock()
+    observation.update.side_effect = ConnectionError("unreachable")
+
+    tracing.update_span_output(observation, output={"a": 1})  # must not raise
 
 
 def test_traced_generation_yields_none_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:

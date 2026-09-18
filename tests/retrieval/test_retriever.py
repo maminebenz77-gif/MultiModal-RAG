@@ -5,16 +5,19 @@ over similarity values that real embeddings don't offer.
 """
 
 from collections.abc import Iterator
+from unittest.mock import patch
 
 import pytest
 
 from multimodal_rag.chunking.schema import Chunk, ChunkMetadata
 from multimodal_rag.providers.base import EmbeddingProvider, Reranker
 from multimodal_rag.providers.schema import EmbeddingVector
+from multimodal_rag.retrieval import retriever as retriever_module
 from multimodal_rag.retrieval.retriever import Retriever
 from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
 from multimodal_rag.stores.qdrant_store import QdrantStore
+from multimodal_rag.stores.schema import SearchResult
 
 _COLLECTION = "test_retrieval"
 _MODEL_ID = "fake-model"
@@ -351,3 +354,133 @@ def test_doc_ids_none_means_no_filtering(
     results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
 
     assert {r.chunk_id for r in results} == {"a", "b"}
+
+
+def _patch_traced_span():
+    # A MagicMock stands in cleanly here: MagicMock auto-implements
+    # __enter__/__exit__, so `with traced_span(...) as span:` works with
+    # no further setup, and the yielded `span` is itself a MagicMock --
+    # safe to pass straight into update_span_output without configuring
+    # anything else.
+    return patch.object(retriever_module, "traced_span")
+
+
+def test_retrieve_opens_a_retriever_span_for_the_whole_call(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
+    vector_store.upsert([_chunk("a", "a")], embedder.embed(["a"]))
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
+
+    first_call = mock_traced_span.call_args_list[0]
+    assert first_call.args[0] == "retrieve"
+    assert first_call.kwargs["as_type"] == "retriever"
+    assert first_call.kwargs["input"] == "query"
+    assert first_call.kwargs["metadata"] == {"method": "cosine", "top_k": 1, "rerank": False}
+
+
+def test_cosine_traces_embed_query_and_qdrant_search_as_child_spans(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
+    vector_store.upsert([_chunk("a", "a")], embedder.embed(["a"]))
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
+
+    calls = mock_traced_span.call_args_list
+    names = [c.args[0] for c in calls]
+    assert names == ["retrieve", "embed_query", "qdrant_search"]
+    assert calls[1].kwargs["as_type"] == "embedding"
+    assert calls[2].kwargs["as_type"] == "span"
+
+
+def test_bm25_traces_elasticsearch_search_as_a_child_span(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"a-chunk": [1.0, 0.0]})
+    keyword_store.index_chunks([_chunk("a", "the GPU ran out of memory")])
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("GPU memory", method=RetrievalMethod.BM25, top_k=1)
+
+    names = [c.args[0] for c in mock_traced_span.call_args_list]
+    assert names == ["retrieve", "elasticsearch_search"]
+
+
+def test_hybrid_rrf_traces_embed_qdrant_and_elasticsearch(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
+    chunk = _chunk("a", "a")
+    vector_store.upsert([chunk], embedder.embed(["a"]))
+    keyword_store.index_chunks([chunk])
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("query", method=RetrievalMethod.HYBRID_RRF, top_k=1)
+
+    names = [c.args[0] for c in mock_traced_span.call_args_list]
+    assert names == ["retrieve", "embed_query", "qdrant_search", "elasticsearch_search"]
+
+
+def test_rerank_traces_the_reranker_call_as_a_child_span(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1]})
+    chunks = [_chunk("a", "a"), _chunk("b", "b")]
+    vector_store.upsert(chunks, embedder.embed(["a", "b"]))
+    reranker = FakeReranker(order=[1, 0])
+    retriever = Retriever(vector_store, keyword_store, embedder, reranker=reranker)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2, rerank=True)
+
+    names = [c.args[0] for c in mock_traced_span.call_args_list]
+    assert names == ["retrieve", "embed_query", "qdrant_search", "rerank"]
+
+
+def test_retrieve_attaches_a_result_summary_as_the_span_output(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "close match": [0.99, 0.01]})
+    vector_store.upsert([_chunk("a", "close match")], embedder.embed(["close match"]))
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with patch.object(retriever_module, "update_span_output") as mock_update:
+        retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
+
+    # The LAST call is for the top-level "retrieve" span -- child spans
+    # (qdrant_search has its own output, embed_query has none) update
+    # first, in call order.
+    output = mock_update.call_args_list[-1].args[1]
+    assert len(output) == 1
+    summary = output[0]
+    assert summary["chunk_id"] == "a"
+    assert summary["source"] == "doc.md"
+    assert summary["pages"] == []
+    assert summary["slides"] == []
+    assert summary["text_preview"] == "close match"
+    assert isinstance(summary["score"], float)
+
+
+def test_summarize_results_truncates_long_text_for_trace_legibility() -> None:
+    long_text = "x" * 500
+    result = SearchResult(
+        chunk_id="a",
+        score=0.5,
+        text=long_text,
+        source="doc.md",
+        doc_id="doc",
+        element_types=["paragraph"],
+    )
+
+    summary = retriever_module._summarize_results([result])
+
+    assert len(summary[0]["text_preview"]) == retriever_module._TEXT_PREVIEW_LENGTH
+    assert summary[0]["text_preview"] == long_text[: retriever_module._TEXT_PREVIEW_LENGTH]
