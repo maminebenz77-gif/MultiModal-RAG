@@ -182,31 +182,44 @@ def get_langfuse_client() -> Langfuse | None:
 
 
 @contextmanager
-def traced_query(conversation_id: str, query_id: str) -> Iterator[None]:
+def traced_query(conversation_id: str, query_id: str, question: str) -> Iterator[Any]:
     """Wraps one /query call as its own trace, grouped into a session per
     conversation -- every turn of a conversation becomes its own trace,
-    all visible together under one session in the Langfuse UI. A no-op if
-    tracing isn't configured OR if opening the trace fails for any
-    reason -- either way, the wrapped query still runs normally.
+    all visible together under one session in the Langfuse UI. Yields
+    the span (or None -- see below) so the caller can attach the final
+    answer once it's known, via update_span_output(span, answer); this
+    span's own `input` is set eagerly to `question`, since that's
+    already known when the query starts.
+
+    A no-op (yields None) if tracing isn't configured OR if opening the
+    trace fails for any reason -- either way, the wrapped query still
+    runs normally.
     """
     client = get_langfuse_client()
     if client is None:
-        yield
+        yield None
         return
 
     attrs_cm = propagate_attributes(session_id=conversation_id, trace_name="query")
-    attrs_open = _safe_enter(attrs_cm)
+    if not _safe_enter(attrs_cm):
+        yield None
+        return
+
     span_cm = client.start_as_current_observation(
-        name="query", as_type="span", metadata={"query_id": query_id}
+        name="query", as_type="span", input=question, metadata={"query_id": query_id}
     )
-    span_open = attrs_open and _safe_enter(span_cm)
     try:
-        yield
+        span = span_cm.__enter__()
+    except Exception:
+        _logger.warning("Langfuse tracing failed to start; continuing without it.", exc_info=True)
+        _safe_exit(attrs_cm)
+        yield None
+        return
+    try:
+        yield span
     finally:
-        if span_open:
-            _safe_exit(span_cm)
-        if attrs_open:
-            _safe_exit(attrs_cm)
+        _safe_exit(span_cm)
+        _safe_exit(attrs_cm)
 
 
 @contextmanager

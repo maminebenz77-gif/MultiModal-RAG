@@ -259,23 +259,39 @@ def test_get_langfuse_client_is_only_constructed_once(monkeypatch: pytest.Monkey
 def test_traced_query_is_a_noop_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: None)
 
-    with tracing.traced_query("conv-1", "query-1"):
-        pass  # must not raise
+    with tracing.traced_query("conv-1", "query-1", "a question") as span:
+        assert span is None
 
 
-def test_traced_query_propagates_session_id_and_opens_a_span_when_configured(
+def test_traced_query_propagates_session_id_and_opens_a_span_with_the_question_as_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = MagicMock()
+    fake_span = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.return_value = fake_span
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
     with patch.object(tracing, "propagate_attributes") as mock_propagate:
-        with tracing.traced_query("conv-1", "query-1"):
-            pass
+        with tracing.traced_query("conv-1", "query-1", "a question") as span:
+            assert span is fake_span
 
     mock_propagate.assert_called_once_with(session_id="conv-1", trace_name="query")
     fake_client.start_as_current_observation.assert_called_once_with(
-        name="query", as_type="span", metadata={"query_id": "query-1"}
+        name="query", as_type="span", input="a question", metadata={"query_id": "query-1"}
     )
+
+
+def test_traced_query_can_attach_the_answer_as_output_via_update_span_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_span = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.return_value = fake_span
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    with tracing.traced_query("conv-1", "query-1", "a question") as span:
+        tracing.update_span_output(span, "the answer")
+
+    fake_span.update.assert_called_once_with(output="the answer")
 
 
 def test_traced_query_still_runs_the_body_when_opening_the_span_fails(
@@ -288,8 +304,9 @@ def test_traced_query_still_runs_the_body_when_opening_the_span_fails(
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
     body_ran = False
 
-    with tracing.traced_query("conv-1", "query-1"):
+    with tracing.traced_query("conv-1", "query-1", "a question") as span:
         body_ran = True  # must still happen -- the whole point of this fix
+        assert span is None
 
     assert body_ran
 
@@ -301,7 +318,7 @@ def test_traced_query_swallows_a_failure_closing_the_span(monkeypatch: pytest.Mo
     )
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
 
-    with tracing.traced_query("conv-1", "query-1"):
+    with tracing.traced_query("conv-1", "query-1", "a question"):
         pass  # must not raise on exit either
 
 
@@ -315,7 +332,7 @@ def test_traced_query_still_propagates_a_real_exception_from_the_wrapped_body(
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
 
     with pytest.raises(ValueError, match="real business error"):
-        with tracing.traced_query("conv-1", "query-1"):
+        with tracing.traced_query("conv-1", "query-1", "a question"):
             raise ValueError("real business error")
 
 

@@ -22,7 +22,7 @@ from ...generation.title import generate_title
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
-from ...tracing import traced_query
+from ...tracing import traced_query, update_span_output
 from ..db import Database
 from ..dependencies import get_app_state, get_db, get_retriever
 from ..schemas import (
@@ -154,7 +154,7 @@ async def query(
     query_id = str(uuid.uuid4())
     start_time = time.perf_counter()
     try:
-        with traced_query(conversation_id, query_id):
+        with traced_query(conversation_id, query_id, request.question) as query_span:
             if llm_override is not None:
 
                 def _answer_with_override():
@@ -166,6 +166,7 @@ async def query(
                 result = await run_in_threadpool(
                     agent.answer, request.question, history, request.doc_ids
                 )
+            update_span_output(query_span, result.answer)
     except ValueError as exc:
         # Retriever._rerank raises this when rerank=True but no Reranker
         # is configured for this deployment -- a config gap, not a bad
