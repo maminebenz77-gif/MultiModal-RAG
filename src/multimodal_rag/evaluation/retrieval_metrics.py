@@ -1,18 +1,30 @@
 """Layer 1 (retrieval) evaluation metrics: recall@k, MRR, nDCG@k.
 
-Pure functions over a ranked list of SearchResult and a golden item's
-expected_sources -- no I/O, no LLM calls, deterministic. Relevance is
-FILENAME-level (SearchResult.source), matching the golden set's ground
-truth (see data/golden_set.json) -- chunk_id is content-hashed and would
-silently break on any re-chunking, so it can't be the relevance key.
+Pure functions over a ranked list and a golden item's expected_sources --
+no I/O, no LLM calls, deterministic. Relevance is FILENAME-level (the
+`.source` attribute), matching the golden set's ground truth (see
+data/golden_set.json) -- chunk_id is content-hashed and would silently
+break on any re-chunking, so it can't be the relevance key.
 """
 
 import math
+from collections.abc import Sequence
+from typing import Protocol
 
-from ..stores.schema import SearchResult
+
+class HasSource(Protocol):
+    """Structural, not `SearchResult` itself -- these functions only ever
+    read `.source`. `SearchResult` already satisfies this; widened so a
+    lighter-weight stand-in works too (see evaluation/langfuse_experiment.py,
+    which reconstructs retrieval results from a Langfuse experiment task's
+    JSON-serializable output rather than passing real SearchResult objects
+    through, deliberately -- keeps SearchResult.elements' possible base64
+    image data out of a trace payload)."""
+
+    source: str
 
 
-def recall_at_k(retrieved: list[SearchResult], expected_sources: list[str]) -> float:
+def recall_at_k(retrieved: Sequence[HasSource], expected_sources: list[str]) -> float:
     """Fraction of the expected sources that appear anywhere in `retrieved`.
 
     Not binary "was anything relevant found" -- a golden item can name more
@@ -26,7 +38,7 @@ def recall_at_k(retrieved: list[SearchResult], expected_sources: list[str]) -> f
     return len(found) / len(expected_sources)
 
 
-def mrr(retrieved: list[SearchResult], expected_sources: list[str]) -> float:
+def mrr(retrieved: Sequence[HasSource], expected_sources: list[str]) -> float:
     """1 / (rank of the first relevant result), 1-indexed; 0.0 if none of
     `retrieved` is relevant. Unlike recall_at_k, this is sensitive to
     *where* the first relevant result lands -- rank 1 and rank k score
@@ -43,7 +55,7 @@ def mrr(retrieved: list[SearchResult], expected_sources: list[str]) -> float:
     return 0.0
 
 
-def ndcg_at_k(retrieved: list[SearchResult], expected_sources: list[str]) -> float:
+def ndcg_at_k(retrieved: Sequence[HasSource], expected_sources: list[str]) -> float:
     """Normalized Discounted Cumulative Gain: like recall_at_k, but a
     relevant result ranked higher counts for more than the same result
     ranked lower (via a log2 position discount), and -- unlike mrr --
