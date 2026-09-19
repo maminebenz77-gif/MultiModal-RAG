@@ -51,6 +51,11 @@ def test_routes_csv_by_extension_when_magic_reports_text_plain(
     assert elements[0].type == ElementType.TABLE
 
 
+def test_routes_xlsx_by_content_mime_type() -> None:
+    elements = parse_document(_SAMPLES / "sample.xlsx")
+    assert elements[0].type == ElementType.TABLE
+
+
 def test_routes_pdf_by_content_mime_type(monkeypatch: pytest.MonkeyPatch) -> None:
     # partition_pdf's hi_res strategy is too slow for a unit test — mock it,
     # just to confirm the dispatcher routes .pdf to parse_pdf at all.
@@ -139,6 +144,31 @@ def test_octet_stream_renamed_docx_uses_content_signature(
 
     out = parse_document(renamed)
     assert out[0].text == "docx-signature"
+
+
+def test_octet_stream_renamed_xlsx_uses_content_signature(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    renamed = tmp_path / "sample.xlsxx"
+    renamed.write_bytes((_SAMPLES / "sample.xlsx").read_bytes())
+
+    monkeypatch.setattr(
+        "multimodal_rag.ingestion.magic.from_file",
+        lambda *_a, **_k: "application/octet-stream",
+    )
+    monkeypatch.setattr(
+        "multimodal_rag.ingestion.parse_excel",
+        lambda path, summarize_tables=False: [
+            Element(
+                type=ElementType.PARAGRAPH,
+                text="xlsx-signature",
+                metadata=ElementMetadata(source_file=str(path), position=0),
+            )
+        ],
+    )
+
+    out = parse_document(renamed)
+    assert out[0].text == "xlsx-signature"
 
 
 def test_unsupported_file_type_raises(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ import magic
 
 from .csv_ import parse_csv
 from .docx import parse_docx
+from .excel import parse_excel
 from .markdown import parse_markdown
 from .pdf import parse_pdf
 from .pptx import parse_pptx
@@ -39,6 +40,9 @@ _MIME_PARSERS = {
     # most report the plain "text/plain" ambiguous case instead, handled
     # via the extension fallback below.
     "text/csv": lambda path, summarize_tables=False: parse_csv(path, summarize_tables),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
+        lambda path, summarize_tables=False: parse_excel(path, summarize_tables)
+    ),
 }
 
 _EXTENSION_PARSERS = {
@@ -48,6 +52,7 @@ _EXTENSION_PARSERS = {
     ".md": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
     ".markdown": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
     ".csv": lambda path, summarize_tables=False: parse_csv(path, summarize_tables),
+    ".xlsx": lambda path, summarize_tables=False: parse_excel(path, summarize_tables),
 }
 
 _AMBIGUOUS_MIME_TYPES = {
@@ -69,7 +74,7 @@ def parse_document(path: Path, summarize_tables: bool = False) -> list[Element]:
     if parser is None:
         raise ValueError(
             f"Unsupported file type for {path}: detected MIME type {mime_type!r} "
-            "(supported: PDF, DOCX, PPTX, Markdown, CSV)"
+            "(supported: PDF, DOCX, PPTX, Markdown, CSV, Excel)"
         )
 
     return parser(path, summarize_tables=summarize_tables)
@@ -96,4 +101,6 @@ def _parser_from_content_signature(path: Path):
         return parse_docx
     if "ppt/presentation.xml" in names:
         return parse_pptx
+    if "xl/workbook.xml" in names:
+        return parse_excel
     return None
