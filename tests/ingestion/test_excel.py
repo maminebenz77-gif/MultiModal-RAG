@@ -3,12 +3,22 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from openpyxl.chart import BarChart, Reference
 from openpyxl.drawing.image import Image as XlImage
 from PIL import Image as PILImage
 
+from multimodal_rag.ingestion import excel_charts
 from multimodal_rag.ingestion.excel import parse_excel
 from multimodal_rag.ingestion.schema import ElementType
 from multimodal_rag.providers.base import VisionProvider
+
+
+@pytest.fixture(autouse=True)
+def _stub_chart_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Table/tabular tests already cover summarize_table via
+    # tabular.summarize_table -- this only stubs the chart-specific LLM
+    # call so chart tests don't depend on a real provider either.
+    monkeypatch.setattr(excel_charts, "_summarize", lambda description: description)
 
 
 class FakeVisionProvider(VisionProvider):
@@ -155,6 +165,54 @@ def test_table_and_image_positions_are_sequential_within_a_sheet(tmp_path: Path)
 
     assert [el.type for el in elements] == [ElementType.TABLE, ElementType.IMAGE]
     assert [el.metadata.position for el in elements] == [0, 1]
+
+
+def test_native_chart_becomes_a_chart_element(tmp_path: Path) -> None:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet.append(["Region", "Revenue"])
+    worksheet.append(["North", 120])
+    worksheet.append(["South", 340])
+
+    chart = BarChart()
+    chart.title = "Revenue by Region"
+    data = Reference(worksheet, min_col=2, min_row=1, max_row=3)
+    categories = Reference(worksheet, min_col=1, min_row=2, max_row=3)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    worksheet.add_chart(chart, "D2")
+    path = tmp_path / "wb.xlsx"
+    workbook.save(path)
+
+    elements = parse_excel(path)
+
+    charts = [el for el in elements if el.type == ElementType.CHART]
+    assert len(charts) == 1
+    assert charts[0].description is not None
+    assert "Revenue by Region" in charts[0].description
+    assert charts[0].metadata.sheet == "Sheet1"
+
+
+def test_no_chart_element_when_summary_could_not_be_produced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(excel_charts, "_summarize", lambda description: None)
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet.append(["A", "B"])
+    worksheet.append([1, 2])
+    chart = BarChart()
+    data = Reference(worksheet, min_col=2, min_row=1, max_row=2)
+    chart.add_data(data, titles_from_data=True)
+    worksheet.add_chart(chart, "D2")
+    path = tmp_path / "wb.xlsx"
+    workbook.save(path)
+
+    elements = parse_excel(path)
+
+    assert not any(el.type == ElementType.CHART for el in elements)
 
 
 def test_many_rows_are_batched_across_multiple_elements(

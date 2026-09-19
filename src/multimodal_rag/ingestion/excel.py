@@ -10,19 +10,22 @@ docx.py/pptx.py already use -- generally where the actual insight in a
 real spreadsheet lives, in a chart someone pasted in as a picture, not
 just the raw numbers.
 
-Known gap, same shape as docx.py's: a native Excel CHART (built from
-cell data, editable, as opposed to a pasted-in raster image of one) is
-NOT extracted here -- openpyxl can't read an existing chart's definition
-at all (its chart classes are for creating new ones, not parsing
-existing files), so there's a separate, later pass for that (see
-excel_charts.py) that reads the chart's raw XML directly instead of
-going through openpyxl.
+A native Excel CHART (built live from cell data, as opposed to a
+pasted-in raster image of one) is a genuinely different case from an
+embedded picture -- see excel_charts.py for why (openpyxl can't read an
+existing chart's definition at all) and how (its raw XML, read
+directly). Its LLM-written description becomes a CHART element here,
+the same element type/embedding path an image's vision description
+already uses (see chunking/text.py's element_text) -- there's no raw
+image to fall back to for a native chart, so unlike an image, no
+element is emitted at all if a description couldn't be produced.
 """
 
 from pathlib import Path
 
 import openpyxl
 
+from .excel_charts import charts_for_worksheet, describe_chart
 from .schema import Element, ElementMetadata, ElementType
 from .tabular import rows_to_elements
 from .vision import ImageDescriber
@@ -77,6 +80,21 @@ def parse_excel(path: Path, summarize_tables: bool = False) -> list[Element]:
                     image_bytes=image_bytes,
                     description=description,
                     description_status=status,
+                    metadata=ElementMetadata(
+                        source_file=str(path), sheet=worksheet.title, position=position
+                    ),
+                )
+            )
+            position += 1
+
+        for chart_xml_path in charts_for_worksheet(path, worksheet):
+            chart_description = describe_chart(path, chart_xml_path, worksheet)
+            if chart_description is None:
+                continue
+            elements.append(
+                Element(
+                    type=ElementType.CHART,
+                    description=chart_description,
                     metadata=ElementMetadata(
                         source_file=str(path), sheet=worksheet.title, position=position
                     ),
