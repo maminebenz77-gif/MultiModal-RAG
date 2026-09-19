@@ -49,7 +49,7 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
 # real .docx extension. That's what this filter exists for.
 _JUNK_PREFIXES = ("~$", ".")
 _JUNK_NAMES = {"thumbs.db", "desktop.ini"}
-_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown"}
+_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".xlsx"}
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
 
 
@@ -92,6 +92,7 @@ def _is_junk_file(filename: str) -> bool:
     if name.lower() in _JUNK_NAMES:
         return True
     return Path(name).suffix.lower() not in _ALLOWED_EXTENSIONS
+
 
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
@@ -352,9 +353,7 @@ with st.sidebar:
     runtime_overrides = _runtime_overrides_payload(st.session_state)
 
     with st.expander("Retrieval settings", expanded=False):
-        method_label = st.selectbox(
-            "Retrieval method", list(_METHOD_OPTIONS.keys()), index=3
-        )
+        method_label = st.selectbox("Retrieval method", list(_METHOD_OPTIONS.keys()), index=3)
         top_k = st.number_input("top_k", min_value=1, max_value=20, value=5)
 
     retrieval_method, rerank = _METHOD_OPTIONS[method_label]
@@ -365,14 +364,15 @@ with st.sidebar:
     try:
         health = httpx.get(f"{api_base_url}/health", timeout=5.0).json()
         st.caption(
-            f"Status: {health['status']} "
-            f"(qdrant={health['qdrant']}, es={health['elasticsearch']})"
+            f"Status: {health['status']} (qdrant={health['qdrant']}, es={health['elasticsearch']})"
         )
     except httpx.HTTPError:
         st.caption("Status: unreachable")
 
     with st.form("ingest_form", clear_on_submit=True):
-        uploaded_file = st.file_uploader("Choose a file", type=["pdf", "docx", "pptx", "md"])
+        uploaded_file = st.file_uploader(
+            "Choose a file", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"]
+        )
         ingest_submitted = st.form_submit_button("Ingest")
 
     if ingest_submitted:
@@ -430,7 +430,7 @@ with st.sidebar:
     # they're about to be ingested, even though they never would be.
     uploaded_files = st.file_uploader(
         "Choose a folder",
-        type=["pdf", "docx", "pptx", "md"],
+        type=["pdf", "docx", "pptx", "md", "csv", "xlsx"],
         accept_multiple_files="directory",
     )
 
