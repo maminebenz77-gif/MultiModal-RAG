@@ -4,6 +4,7 @@ also blanks real Langfuse credentials for the whole suite regardless).
 Mirrors test_langfuse_experiment.py's mocking style.
 """
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,6 +12,16 @@ import pytest
 
 from multimodal_rag.evaluation import langfuse_expert_eval as lxe
 from multimodal_rag.evaluation.judge import JudgeParseError
+
+
+def test_run_name_includes_the_expertise_and_a_timestamp() -> None:
+    # Regex, not a second real call compared for inequality -- two calls
+    # within the same real second would otherwise produce an identical
+    # name (this helper is second-precision, plenty for real usage: an
+    # eval run takes far longer than a second), which would make an
+    # inequality-based test flaky for no real reason.
+    name = lxe._run_name("legal")
+    assert re.fullmatch(r"legal-\d{8}T\d{6}Z", name), name
 
 
 def test_sync_dataset_creates_the_dataset_and_upserts_each_item() -> None:

@@ -21,6 +21,7 @@ another's run history.
 Run: `uv run python -m multimodal_rag.evaluation.langfuse_expert_eval`
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 from langfuse import Evaluation, Langfuse
@@ -37,6 +38,19 @@ _EXPERIMENT_NAME_PREFIX = "Expert eval: "
 
 def _dataset_name(expertise: str) -> str:
     return f"{_DATASET_PREFIX}{expertise}"
+
+
+def _run_name(expertise: str) -> str:
+    # A bare expertise name as run_name meant every invocation reused the
+    # exact same run identity -- re-running after editing a qa.json (or
+    # just to re-check after a code change) silently landed on the SAME
+    # Dataset Run in Langfuse's UI instead of creating a new,
+    # distinguishable one; found live when a second run produced fresh
+    # trace data but the printed Dataset Run URL was identical to the
+    # first run's. Timestamped so every run is its own entry, sortable by
+    # when it happened.
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{expertise}-{timestamp}"
 
 
 def _sync_dataset(client: Langfuse, expertise: str, qa_items: list[dict[str, Any]]) -> None:
@@ -137,7 +151,7 @@ def main() -> None:
         agent = build_expertise_agent(expertise_dir)
         result = dataset.run_experiment(
             name=f"{_EXPERIMENT_NAME_PREFIX}{name}",
-            run_name=name,
+            run_name=_run_name(name),
             task=_make_task(agent),
             evaluators=_EVALUATORS,
         )

@@ -15,6 +15,7 @@ this codebase, there's nothing useful left to do if it isn't.
 Run: `uv run python -m multimodal_rag.evaluation.langfuse_experiment`
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 from langfuse import Evaluation, Langfuse
@@ -42,6 +43,16 @@ from .run_eval import (
 _DATASET_NAME = "rag-golden-set"
 _COLLECTION = "langfuse_experiment"
 _EXPERIMENT_NAME = "Multimodal RAG retrieval comparison"
+
+
+def _run_name(label: str) -> str:
+    # Timestamped so re-running this script shows up as a new,
+    # distinguishable Dataset Run each time -- see
+    # langfuse_expert_eval.py's identical _run_name for the live-caught
+    # bug this fixes (a bare method name meant every run silently reused
+    # the same run identity).
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{label}-{timestamp}"
 
 
 class _SourceOnly:
@@ -196,7 +207,9 @@ def main() -> None:
     for method in RetrievalMethod:
         chain = RagChain(retriever, method=method, top_k=_TOP_K, resolve_parent_context=True)
         result = dataset.run_experiment(
-            name=_EXPERIMENT_NAME, run_name=method.value, task=_make_task(chain),
+            name=_EXPERIMENT_NAME,
+            run_name=_run_name(method.value),
+            task=_make_task(chain),
             evaluators=_EVALUATORS,
         )
         print(result.format())
@@ -215,7 +228,9 @@ def main() -> None:
             resolve_parent_context=True,
         )
         result = dataset.run_experiment(
-            name=_EXPERIMENT_NAME, run_name="hybrid_rrf+rerank", task=_make_task(chain),
+            name=_EXPERIMENT_NAME,
+            run_name=_run_name("hybrid_rrf+rerank"),
+            task=_make_task(chain),
             evaluators=_EVALUATORS,
         )
         print(result.format())
