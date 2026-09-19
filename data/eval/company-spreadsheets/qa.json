@@ -1,0 +1,28 @@
+[
+  {
+    "id": "first-row-lookup",
+    "question": "Which vendor's expense is recorded first in the vendor spend log, and what category is it under?",
+    "expert_answer": "Northwind Cloud, under the Cloud Infrastructure category."
+  },
+  {
+    "id": "last-row-lookup",
+    "question": "What was the single largest vendor expense recorded in the vendor spend log, and which vendor and category was it under?",
+    "expert_answer": "The largest single expense was $48,750, from Stark Analytics, under Legal Services, recorded in Q4. It is also the very last entry in the log."
+  },
+  {
+    "id": "category-total-aggregation",
+    "question": "What is the total amount spent on Legal Services across the whole vendor spend log?",
+    "expert_answer": "$103,453 total across all Legal Services entries in the log."
+  },
+  {
+    "id": "chart-outlier",
+    "question": "Does the vendor spend chart show any notable spike or outlier, and roughly how large is it?",
+    "expert_answer": "Yes -- the chart shows a clear spike at the very end of the series, a single expense around $48,750, well above the typical row values which mostly range from about $1,000 to $10,000."
+  },
+  {
+    "id": "unrecorded-year",
+    "question": "What year does the vendor spend log cover?",
+    "expert_answer": "That isn't specified. The log records quarters (Q1 through Q4) for each entry but never records a year, so there's no way to tell which year (or years) the data covers.",
+    "expect_refusal": true
+  }
+]
