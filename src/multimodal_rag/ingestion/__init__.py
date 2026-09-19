@@ -5,6 +5,20 @@ extension — a renamed or extensionless PDF/DOCX/PPTX still routes
 correctly. Markdown is the one exception: plain text has no distinguishing
 magic bytes, so libmagic can only ever report "text/plain" for it, and we
 fall back to the file extension in that one case.
+
+parse_document() is also the one place every caller of every parser goes
+through -- the real /ingest endpoint, run_eval.py, run_expert_eval.py, or
+a one-off script alike -- so it's where ingestion gets wrapped in a
+Langfuse span, same "instrument at the source, not reactively from one
+caller" choice retrieval/retriever.py already made. Every LLM call a
+parser triggers while it runs (a table's summarize_table(), a chart's
+describe_chart(), a picture's vision describe() -- all already traced
+individually, see providers/llm.py and providers/vision.py) nests under
+this span automatically via OpenTelemetry context propagation, so opening
+one document's ingestion trace in Langfuse shows every summary/
+description made while parsing it, instead of each becoming its own
+disconnected root trace with nothing tying them to the document or to
+each other.
 """
 
 import zipfile
@@ -12,6 +26,7 @@ from pathlib import Path
 
 import magic
 
+from ..tracing import traced_span, update_span_output
 from .csv_ import parse_csv
 from .docx import parse_docx
 from .excel import parse_excel
@@ -77,7 +92,13 @@ def parse_document(path: Path, summarize_tables: bool = False) -> list[Element]:
             "(supported: PDF, DOCX, PPTX, Markdown, CSV, Excel)"
         )
 
-    return parser(path, summarize_tables=summarize_tables)
+    with traced_span("ingest", input=str(path), metadata={"mime_type": mime_type}) as span:
+        elements = parser(path, summarize_tables=summarize_tables)
+        element_counts: dict[str, int] = {}
+        for element in elements:
+            element_counts[element.type.value] = element_counts.get(element.type.value, 0) + 1
+        update_span_output(span, {"element_count": len(elements), "by_type": element_counts})
+        return elements
 
 
 def _parser_from_content_signature(path: Path):

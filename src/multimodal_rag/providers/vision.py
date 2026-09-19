@@ -7,6 +7,7 @@ import litellm
 import magic
 
 from ..image_utils import downscale_image
+from ..tracing import record_generation_result, traced_generation
 from .base import VisionProvider
 
 _DEFAULT_PROMPT = (
@@ -61,29 +62,43 @@ class LiteLLMVisionProvider(VisionProvider):
             image_bytes = downscale_image(image_bytes, self._max_dimension)
             mime_type = magic.from_buffer(image_bytes, mime=True)
             encoded = base64.b64encode(image_bytes).decode("ascii")
-            response = litellm.completion(
-                model=self._model,
-                base_url=self._base_url,
-                api_key=self._api_key,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt or _DEFAULT_PROMPT},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-                            },
-                        ],
-                    }
-                ],
-            )
+            prompt_text = prompt or _DEFAULT_PROMPT
+            # Traced input is a placeholder for the image, not the real
+            # base64 payload -- same reasoning retrieval tracing already
+            # applies to SearchResult.elements (never traced whole): a
+            # trace should stay legible in the UI, not become a payload
+            # dump of image bytes.
+            traced_messages = [
+                {
+                    "role": "user",
+                    "content": f"{prompt_text}\n[image: {len(image_bytes)} bytes, {mime_type}]",
+                }
+            ]
+            with traced_generation("describe", self._model, traced_messages) as generation:
+                response = litellm.completion(
+                    model=self._model,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt_text},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                                },
+                            ],
+                        }
+                    ],
+                )
+                content = response.choices[0].message.content or ""
+                record_generation_result(generation, response, content)
         finally:
             if owned_loop is not None:
                 owned_loop.close()
                 asyncio.set_event_loop(None)
-        content = response.choices[0].message.content
-        return content or ""
+        return content
 
 
 class InternalServerVisionProvider(VisionProvider):
