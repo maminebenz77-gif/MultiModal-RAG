@@ -83,9 +83,16 @@ def _load_qa(expertise_dir: Path) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], json.loads((expertise_dir / "qa.json").read_text()))
 
 
-def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
+def build_expertise_agent(expertise_dir: Path) -> AgentChain:
+    """Ingests an expertise folder's documents into a collection scoped to
+    it alone -- deliberately, so a question about one expertise can't
+    accidentally retrieve another expertise's content just because they
+    happen to share a collection -- and returns the real production
+    AgentChain over it (routers/query.py's exact construction). Shared by
+    run_expert_eval.py and langfuse_expert_eval.py so both eval every
+    expertise against the same agent, not two subtly different ones.
+    """
     name = expertise_dir.name
-    qa_items = _load_qa(expertise_dir)
     documents_dir = expertise_dir / "documents"
     chunks = [
         chunk
@@ -94,9 +101,6 @@ def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
         for chunk in _ingest_document(path)
     ]
 
-    # Scoped per expertise, deliberately -- a question about one expertise
-    # must not be able to accidentally retrieve another expertise's
-    # documents just because they happen to share a collection.
     collection = f"expert_eval_{name}"
     embedder = get_embedder()
     vectors = embedder.embed([c.text for c in chunks])
@@ -109,13 +113,19 @@ def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
     vector_store.publish()
 
     retriever = Retriever(vector_store, keyword_store, embedder)
-    agent = AgentChain(
+    return AgentChain(
         retriever,
         method=RetrievalMethod.HYBRID_RRF,
         top_k=_TOP_K,
         rerank=False,
         resolve_parent_context=True,
     )
+
+
+def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
+    name = expertise_dir.name
+    qa_items = _load_qa(expertise_dir)
+    agent = build_expertise_agent(expertise_dir)
 
     answerable_items = [item for item in qa_items if not item.get("expect_refusal", False)]
     refusal_items = [item for item in qa_items if item.get("expect_refusal", False)]
