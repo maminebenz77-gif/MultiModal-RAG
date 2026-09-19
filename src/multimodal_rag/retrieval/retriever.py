@@ -248,21 +248,23 @@ class Retriever:
             metadata={"mmr_lambda": mmr_lambda, "candidates": len(candidates)},
         ) as span:
             selected: list[SearchResult] = []
-            picks: list[dict[str, Any]] = []
+            mmr_scores: list[float] = []
             remaining = list(candidates)
             while remaining and len(selected) < top_k:
                 best = max(remaining, key=lambda c: self._mmr_score(c, selected, mmr_lambda))
-                picks.append(
-                    {
-                        "chunk_id": best.chunk_id,
-                        "source": best.source,
-                        "relevance": best.score,
-                        "mmr_score": self._mmr_score(best, selected, mmr_lambda),
-                    }
-                )
+                mmr_scores.append(self._mmr_score(best, selected, mmr_lambda))
                 selected.append(best)
                 remaining.remove(best)
-            update_span_output(span, picks)
+            # Same _summarize_results() shape every other span in this
+            # file uses -- see _hybrid_rrf's identical fix. `score` here
+            # is already the candidate's raw relevance (MMR never
+            # rewrites it); `mmr_score` is the only genuinely new field,
+            # the actual relevance-vs-redundancy number that decided the
+            # pick, in selection order.
+            summaries = _summarize_results(selected)
+            for summary, mmr_score in zip(summaries, mmr_scores, strict=True):
+                summary["mmr_score"] = mmr_score
+            update_span_output(span, summaries)
             return selected
 
     @staticmethod
@@ -332,20 +334,21 @@ class Retriever:
                 by_id[chunk_id].model_copy(update={"score": scores[chunk_id]})
                 for chunk_id in ranked_ids
             ]
-            update_span_output(
-                span,
-                [
-                    {
-                        "chunk_id": chunk_id,
-                        "source": by_id[chunk_id].source,
-                        "fused_score": scores[chunk_id],
-                        # "vector", "keyword", or both -- both is the
-                        # interesting case: a chunk both methods agreed on.
-                        "found_by": sources[chunk_id],
-                    }
-                    for chunk_id in ranked_ids
-                ],
-            )
+            # Same _summarize_results() shape every other span in this
+            # file uses (chunk_id, source, score, pages, slides,
+            # text_preview) -- a first version of this span built its own
+            # thinner shape from scratch and dropped text_preview, so it
+            # was the one span in the whole trace where you couldn't
+            # actually tell WHICH chunk got fused in, just its id/score.
+            # `score` is already the fused score here, via the
+            # model_copy() above -- only `found_by` is genuinely new
+            # information _summarize_results() has no field for.
+            summaries = _summarize_results(fused)
+            for summary, chunk_id in zip(summaries, ranked_ids, strict=True):
+                # "vector", "keyword", or both -- both is the interesting
+                # case: a chunk both methods agreed on.
+                summary["found_by"] = sources[chunk_id]
+            update_span_output(span, summaries)
             return fused
 
     def _rerank(self, query: str, candidates: list[SearchResult], top_k: int) -> list[SearchResult]:
