@@ -1,0 +1,27 @@
+[
+  {
+    "id": "index-choice",
+    "question": "Why does this project's vector store default to HNSW instead of IVF?",
+    "expert_answer": "Because the corpus grows continuously through ongoing ingestion rather than being indexed once in bulk. HNSW builds its graph incrementally and is queryable throughout, with no separate training step. IVF requires a training/clustering step over a representative sample before it can serve any queries at all, which is a poor fit for a store that needs to accept new documents incrementally without a rebuild. This operational property is the deciding factor, even though IVF was marginally faster per query in the benchmark (1.2ms vs HNSW's 2ms) -- HNSW's 98% recall was also higher than IVF's 91% at this corpus size, but the real reason for the choice is the incremental-build requirement, not raw accuracy or speed."
+  },
+  {
+    "id": "embedding-outage-impact",
+    "question": "What caused the embedding service outage, and how did it affect ingestion versus search?",
+    "expert_answer": "An internal TLS certificate on the model-serving endpoint expired without triggering a renewal. The embedding client failed closed on the TLS handshake failure instead of retrying against a fallback, so no new vectors could be produced for the 40-minute duration. Ingestion failed 100%, since every new chunk needs a fresh embedding. Search was only partially affected: keyword (BM25) search was completely unaffected since it never calls the embedding service, but vector search failed because it needs to embed the incoming query -- so hybrid retrieval degraded to keyword-only results for the whole outage rather than failing outright."
+  },
+  {
+    "id": "chunking-tradeoff",
+    "question": "How does parent-child chunking compare to flat fixed-size chunking in the internal citation-precision comparison, and what does it cost?",
+    "expert_answer": "Parent-child chunking improved citation precision by roughly 15 percentage points over flat fixed-size chunking -- citations pointed at the chunk that actually contained the cited fact far more often. The cost is roughly double the indexing time, since every section now gets chunked at two granularities (a small child chunk for precise matching, and its parent section for context) instead of one."
+  },
+  {
+    "id": "latency-variance",
+    "question": "Of the three LLM provider configurations benchmarked, which had the widest gap between average and P95 latency, and what does that suggest?",
+    "expert_answer": "The internal gateway had the widest gap: 340ms average vs 490ms P95, a 150ms spread, compared to about 90ms for the hosted API (220 to 310ms) and about 60ms for the local on-device model (180 to 240ms). This suggests more variance in how consistently the internal inference cluster responds under load compared to the hosted API."
+  },
+  {
+    "id": "unreported-metric",
+    "question": "What was the P99 latency for the internal gateway provider in the benchmark?",
+    "expert_answer": "That isn't reported. The benchmark only measured average latency and P95 latency per provider, not P99, so there's no P99 figure for the internal gateway or any other provider in this report."
+  }
+]
