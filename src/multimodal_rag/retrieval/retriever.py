@@ -19,6 +19,7 @@ from ..providers.base import EmbeddingProvider, Reranker
 from ..providers.schema import EmbeddingVector
 from ..similarity import cosine_similarity
 from ..stores.base import KeywordStore, VectorStore
+from ..stores.filters import SearchFilter
 from ..stores.schema import SearchResult
 from ..tracing import traced_span, update_span_output
 from .schema import RetrievalMethod
@@ -71,33 +72,60 @@ class Retriever:
         doc_ids: list[str] | None = None,
     ) -> list[SearchResult]:
         with traced_span(
-            "retrieve",
+            # Method in the span NAME, not just metadata -- metadata is
+            # real (confirmed live via the API), but Langfuse's default
+            # trace-tree view doesn't surface it without expanding a
+            # panel, so "which method ran" wasn't actually visible at a
+            # glance. The name always shows.
+            f"retrieve[{method.value}]",
             as_type="retriever",
             input=query,
-            metadata={"method": method.value, "top_k": top_k, "rerank": rerank},
+            metadata={
+                "method": method.value,
+                "top_k": top_k,
+                "rerank": rerank,
+                # Without these, a child qdrant_search/elasticsearch_search
+                # showing top_k=20 has no visible connection back to the
+                # top_k=5 this call was actually asked for -- candidate_pool
+                # is the reason the widened fetch happens at all, and
+                # rrf_k/mmr_lambda are the fusion/selection parameters that
+                # turn that wider pool into the final result, whichever of
+                # them this method actually uses.
+                "candidate_pool": candidate_pool,
+                "rrf_k": rrf_k if method == RetrievalMethod.HYBRID_RRF else None,
+                "mmr_lambda": mmr_lambda if method == RetrievalMethod.MMR else None,
+            },
         ) as span:
-            # Reranking and doc_id filtering both need a broader candidate
-            # set than the final top_k to still have top_k left over
-            # afterward.
-            pool_size = candidate_pool if (rerank or doc_ids is not None) else top_k
+            # doc_ids is sugar over a real, store-level filter (see
+            # stores.filters.SearchFilter) -- built once here and handed
+            # to whichever store call(s) `method` makes below, so every
+            # retrieval method gets document scoping identically instead
+            # of each reimplementing it. `is not None` (not truthy) so
+            # doc_ids=[] keeps its old meaning -- "match no document" --
+            # rather than silently becoming "no filter"; see
+            # SearchFilter.any_of's docstring.
+            search_filter = (
+                SearchFilter(any_of={"doc_id": doc_ids}) if doc_ids is not None else None
+            )
+
+            # Reranking needs a broader candidate set than the final top_k
+            # to still have top_k left over after re-scoring. Document
+            # filtering no longer does: the store now returns results
+            # that already satisfy search_filter, not a superset a Python
+            # loop used to narrow down afterward -- so there's nothing
+            # left to compensate for by over-fetching.
+            pool_size = candidate_pool if rerank else top_k
 
             if method == RetrievalMethod.COSINE:
-                results = self._cosine(query, pool_size)
+                results = self._cosine(query, pool_size, search_filter)
             elif method == RetrievalMethod.MMR:
-                results = self._mmr(query, pool_size, mmr_lambda, candidate_pool)
+                results = self._mmr(query, pool_size, mmr_lambda, candidate_pool, search_filter)
             elif method == RetrievalMethod.BM25:
-                results = self._bm25(query, pool_size)
+                results = self._bm25(query, pool_size, search_filter)
             elif method == RetrievalMethod.HYBRID_RRF:
-                results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool)
+                results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool, search_filter)
             else:
                 raise ValueError(f"Unknown retrieval method: {method!r}")
-
-            if doc_ids is not None:
-                # Post-retrieval filter, not a native store query -- fine at
-                # this corpus size, would need real store-level filtering
-                # (Qdrant payload filter / ES bool query) to scale.
-                allowed = set(doc_ids)
-                results = [r for r in results if r.doc_id in allowed]
 
             if rerank:
                 # Always runs on precise CHILD text, never parent text --
@@ -151,45 +179,91 @@ class Retriever:
     def _vector_search(
         self, query: str, query_vector: EmbeddingVector, **kwargs: Any
     ) -> list[SearchResult]:
+        # search_filter is a pydantic model, not JSON-serializable as-is --
+        # dumped to a plain dict for the trace, separately from `kwargs`
+        # itself, which is passed to the real store call unchanged.
+        trace_metadata = dict(kwargs)
+        search_filter = trace_metadata.get("search_filter")
+        if search_filter is not None:
+            trace_metadata["search_filter"] = search_filter.model_dump()
         with traced_span(
-            "qdrant_search", as_type="span", input=query, metadata=dict(kwargs)
+            "qdrant_search", as_type="span", input=query, metadata=trace_metadata
         ) as span:
             results = self._vector_store.search(query_vector, **kwargs)
             update_span_output(span, _summarize_results(results))
             return results
 
-    def _keyword_search(self, query: str, top_k: int) -> list[SearchResult]:
+    def _keyword_search(
+        self, query: str, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[SearchResult]:
+        trace_metadata: dict[str, Any] = {"top_k": top_k}
+        if search_filter is not None:
+            trace_metadata["search_filter"] = search_filter.model_dump()
         with traced_span(
-            "elasticsearch_search", as_type="span", input=query, metadata={"top_k": top_k}
+            "elasticsearch_search", as_type="span", input=query, metadata=trace_metadata
         ) as span:
-            results = self._keyword_store.search(query, top_k=top_k)
+            results = self._keyword_store.search(query, top_k=top_k, search_filter=search_filter)
             update_span_output(span, _summarize_results(results))
             return results
 
-    def _cosine(self, query: str, top_k: int) -> list[SearchResult]:
+    def _cosine(
+        self, query: str, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[SearchResult]:
         query_vector = self._embed(query)
-        return self._vector_search(query, query_vector, top_k=top_k)
+        return self._vector_search(query, query_vector, top_k=top_k, search_filter=search_filter)
 
-    def _bm25(self, query: str, top_k: int) -> list[SearchResult]:
-        return self._keyword_search(query, top_k)
+    def _bm25(
+        self, query: str, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[SearchResult]:
+        return self._keyword_search(query, top_k, search_filter)
 
     def _mmr(
-        self, query: str, top_k: int, mmr_lambda: float, candidate_pool: int
+        self,
+        query: str,
+        top_k: int,
+        mmr_lambda: float,
+        candidate_pool: int,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]:
         query_vector = self._embed(query)
         candidates = self._vector_search(
-            query, query_vector, top_k=candidate_pool, with_vectors=True
+            query,
+            query_vector,
+            top_k=candidate_pool,
+            with_vectors=True,
+            search_filter=search_filter,
         )
         if not candidates:
             return []
 
-        selected: list[SearchResult] = []
-        remaining = list(candidates)
-        while remaining and len(selected) < top_k:
-            best = max(remaining, key=lambda c: self._mmr_score(c, selected, mmr_lambda))
-            selected.append(best)
-            remaining.remove(best)
-        return selected
+        # Same gap as RRF fusion: the diversity-vs-relevance trade-off
+        # that's the entire point of MMR happened in an untraced Python
+        # loop -- a trace showed candidate_pool vector results in, then
+        # nothing explaining which ones got picked or why over the
+        # others.
+        with traced_span(
+            "mmr_select",
+            as_type="span",
+            input=query,
+            metadata={"mmr_lambda": mmr_lambda, "candidates": len(candidates)},
+        ) as span:
+            selected: list[SearchResult] = []
+            picks: list[dict[str, Any]] = []
+            remaining = list(candidates)
+            while remaining and len(selected) < top_k:
+                best = max(remaining, key=lambda c: self._mmr_score(c, selected, mmr_lambda))
+                picks.append(
+                    {
+                        "chunk_id": best.chunk_id,
+                        "source": best.source,
+                        "relevance": best.score,
+                        "mmr_score": self._mmr_score(best, selected, mmr_lambda),
+                    }
+                )
+                selected.append(best)
+                remaining.remove(best)
+            update_span_output(span, picks)
+            return selected
 
     @staticmethod
     def _mmr_score(
@@ -205,34 +279,76 @@ class Retriever:
         return mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
 
     def _hybrid_rrf(
-        self, query: str, top_k: int, rrf_k: int, candidate_pool: int
+        self,
+        query: str,
+        top_k: int,
+        rrf_k: int,
+        candidate_pool: int,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]:
         query_vector = self._embed(query)
-        vector_results = self._vector_search(query, query_vector, top_k=candidate_pool)
-        keyword_results = self._keyword_search(query, candidate_pool)
+        vector_results = self._vector_search(
+            query, query_vector, top_k=candidate_pool, search_filter=search_filter
+        )
+        keyword_results = self._keyword_search(query, candidate_pool, search_filter)
 
-        # Fused by RANK, not raw score -- a BM25 score and a cosine score
-        # aren't measuring the same thing and can't be meaningfully
-        # rescaled onto each other, but "ranked #1" means the same thing
-        # regardless of which method produced that ranking.
-        scores: dict[str, float] = {}
-        by_id: dict[str, SearchResult] = {}
-        for rank, result in enumerate(vector_results, start=1):
-            scores[result.chunk_id] = scores.get(result.chunk_id, 0.0) + 1 / (rrf_k + rank)
-            by_id[result.chunk_id] = result
-        for rank, result in enumerate(keyword_results, start=1):
-            scores[result.chunk_id] = scores.get(result.chunk_id, 0.0) + 1 / (rrf_k + rank)
-            by_id.setdefault(result.chunk_id, result)
+        # This computation -- turning candidate_pool-sized vector AND
+        # keyword result lists into the final top_k -- was previously
+        # invisible: pure Python between two traced searches and the
+        # traced rerank/output, with no span of its own. A trace showed
+        # 20 vector candidates in, 20 keyword candidates in, then nothing
+        # until either a rerank span or the outer retrieve span's own
+        # output -- the actual fusion decision (why these five, not those)
+        # never appeared anywhere.
+        with traced_span(
+            "rrf_fuse",
+            as_type="span",
+            input=query,
+            metadata={
+                "rrf_k": rrf_k,
+                "vector_candidates": len(vector_results),
+                "keyword_candidates": len(keyword_results),
+            },
+        ) as span:
+            # Fused by RANK, not raw score -- a BM25 score and a cosine
+            # score aren't measuring the same thing and can't be
+            # meaningfully rescaled onto each other, but "ranked #1" means
+            # the same thing regardless of which method produced that
+            # ranking.
+            scores: dict[str, float] = {}
+            by_id: dict[str, SearchResult] = {}
+            sources: dict[str, list[str]] = {}
+            for rank, result in enumerate(vector_results, start=1):
+                scores[result.chunk_id] = scores.get(result.chunk_id, 0.0) + 1 / (rrf_k + rank)
+                by_id[result.chunk_id] = result
+                sources.setdefault(result.chunk_id, []).append("vector")
+            for rank, result in enumerate(keyword_results, start=1):
+                scores[result.chunk_id] = scores.get(result.chunk_id, 0.0) + 1 / (rrf_k + rank)
+                by_id.setdefault(result.chunk_id, result)
+                sources.setdefault(result.chunk_id, []).append("keyword")
 
-        ranked_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)[:top_k]
-        return [
-            by_id[chunk_id].model_copy(update={"score": scores[chunk_id]})
-            for chunk_id in ranked_ids
-        ]
+            ranked_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)[:top_k]
+            fused = [
+                by_id[chunk_id].model_copy(update={"score": scores[chunk_id]})
+                for chunk_id in ranked_ids
+            ]
+            update_span_output(
+                span,
+                [
+                    {
+                        "chunk_id": chunk_id,
+                        "source": by_id[chunk_id].source,
+                        "fused_score": scores[chunk_id],
+                        # "vector", "keyword", or both -- both is the
+                        # interesting case: a chunk both methods agreed on.
+                        "found_by": sources[chunk_id],
+                    }
+                    for chunk_id in ranked_ids
+                ],
+            )
+            return fused
 
-    def _rerank(
-        self, query: str, candidates: list[SearchResult], top_k: int
-    ) -> list[SearchResult]:
+    def _rerank(self, query: str, candidates: list[SearchResult], top_k: int) -> list[SearchResult]:
         if self._reranker is None:
             raise ValueError("rerank=True requires a Reranker to be provided to the Retriever.")
         if not candidates:

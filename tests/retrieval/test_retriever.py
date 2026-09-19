@@ -29,9 +29,7 @@ class FakeEmbedder(EmbeddingProvider):
 
     def embed(self, texts: list[str]) -> list[EmbeddingVector]:
         return [
-            EmbeddingVector(
-                vector=self._vectors_by_text[t], model_id=_MODEL_ID, dimension=2
-            )
+            EmbeddingVector(vector=self._vectors_by_text[t], model_id=_MODEL_ID, dimension=2)
             for t in texts
         ]
 
@@ -49,6 +47,7 @@ def _chunk(
     text: str,
     parent_id: str | None = None,
     source: str = "doc.md",
+    doc_id: str | None = None,
     is_parent: bool = False,
 ) -> Chunk:
     return Chunk(
@@ -57,7 +56,15 @@ def _chunk(
         parent_id=parent_id,
         is_parent=is_parent,
         metadata=ChunkMetadata(
-            source_file=source, element_positions=[0], element_types=["title"]
+            # Defaults to `source` -- see test_qdrant_store.py's identical
+            # _chunk() helper for why. The doc_ids filter tests below pass
+            # doc_id explicitly, DIFFERENT from source, to prove the
+            # filter matches the real stable id, not the display filename
+            # (the identity bug this field exists to fix).
+            source_file=source,
+            doc_id=doc_id if doc_id is not None else source,
+            element_positions=[0],
+            element_types=["title"],
         ),
     )
 
@@ -324,18 +331,74 @@ def test_doc_ids_filter_excludes_chunks_from_other_documents(
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
     )
-    chunk_a = _chunk("a", "from doc a", source="doc-a.md")
-    chunk_b = _chunk("b", "from doc b", source="doc-b.md")
-    vector_store.upsert(
-        [chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text])
-    )
+    # source (the display filename) deliberately does NOT match doc_id
+    # (the real stable id) here -- this is what test_query_doc_ids_filter
+    # in test_query.py's real-world equivalent would look like once
+    # ChunkMetadata.doc_id is populated correctly: the filter must match
+    # against doc_id, not the filename that used to leak into that field.
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md", doc_id="sha256-doc-a")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md", doc_id="sha256-doc-b")
+    vector_store.upsert([chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text]))
 
     retriever = Retriever(vector_store, keyword_store, embedder)
     results = retriever.retrieve(
-        "query", method=RetrievalMethod.COSINE, top_k=2, doc_ids=["doc-b.md"]
+        "query", method=RetrievalMethod.COSINE, top_k=2, doc_ids=["sha256-doc-b"]
     )
 
     assert [r.chunk_id for r in results] == ["b"]
+
+
+def test_doc_ids_filter_does_not_match_the_display_filename(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    # Guards directly against the identity bug regressing: passing the
+    # FILENAME (what doc_ids used to silently accept) must match nothing,
+    # now that doc_id and source are tracked separately.
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "from doc a": [1.0, 0.0]})
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md", doc_id="sha256-doc-a")
+    vector_store.upsert([chunk_a], embedder.embed([chunk_a.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=2, doc_ids=["doc-a.md"]
+    )
+
+    assert results == []
+
+
+def test_doc_ids_filter_finds_matches_the_old_post_retrieval_design_would_have_missed(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    # The concrete argument for store-level (not post-retrieval) filtering:
+    # build a corpus where the chunks that match the filter are the LEAST
+    # similar to the query among the whole corpus -- ranked outside any
+    # top_k a plain similarity search would return. The retired design
+    # fetched candidates by similarity FIRST, then filtered by doc_id
+    # afterward -- so it would never even have SEEN these two chunks, and
+    # would have returned nothing. A native store-level filter restricts
+    # the search itself, so it finds them regardless of how they'd
+    # otherwise rank.
+    noise_vectors = {f"noise {i}": [1.0 - i * 0.01, i * 0.01] for i in range(10)}
+    target_vectors = {"target a": [0.0, 1.0], "target b": [0.01, 0.99]}
+    embedder = FakeEmbedder({"query": [1.0, 0.0], **noise_vectors, **target_vectors})
+
+    noise_chunks = [
+        _chunk(f"n{i}", text, source="other.md", doc_id="other")
+        for i, text in enumerate(noise_vectors)
+    ]
+    target_chunks = [
+        _chunk("t-a", "target a", source="target.md", doc_id="target"),
+        _chunk("t-b", "target b", source="target.md", doc_id="target"),
+    ]
+    all_chunks = noise_chunks + target_chunks
+    vector_store.upsert(all_chunks, embedder.embed([c.text for c in all_chunks]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=2, doc_ids=["target"]
+    )
+
+    assert {r.chunk_id for r in results} == {"t-a", "t-b"}
 
 
 def test_doc_ids_none_means_no_filtering(
@@ -344,11 +407,9 @@ def test_doc_ids_none_means_no_filtering(
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
     )
-    chunk_a = _chunk("a", "from doc a", source="doc-a.md")
-    chunk_b = _chunk("b", "from doc b", source="doc-b.md")
-    vector_store.upsert(
-        [chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text])
-    )
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md", doc_id="sha256-doc-a")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md", doc_id="sha256-doc-b")
+    vector_store.upsert([chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text]))
 
     retriever = Retriever(vector_store, keyword_store, embedder)
     results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
@@ -376,10 +437,21 @@ def test_retrieve_opens_a_retriever_span_for_the_whole_call(
         retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
 
     first_call = mock_traced_span.call_args_list[0]
-    assert first_call.args[0] == "retrieve"
+    # Method is in the span NAME, not just metadata -- metadata is real
+    # (see retriever.py's comment), but Langfuse's default trace-tree view
+    # doesn't surface it without expanding a panel, so the name carries it
+    # too, for a method that's visible at a glance.
+    assert first_call.args[0] == "retrieve[cosine]"
     assert first_call.kwargs["as_type"] == "retriever"
     assert first_call.kwargs["input"] == "query"
-    assert first_call.kwargs["metadata"] == {"method": "cosine", "top_k": 1, "rerank": False}
+    assert first_call.kwargs["metadata"] == {
+        "method": "cosine",
+        "top_k": 1,
+        "rerank": False,
+        "candidate_pool": 20,
+        "rrf_k": None,
+        "mmr_lambda": None,
+    }
 
 
 def test_cosine_traces_embed_query_and_qdrant_search_as_child_spans(
@@ -394,7 +466,7 @@ def test_cosine_traces_embed_query_and_qdrant_search_as_child_spans(
 
     calls = mock_traced_span.call_args_list
     names = [c.args[0] for c in calls]
-    assert names == ["retrieve", "embed_query", "qdrant_search"]
+    assert names == ["retrieve[cosine]", "embed_query", "qdrant_search"]
     assert calls[1].kwargs["as_type"] == "embedding"
     assert calls[2].kwargs["as_type"] == "span"
 
@@ -410,7 +482,7 @@ def test_bm25_traces_elasticsearch_search_as_a_child_span(
         retriever.retrieve("GPU memory", method=RetrievalMethod.BM25, top_k=1)
 
     names = [c.args[0] for c in mock_traced_span.call_args_list]
-    assert names == ["retrieve", "elasticsearch_search"]
+    assert names == ["retrieve[bm25]", "elasticsearch_search"]
 
 
 def test_hybrid_rrf_traces_embed_qdrant_and_elasticsearch(
@@ -426,7 +498,13 @@ def test_hybrid_rrf_traces_embed_qdrant_and_elasticsearch(
         retriever.retrieve("query", method=RetrievalMethod.HYBRID_RRF, top_k=1)
 
     names = [c.args[0] for c in mock_traced_span.call_args_list]
-    assert names == ["retrieve", "embed_query", "qdrant_search", "elasticsearch_search"]
+    assert names == [
+        "retrieve[hybrid_rrf]",
+        "embed_query",
+        "qdrant_search",
+        "elasticsearch_search",
+        "rrf_fuse",
+    ]
 
 
 def test_rerank_traces_the_reranker_call_as_a_child_span(
@@ -442,7 +520,26 @@ def test_rerank_traces_the_reranker_call_as_a_child_span(
         retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2, rerank=True)
 
     names = [c.args[0] for c in mock_traced_span.call_args_list]
-    assert names == ["retrieve", "embed_query", "qdrant_search", "rerank"]
+    assert names == ["retrieve[cosine]", "embed_query", "qdrant_search", "rerank"]
+
+
+def test_mmr_traces_the_selection_loop_as_a_child_span(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1]})
+    chunks = [_chunk("a", "a"), _chunk("b", "b")]
+    vector_store.upsert(chunks, embedder.embed(["a", "b"]))
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    with _patch_traced_span() as mock_traced_span:
+        retriever.retrieve("query", method=RetrievalMethod.MMR, top_k=2)
+
+    calls = mock_traced_span.call_args_list
+    names = [c.args[0] for c in calls]
+    assert names == ["retrieve[mmr]", "embed_query", "qdrant_search", "mmr_select"]
+    select_call = calls[3]
+    assert select_call.kwargs["metadata"]["mmr_lambda"] == 0.5
+    assert select_call.kwargs["metadata"]["candidates"] == 2
 
 
 def test_retrieve_attaches_a_result_summary_as_the_span_output(
