@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from multimodal_rag.ingestion import parse_document
+from multimodal_rag.ingestion import excel_charts, parse_document
 from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementType
 from multimodal_rag.providers.base import VisionProvider
 
@@ -17,6 +17,15 @@ class FakeVisionProvider(VisionProvider):
 @pytest.fixture(autouse=True)
 def _fake_vision(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("multimodal_rag.ingestion.vision.get_vision", lambda: FakeVisionProvider())
+
+
+@pytest.fixture(autouse=True)
+def _stub_chart_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    # sample.xlsx now has a real native chart -- without this, routing it
+    # through the dispatcher makes a REAL LLM call in what's supposed to
+    # be a fast, mocked unit test (caught live: this test took 8+ seconds
+    # before this fixture was added, instead of the usual sub-second).
+    monkeypatch.setattr(excel_charts, "_summarize", lambda description: description)
 
 
 def test_routes_markdown_by_extension_since_magic_reports_text_plain() -> None:

@@ -228,3 +228,54 @@ def test_many_rows_are_batched_across_multiple_elements(
 
     assert len(elements) == 3  # 25 data rows / 10 per batch -> 10, 10, 5
     assert all(el.metadata.sheet == "Sheet1" for el in elements)
+
+
+_SAMPLES = Path(__file__).resolve().parents[2] / "data" / "samples"
+
+
+def test_real_sample_workbook_survives_long_tables_pictures_and_a_chart_intact() -> None:
+    """Exercises the real data/samples/sample.xlsx end to end, not a tiny
+    synthetic fixture -- specifically to catch silent failure modes that
+    only show up at realistic scale: an embedded picture, a long table
+    (85 rows -- multiple ROWS_PER_ELEMENT batches) with a distinctive
+    marker in its LAST row to prove the tail of a long table isn't lost
+    or corrupted, and a native chart built from that same table.
+    """
+    elements = parse_excel(_SAMPLES / "sample.xlsx")
+
+    revenue_tables = [
+        el for el in elements if el.metadata.sheet == "Revenue" and el.type == ElementType.TABLE
+    ]
+    assert len(revenue_tables) == 1
+
+    picture = next(el for el in elements if el.type == ElementType.IMAGE)
+    assert picture.metadata.sheet == "Revenue"
+    assert picture.image_bytes == (_SAMPLES / "latency_chart.png").read_bytes()
+
+    notes_tables = [
+        el for el in elements if el.metadata.sheet == "Notes" and el.type == ElementType.TABLE
+    ]
+    # 85 data rows at the real ROWS_PER_ELEMENT (30) -> 3 batches, not 1 --
+    # this is the actual regression this test exists to catch: a long
+    # table silently collapsing into a single oversized element again.
+    assert len(notes_tables) > 1
+    assert [el.metadata.position for el in notes_tables] == sorted(
+        el.metadata.position for el in notes_tables
+    )
+
+    # The day-85 marker row must appear in the LAST batch specifically --
+    # not just "somewhere in the sheet" -- proving row-batching doesn't
+    # silently drop or misplace the tail of a long table.
+    last_notes_table = notes_tables[-1]
+    assert last_notes_table.text is not None
+    assert "| 85 | South | 999 |" in last_notes_table.text
+    assert not any("| 85 | South | 999 |" in (t.text or "") for t in notes_tables[:-1])
+
+    chart = next(el for el in elements if el.type == ElementType.CHART)
+    assert chart.metadata.sheet == "Notes"
+    assert chart.description is not None
+    assert "Daily Latency" in chart.description
+    # The chart's description was resolved from real cell values, not
+    # just the chart's structural definition -- it should reflect the
+    # same day-85 anomaly the long table itself carries.
+    assert "999" in chart.description or "85" in chart.description
