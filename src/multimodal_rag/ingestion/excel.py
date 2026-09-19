@@ -3,20 +3,29 @@ logic this shares with csv_.py. Deliberately .xlsx only: legacy .xls
 needs a different, largely unmaintained library (xlrd), and openpyxl
 itself dropped .xls support entirely.
 
-Loaded without read_only=True on purpose, even though this file only
-reads row data today -- read-only mode drops access to embedded images,
-which a later pass over this same parser needs (openpyxl's own
-documented limitation), and reusing one workbook load for both is worth
-more than read-only mode's memory savings for files this project's scale
-actually sees.
+Loaded without read_only=True on purpose: read-only mode drops access to
+embedded pictures (openpyxl's own documented limitation), which this
+parser also extracts, via the same vision-description pipeline
+docx.py/pptx.py already use -- generally where the actual insight in a
+real spreadsheet lives, in a chart someone pasted in as a picture, not
+just the raw numbers.
+
+Known gap, same shape as docx.py's: a native Excel CHART (built from
+cell data, editable, as opposed to a pasted-in raster image of one) is
+NOT extracted here -- openpyxl can't read an existing chart's definition
+at all (its chart classes are for creating new ones, not parsing
+existing files), so there's a separate, later pass for that (see
+excel_charts.py) that reads the chart's raw XML directly instead of
+going through openpyxl.
 """
 
 from pathlib import Path
 
 import openpyxl
 
-from .schema import Element
+from .schema import Element, ElementMetadata, ElementType
 from .tabular import rows_to_elements
+from .vision import ImageDescriber
 
 
 def parse_excel(path: Path, summarize_tables: bool = False) -> list[Element]:
@@ -25,6 +34,7 @@ def parse_excel(path: Path, summarize_tables: bool = False) -> list[Element]:
     # formula string -- "42", not "=SUM(A1:A10)". The value is what's
     # worth citing or matching against a query; the formula isn't.
     workbook = openpyxl.load_workbook(path, data_only=True)
+    describer = ImageDescriber()
 
     elements: list[Element] = []
     position = 0
@@ -39,20 +49,40 @@ def parse_excel(path: Path, summarize_tables: bool = False) -> list[Element]:
         # "don't guess at structure" choice as the header row (see
         # tabular.py).
         rows = [row for row in rows if any(row)]
-        if not rows:
-            continue
+        if rows:
+            header, *data_rows = rows
+            sheet_elements = rows_to_elements(
+                header,
+                data_rows,
+                source_file=str(path),
+                sheet=worksheet.title,
+                start_position=position,
+                summarize_tables=summarize_tables,
+            )
+            elements.extend(sheet_elements)
+            position += len(sheet_elements)
 
-        header, *data_rows = rows
-        sheet_elements = rows_to_elements(
-            header,
-            data_rows,
-            source_file=str(path),
-            sheet=worksheet.title,
-            start_position=position,
-            summarize_tables=summarize_tables,
-        )
-        elements.extend(sheet_elements)
-        position += len(sheet_elements)
+        # worksheet._images / image._data() are openpyxl's own PRIVATE
+        # API -- there's no public accessor for embedded pictures at all
+        # (confirmed: openpyxl's chart/image classes are built for
+        # writing, not reading existing files). Could break silently on
+        # an openpyxl upgrade; worth re-checking if one ever changes
+        # this parser's behavior unexpectedly.
+        for image in worksheet._images:
+            image_bytes = image._data()
+            description, status = describer.describe(image_bytes)
+            elements.append(
+                Element(
+                    type=ElementType.IMAGE,
+                    image_bytes=image_bytes,
+                    description=description,
+                    description_status=status,
+                    metadata=ElementMetadata(
+                        source_file=str(path), sheet=worksheet.title, position=position
+                    ),
+                )
+            )
+            position += 1
 
     return elements
 
