@@ -110,14 +110,15 @@ def _load_golden_set() -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], json.loads(_GOLDEN_SET_PATH.read_text()))
 
 
-def _ingest_one(filename: str) -> list[Chunk]:
+def _ingest_document(path: Path) -> list[Chunk]:
     """Same doc_id-then-filename-swap dance as routers/ingest.py, and for
     the same reason: chunk_id() (chunking/ids.py) needs a stable per-file
-    doc_id to hash against, but the golden set's ground truth is keyed by
-    the human-readable filename (see data/golden_set.json), not doc_id --
-    so source_file gets swapped back to `filename` right after chunking.
+    doc_id to hash against, but eval ground truth is keyed by the
+    human-readable filename (see data/golden_set.json and
+    run_expert_eval.py, both of which reuse this helper), not doc_id -- so
+    source_file gets swapped back to `filename` right after chunking.
     """
-    path = _SAMPLE_DOCS_DIR / filename
+    filename = path.name
     doc_id = hashlib.sha256(filename.encode()).hexdigest()
     elements = parse_document(path)
     for element in elements:
@@ -246,7 +247,11 @@ def main() -> None:
         f"({len(answerable_items)} answerable, {len(refusal_items)} expect-refusal)."
     )
 
-    chunks = [chunk for filename in _CORPUS_FILES for chunk in _ingest_one(filename)]
+    chunks = [
+        chunk
+        for filename in _CORPUS_FILES
+        for chunk in _ingest_document(_SAMPLE_DOCS_DIR / filename)
+    ]
     embedder = get_embedder()
     vectors = embedder.embed([c.text for c in chunks])
 

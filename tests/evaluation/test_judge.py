@@ -1,6 +1,11 @@
 import pytest
 
-from multimodal_rag.evaluation.judge import JudgeParseError, score_faithfulness, score_relevance
+from multimodal_rag.evaluation.judge import (
+    JudgeParseError,
+    score_answer_correctness,
+    score_faithfulness,
+    score_relevance,
+)
 from multimodal_rag.providers.base import LLMProvider
 
 
@@ -53,6 +58,24 @@ def test_score_relevance_parses_a_well_formed_json_response(
     score = score_relevance("What was the P95 latency?", "The sky is blue.")
 
     assert score == 0.3
+
+
+def test_score_answer_correctness_parses_a_well_formed_json_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = _FakeLLM('{"score": 0.4, "reasoning": "missing a key fact"}')
+    monkeypatch.setattr("multimodal_rag.evaluation.judge.get_llm", lambda: fake_llm)
+
+    score = score_answer_correctness(
+        "What was the P95 latency?", "It was fast.", "The P95 latency was 340ms."
+    )
+
+    assert score == 0.4
+    assert fake_llm.last_messages is not None
+    content = fake_llm.last_messages[0]["content"]
+    assert "What was the P95 latency?" in content
+    assert "The P95 latency was 340ms." in content
+    assert "It was fast." in content
 
 
 def test_score_extracts_json_even_when_wrapped_in_a_markdown_code_fence(

@@ -15,8 +15,12 @@ answer along two independent axes:
     asked, independent of whether it's grounded? Takes (question, answer)
     -- NOT the context -- for the same reason in reverse: relevance is
     about the answer/question relationship, not about the evidence.
+  - Correctness: does the answer agree, in substance, with a human
+    expert's reference answer? Unlike the two above, this ONE needs a
+    ground truth (see evaluation/run_expert_eval.py) -- it's not a
+    property of the answer and its own context/question alone.
 
-Both return a single JSON object, parsed defensively: a judge that
+All three return a single JSON object, parsed defensively: a judge that
 returns malformed output raises JudgeParseError rather than crashing
 whatever's scoring a whole batch of items -- see run_eval.py, which
 catches it per-item so one bad judge call doesn't take down the run.
@@ -80,6 +84,34 @@ addresses the question still scores high here; a correct-but-evasive answer scor
 ## ANSWER
 {{answer}}"""
 
+_CORRECTNESS_PROMPT = f"""## ROLE
+You are a strict grading assistant. You judge whether a generated ANSWER agrees, in substance, \
+with a REFERENCE ANSWER written by a human expert -- nothing more.
+
+## TASK
+Score how well the ANSWER agrees with the REFERENCE ANSWER, from 0.0 to 1.0:
+- 1.0: the ANSWER conveys the same key facts and conclusions as the REFERENCE ANSWER. Different \
+wording, different length, and extra correct detail are all fine -- what matters is substance, \
+not phrasing.
+- 0.0: the ANSWER contradicts the REFERENCE ANSWER, or is missing its substance entirely.
+- In between: the ANSWER gets some of the REFERENCE ANSWER's substance right but misses or \
+gets wrong a meaningful part of it.
+
+Do NOT judge whether the ANSWER directly addresses the QUESTION or is well-written -- only \
+whether it agrees with the REFERENCE ANSWER. The QUESTION is given only so you can tell which \
+parts of the REFERENCE ANSWER are the ones actually being asked about.
+
+{_OUTPUT_FORMAT_INSTRUCTIONS}
+
+## QUESTION
+{{question}}
+
+## REFERENCE ANSWER
+{{reference_answer}}
+
+## ANSWER
+{{answer}}"""
+
 
 class JudgeParseError(ValueError):
     """The judge LLM responded, but its output couldn't be parsed into a
@@ -117,5 +149,25 @@ def score_relevance(question: str, answer: str) -> float:
     """Same contract as score_faithfulness."""
     raw = get_llm().generate(
         [{"role": "user", "content": _RELEVANCE_PROMPT.format(question=question, answer=answer)}]
+    )
+    return _extract_score(raw)
+
+
+def score_answer_correctness(question: str, answer: str, reference_answer: str) -> float:
+    """The one judge in this module that needs a ground truth -- unlike
+    faithfulness/relevance, which are properties of an answer and its own
+    context/question alone, this compares against a human expert's
+    reference_answer (see evaluation/run_expert_eval.py). Same contract as
+    score_faithfulness otherwise.
+    """
+    raw = get_llm().generate(
+        [
+            {
+                "role": "user",
+                "content": _CORRECTNESS_PROMPT.format(
+                    question=question, reference_answer=reference_answer, answer=answer
+                ),
+            }
+        ]
     )
     return _extract_score(raw)

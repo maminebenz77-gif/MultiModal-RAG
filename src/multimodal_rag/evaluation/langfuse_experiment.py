@@ -33,8 +33,9 @@ from .retrieval_metrics import mrr, ndcg_at_k, recall_at_k
 from .run_eval import (
     _CORPUS_FILES,
     _HALLUCINATION_THRESHOLD,
+    _SAMPLE_DOCS_DIR,
     _TOP_K,
-    _ingest_one,
+    _ingest_document,
     _load_golden_set,
 )
 
@@ -175,7 +176,11 @@ def main() -> None:
     _sync_dataset(client, golden_set)
     dataset = client.get_dataset(_DATASET_NAME)
 
-    chunks = [chunk for filename in _CORPUS_FILES for chunk in _ingest_one(filename)]
+    chunks = [
+        chunk
+        for filename in _CORPUS_FILES
+        for chunk in _ingest_document(_SAMPLE_DOCS_DIR / filename)
+    ]
     embedder = get_embedder()
     vectors = embedder.embed([c.text for c in chunks])
 
