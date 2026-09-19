@@ -22,6 +22,7 @@
   {
     "id": "unreported-metric",
     "question": "What was the P99 latency for the internal gateway provider in the benchmark?",
-    "expert_answer": "That isn't reported. The benchmark only measured average latency and P95 latency per provider, not P99, so there's no P99 figure for the internal gateway or any other provider in this report."
+    "expert_answer": "That isn't reported. The benchmark only measured average latency and P95 latency per provider, not P99, so there's no P99 figure for the internal gateway or any other provider in this report.",
+    "expect_refusal": true
   }
 ]

@@ -15,7 +15,9 @@ be added as a pure data change, no code:
 
     data/eval/<expertise-name>/
       documents/   # real source documents (PDF, DOCX, PPTX, or Markdown)
-      qa.json       # [{"id": ..., "question": ..., "expert_answer": ...}, ...]
+      qa.json       # [{"id": ..., "question": ..., "expert_answer": ...,
+                     #   "expect_refusal": false}, ...]  -- expect_refusal
+                     #   optional, defaults to false
 
 Run: `uv run python -m multimodal_rag.evaluation.run_expert_eval`
 """
@@ -46,7 +48,21 @@ actually gets, so it uses exactly the config routers/query.py defaults to."""
 class _ExpertiseResult:
     name: str
     average_correctness: float
-    question_count: int
+    answerable_count: int
+    refusal_accuracy: float | None
+    """None when this expertise has no expect_refusal items at all --
+    distinct from 0.0 (every refusal item was answered wrong), which
+    run_eval.py's analogous field conflates since its golden set always
+    has at least one expect_refusal item in practice. Per-expertise data
+    here won't reliably have one, so the print layer needs to tell "not
+    applicable" apart from "failed every one"."""
+    refusal_count: int
+    false_refusals: int
+    """Answerable items (expect_refusal=false) the agent refused anyway --
+    a real failure (it found nothing usable even though an answer
+    exists), excluded from average_correctness rather than silently
+    scoring "I don't know" against a substantive reference answer. See
+    run_eval.py's _MethodScores.false_refusals for the same reasoning."""
     judge_failures: int
     """Questions skipped because the judge's own output couldn't be
     parsed (see judge.JudgeParseError) -- excluded from the average
@@ -101,10 +117,23 @@ def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
         resolve_parent_context=True,
     )
 
+    answerable_items = [item for item in qa_items if not item.get("expect_refusal", False)]
+    refusal_items = [item for item in qa_items if item.get("expect_refusal", False)]
+
     scores: list[float] = []
+    false_refusals = 0
     judge_failures = 0
-    for item in qa_items:
+    for item in answerable_items:
         rag_answer = agent.answer(item["question"])
+        if rag_answer.refused:
+            # A refusal makes no substantive claims -- grading "I don't
+            # know" against a substantive expert_answer with a free-text
+            # judge is exactly the failure mode that showed up live: the
+            # judge marks a correct-sounding refusal wrong because it
+            # doesn't restate the reference's reasoning. Track it as its
+            # own, real failure instead.
+            false_refusals += 1
+            continue
         try:
             score = score_answer_correctness(
                 item["question"], rag_answer.answer, item["expert_answer"]
@@ -114,35 +143,51 @@ def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
             continue
         scores.append(score)
 
+    correct_refusals = sum(1 for item in refusal_items if agent.answer(item["question"]).refused)
+
     return _ExpertiseResult(
         name=name,
         average_correctness=sum(scores) / len(scores) if scores else 0.0,
-        question_count=len(qa_items),
+        answerable_count=len(answerable_items),
+        refusal_accuracy=correct_refusals / len(refusal_items) if refusal_items else None,
+        refusal_count=len(refusal_items),
+        false_refusals=false_refusals,
         judge_failures=judge_failures,
     )
 
 
+def _fmt_refusal_accuracy(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
+
+
+_COLUMN_WIDTHS = {"Expertise": 25, "Correctness": 13, "Answerable": 12, "RefusalAcc": 12}
+
+
 def _print_results(results: list[_ExpertiseResult]) -> None:
-    columns = [("Expertise", 25, "<"), ("Correctness", 13, ".3f"), ("Questions", 10, "d")]
-    header = "".join(f"{name:<{width}}" for name, width, _ in columns)
+    header = "".join(f"{name:<{width}}" for name, width in _COLUMN_WIDTHS.items())
     print(f"\n{header}")
     print("-" * len(header))
     for r in results:
-        values = [r.name, r.average_correctness, r.question_count]
-        print(
-            "".join(
-                f"{value:<{width}}" if fmt in ("<", "d") else f"{value:<{width}{fmt}}"
-                for value, (_, width, fmt) in zip(values, columns, strict=True)
+        row = {
+            "Expertise": r.name,
+            "Correctness": f"{r.average_correctness:.3f}",
+            "Answerable": str(r.answerable_count),
+            "RefusalAcc": _fmt_refusal_accuracy(r.refusal_accuracy),
+        }
+        print("".join(f"{row[name]:<{width}}" for name, width in _COLUMN_WIDTHS.items()))
+        if r.false_refusals or r.judge_failures:
+            print(
+                f"{'':<25}({r.false_refusals} false refusal(s), "
+                f"{r.judge_failures} judge parse failure(s) excluded from the average above)"
             )
-        )
-        if r.judge_failures:
-            print(f"{'':<25}({r.judge_failures} judge parse failure(s) excluded from the average)")
 
-    total_questions = sum(r.question_count for r in results)
-    if total_questions:
-        overall = sum(r.average_correctness * r.question_count for r in results) / total_questions
+    total_answerable = sum(r.answerable_count for r in results)
+    if total_answerable:
+        overall = (
+            sum(r.average_correctness * r.answerable_count for r in results) / total_answerable
+        )
         print("-" * len(header))
-        print(f"{'Overall':<25}{overall:<13.3f}{total_questions:<10}")
+        print(f"{'Overall':<25}{overall:<13.3f}{total_answerable:<12}")
 
 
 def main() -> None:
