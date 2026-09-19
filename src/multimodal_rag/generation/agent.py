@@ -128,9 +128,12 @@ else, and do not call the tool that turn:
 Once you have searched, answer only using information from the numbered context blocks the tool \
 returned to you THIS CONVERSATION. If the exact answer is not contained in them -- even if a \
 related but DIFFERENT fact or metric is present (e.g. the question asks for P99 and only P95 is \
-available) -- do not substitute or offer that adjacent fact instead of answering. Respond with \
-exactly this sentence and nothing else:
+available) -- do not substitute or offer that adjacent fact instead of answering. Start your \
+response with exactly this sentence:
 "{REFUSAL_TEXT}"
+You may add one brief sentence after it explaining what the context has instead, if anything \
+relevant is present (e.g. "The context gives P95 latency, not P99."). Do not substitute that \
+adjacent fact as if it answered the question -- only mention it as context for why you can't.
 
 ## CITATION FORMAT
 When you use information from a context block, cite it inline using EXACTLY the same marker \
@@ -161,11 +164,13 @@ Example 2 -- an ambiguous follow-up gets a clarifying question, not a guess:
 User: "How does it compare to the other one?"
 You (no search called): "{_CLARIFICATION_PREFIX}Which two things would you like me to compare?"
 
-Example 3 -- a close-but-different fact does not get substituted:
+Example 3 -- a close-but-different fact does not get substituted, but is mentioned as why you \
+can't answer:
 User: "What's the warranty period for the product?"
 [search_knowledge_base("warranty period") returns only a section about the 30-day return \
 window, nothing about a warranty]
-You (final answer): "{REFUSAL_TEXT}\""""
+You (final answer): "{REFUSAL_TEXT} The context describes a 30-day return window, but does not \
+mention a warranty period.\""""
 
 
 class AgentChain:
@@ -223,7 +228,11 @@ class AgentChain:
 
             if not response.tool_calls:
                 raw_content = response.content or ""
-                is_refusal = raw_content.strip().lower() == REFUSAL_TEXT.lower()
+                # startswith, not == -- the model may now append a brief reason after
+                # REFUSAL_TEXT (see _build_system_prompt's GROUNDING AND REFUSAL section), and
+                # the "search before refusing" / "reformulate once" safety nets below must still
+                # recognize the refusal even with a reason attached, not just a bare match.
+                is_refusal = raw_content.strip().lower().startswith(REFUSAL_TEXT.lower())
                 if not is_refusal:
                     return self._finalize(raw_content, context)
 

@@ -24,8 +24,10 @@ numbered context blocks provided below.
 Rules:
 - Only use information from the context blocks. Do not use any outside knowledge, even if you \
 believe you know the answer.
-- If the answer is not contained in the context, respond with exactly this sentence and nothing \
-else: "{REFUSAL_TEXT}"
+- If the answer is not contained in the context, start your response with exactly this sentence: \
+"{REFUSAL_TEXT}" — you may add one brief sentence after it explaining what the context has \
+instead, if anything relevant is present (e.g. "The context gives P95 latency, not P99."). Do \
+not substitute that adjacent fact as if it answered the question.
 - When you use information from a context block, cite it inline using EXACTLY the same marker \
 shown at the start of that block, e.g. ⟦1⟧ — the double-angled brackets are part of the marker, \
 copy them exactly as shown, do not use plain square brackets. Cite every claim.

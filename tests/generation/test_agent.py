@@ -110,6 +110,54 @@ def test_first_round_refusal_falls_back_to_searching_the_original_question(
     assert retriever.calls[0]["query"] == question
 
 
+def test_first_round_refusal_with_an_explanation_still_falls_back_to_searching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression test: is_refusal must recognize a refusal even when the model
+    # appends a reason (e.g. "...documents. The context has P95, not P99."),
+    # not just a bare exact match -- otherwise this safety net silently stops
+    # firing the moment the model explains itself.
+    question = "What was the latency?"
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(
+                content="I don't know based on the available documents. Nothing retrieved yet."
+            ),
+            ToolResponse(content="The latency was 220ms ⟦1⟧."),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({question: [_result("a", "220ms latency")]})
+    result = AgentChain(retriever).answer(question)
+
+    assert result.answer == "The latency was 220ms ⟦1⟧."
+    assert retriever.calls[0]["query"] == question
+
+
+def test_refusal_with_an_explanation_after_evidence_is_accepted_with_the_explanation_intact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal_with_reason = (
+        "I don't know based on the available documents. The context describes a 30-day return "
+        "window, but does not mention a warranty period."
+    )
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "warranty")]),
+            ToolResponse(content=refusal_with_reason),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"warranty": [_result("a", "30-day return window")]})
+    result = AgentChain(retriever).answer("What is the warranty period?")
+
+    assert result.answer == refusal_with_reason
+    assert result.refused is True
+    assert len(retriever.calls) == 1
+
+
 def test_refusal_after_empty_search_forces_one_reformulated_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
