@@ -16,9 +16,7 @@ class FakeVisionProvider(VisionProvider):
 
 @pytest.fixture(autouse=True)
 def _fake_vision(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "multimodal_rag.ingestion.vision.get_vision", lambda: FakeVisionProvider()
-    )
+    monkeypatch.setattr("multimodal_rag.ingestion.vision.get_vision", lambda: FakeVisionProvider())
 
 
 def test_routes_markdown_by_extension_since_magic_reports_text_plain() -> None:
@@ -36,12 +34,30 @@ def test_routes_pptx_by_content_mime_type() -> None:
     assert elements[0].type == ElementType.TITLE
 
 
+def test_routes_csv_by_content_mime_type() -> None:
+    elements = parse_document(_SAMPLES / "sample.csv")
+    assert elements[0].type == ElementType.TABLE
+
+
+def test_routes_csv_by_extension_when_magic_reports_text_plain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Not every libmagic build reports "text/csv" distinctly (this
+    # project's own dev machine does -- see test above) -- the extension
+    # fallback is what covers builds that report the ambiguous
+    # "text/plain" instead, same as Markdown already relies on.
+    monkeypatch.setattr("multimodal_rag.ingestion.magic.from_file", lambda *_a, **_k: "text/plain")
+    elements = parse_document(_SAMPLES / "sample.csv")
+    assert elements[0].type == ElementType.TABLE
+
+
 def test_routes_pdf_by_content_mime_type(monkeypatch: pytest.MonkeyPatch) -> None:
     # partition_pdf's hi_res strategy is too slow for a unit test — mock it,
     # just to confirm the dispatcher routes .pdf to parse_pdf at all.
     monkeypatch.setattr("multimodal_rag.ingestion.pdf.partition_pdf", lambda **kwargs: [])
     elements = parse_document(_SAMPLES / "sample.pdf")
     assert elements == []
+
 
 def test_text_plain_markdown_uses_extension(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("multimodal_rag.ingestion.magic.from_file", lambda *_a, **_k: "text/plain")
@@ -123,6 +139,7 @@ def test_octet_stream_renamed_docx_uses_content_signature(
 
     out = parse_document(renamed)
     assert out[0].text == "docx-signature"
+
 
 def test_unsupported_file_type_raises(tmp_path: Path) -> None:
     image_path = tmp_path / "not_a_document.png"

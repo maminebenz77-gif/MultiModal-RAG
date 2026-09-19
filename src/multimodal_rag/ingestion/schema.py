@@ -24,6 +24,11 @@ class ElementMetadata(BaseModel):
     source_file: str
     page: int | None = None
     slide: int | None = None
+    sheet: str | None = None
+    """Excel sheet name (or None for a single-sheet source like CSV) --
+    same role as page/slide, mirrored for the same reason: a citation
+    from a spreadsheet should say which sheet it came from, not just
+    which document."""
     position: int
 
 

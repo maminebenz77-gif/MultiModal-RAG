@@ -7,11 +7,12 @@ magic bytes, so libmagic can only ever report "text/plain" for it, and we
 fall back to the file extension in that one case.
 """
 
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 import magic
 
+from .csv_ import parse_csv
 from .docx import parse_docx
 from .markdown import parse_markdown
 from .pdf import parse_pdf
@@ -34,6 +35,10 @@ _MIME_PARSERS = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
         lambda path, summarize_tables=False: parse_pptx(path, summarize_tables)
     ),
+    # Some libmagic builds do report this distinctly for well-formed CSV;
+    # most report the plain "text/plain" ambiguous case instead, handled
+    # via the extension fallback below.
+    "text/csv": lambda path, summarize_tables=False: parse_csv(path, summarize_tables),
 }
 
 _EXTENSION_PARSERS = {
@@ -42,6 +47,7 @@ _EXTENSION_PARSERS = {
     ".pptx": lambda path, summarize_tables=False: parse_pptx(path, summarize_tables),
     ".md": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
     ".markdown": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
+    ".csv": lambda path, summarize_tables=False: parse_csv(path, summarize_tables),
 }
 
 _AMBIGUOUS_MIME_TYPES = {
@@ -63,7 +69,7 @@ def parse_document(path: Path, summarize_tables: bool = False) -> list[Element]:
     if parser is None:
         raise ValueError(
             f"Unsupported file type for {path}: detected MIME type {mime_type!r} "
-            "(supported: PDF, DOCX, PPTX, Markdown)"
+            "(supported: PDF, DOCX, PPTX, Markdown, CSV)"
         )
 
     return parser(path, summarize_tables=summarize_tables)
