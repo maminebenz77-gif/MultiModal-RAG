@@ -40,7 +40,9 @@ def test_sync_dataset_creates_the_dataset_and_upserts_each_item() -> None:
 
 
 def test_make_task_returns_answer_refused_sources_and_context() -> None:
-    chunk = SimpleNamespace(source="doc.md", pages=[1], slides=[], text="the chunk text")
+    chunk = SimpleNamespace(
+        source="doc.md", pages=[1], slides=[], text="the chunk text", elements=[]
+    )
     fake_answer = SimpleNamespace(answer="the answer", refused=False, retrieved_chunks=[chunk])
     chain = MagicMock()
     chain.answer.return_value = fake_answer

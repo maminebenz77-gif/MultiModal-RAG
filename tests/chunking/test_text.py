@@ -12,9 +12,7 @@ def test_element_text_uses_text_field_for_paragraph() -> None:
 
 
 def test_element_text_uses_description_for_image() -> None:
-    el = Element(
-        type=ElementType.IMAGE, description="a photo of a server rack", metadata=_meta(0)
-    )
+    el = Element(type=ElementType.IMAGE, description="a photo of a server rack", metadata=_meta(0))
     assert element_text(el) == "a photo of a server rack"
 
 
@@ -26,6 +24,23 @@ def test_element_text_uses_description_for_chart() -> None:
 def test_element_text_empty_when_nothing_set() -> None:
     el = Element(type=ElementType.IMAGE, metadata=_meta(0))
     assert element_text(el) == ""
+
+
+def test_element_text_prefers_table_summary_over_raw_markdown() -> None:
+    el = Element(
+        type=ElementType.TABLE,
+        text="| A | B |\n| --- | --- |\n| 1 | 2 |",
+        table_summary="A table of two columns, A and B.",
+        metadata=_meta(0),
+    )
+    assert element_text(el) == "A table of two columns, A and B."
+
+
+def test_element_text_falls_back_to_raw_markdown_when_no_table_summary() -> None:
+    el = Element(
+        type=ElementType.TABLE, text="| A | B |\n| --- | --- |\n| 1 | 2 |", metadata=_meta(0)
+    )
+    assert element_text(el) == "| A | B |\n| --- | --- |\n| 1 | 2 |"
 
 
 def test_flatten_elements_joins_with_blank_line_and_skips_empty() -> None:

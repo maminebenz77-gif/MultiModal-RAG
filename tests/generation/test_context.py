@@ -1,8 +1,14 @@
+from multimodal_rag.chunking.schema import ChunkElement
 from multimodal_rag.generation.context import assemble_context, count_tokens, format_context_block
 from multimodal_rag.stores.schema import SearchResult
 
 
-def _result(chunk_id: str, text: str, pages: list[int] | None = None) -> SearchResult:
+def _result(
+    chunk_id: str,
+    text: str,
+    pages: list[int] | None = None,
+    elements: list[ChunkElement] | None = None,
+) -> SearchResult:
     return SearchResult(
         chunk_id=chunk_id,
         score=1.0,
@@ -11,6 +17,7 @@ def _result(chunk_id: str, text: str, pages: list[int] | None = None) -> SearchR
         doc_id="doc.md",
         element_types=["title"],
         pages=pages or [],
+        elements=elements or [],
     )
 
 
@@ -61,3 +68,45 @@ def test_format_context_block_includes_page_when_present() -> None:
 def test_format_context_block_omits_location_when_no_page_or_slide() -> None:
     block = format_context_block(1, _result("a", "text"))
     assert "(source: doc.md)" in block
+
+
+def test_format_context_block_uses_raw_table_not_the_embedded_summary() -> None:
+    raw_table = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+    result = _result(
+        "a",
+        text="A table of two columns, A and B.",  # what got embedded
+        elements=[ChunkElement(type="table", text=raw_table)],
+    )
+    block = format_context_block(1, result)
+    assert raw_table in block
+    assert "A table of two columns" not in block
+
+
+def test_format_context_block_falls_back_to_result_text_without_elements() -> None:
+    result = _result("a", "plain text", elements=[])
+    block = format_context_block(1, result)
+    assert "plain text" in block
+
+
+def test_format_context_block_unchanged_for_a_non_table_chunk_with_elements() -> None:
+    result = _result(
+        "a",
+        text="hello",
+        elements=[ChunkElement(type="paragraph", text="hello")],
+    )
+    block = format_context_block(1, result)
+    assert "hello" in block
+
+
+def test_assemble_context_budgets_against_the_raw_table_not_the_summary() -> None:
+    long_raw_table = "| A |\n| --- |\n" + "\n".join(f"| {i} |" for i in range(500))
+    result = _result(
+        "a",
+        text="short summary",  # cheap if this were budgeted instead
+        elements=[ChunkElement(type="table", text=long_raw_table)],
+    )
+    included = assemble_context([result, _result("b", "short too")], token_budget=10)
+    # "a" alone already blows the budget once the real table is counted,
+    # so "b" never gets added -- this would fail if budgeting still used
+    # the cheap embedded summary instead of the real generation text.
+    assert [r.chunk_id for r in included] == ["a"]
