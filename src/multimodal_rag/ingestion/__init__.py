@@ -18,18 +18,30 @@ from .pdf import parse_pdf
 from .pptx import parse_pptx
 from .schema import Element
 
+# Lambdas, not the parser functions themselves -- a dict literal captures
+# function objects once, at import time, which would silently ignore a
+# test's monkeypatch.setattr("multimodal_rag.ingestion.parse_pptx", fake)
+# (that only reassigns the module attribute, not these dicts' stale
+# references). A lambda's body does a free-variable lookup against the
+# module's current globals at CALL time instead, so it honors monkeypatching
+# -- the same reason _parser_from_content_signature's `return parse_docx`
+# already does.
 _MIME_PARSERS = {
-    "application/pdf": parse_pdf,
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": parse_docx,
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": parse_pptx,
+    "application/pdf": lambda path, summarize_tables=False: parse_pdf(path, summarize_tables),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        lambda path, summarize_tables=False: parse_docx(path, summarize_tables)
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        lambda path, summarize_tables=False: parse_pptx(path, summarize_tables)
+    ),
 }
 
 _EXTENSION_PARSERS = {
-    ".pdf": parse_pdf,
-    ".docx": parse_docx,
-    ".pptx": parse_pptx,
-    ".md": parse_markdown,
-    ".markdown": parse_markdown,
+    ".pdf": lambda path, summarize_tables=False: parse_pdf(path, summarize_tables),
+    ".docx": lambda path, summarize_tables=False: parse_docx(path, summarize_tables),
+    ".pptx": lambda path, summarize_tables=False: parse_pptx(path, summarize_tables),
+    ".md": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
+    ".markdown": lambda path, summarize_tables=False: parse_markdown(path, summarize_tables),
 }
 
 _AMBIGUOUS_MIME_TYPES = {
