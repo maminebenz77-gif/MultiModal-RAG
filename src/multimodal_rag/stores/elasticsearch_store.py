@@ -20,16 +20,46 @@ phrase precision. A proper fix would add a second, un-analyzed
 built now.
 """
 
+from typing import Any
+
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
 from ..chunking.schema import Chunk, ChunkElement
+from ..metadata import DocumentMetadata
 from ..retry import retry_with_backoff
 from .base import KeywordStore
+from .filters import SearchFilter
 from .schema import SearchResult
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+
+
+def _build_query(query: str, search_filter: SearchFilter | None) -> dict:
+    # Constraints go in `filter`, not `must` -- a document either
+    # satisfies a filter or it doesn't; putting it there keeps it out of
+    # BM25 scoring (so it can't make one match outrank another by
+    # matching the filter "better") and makes it eligible for
+    # Elasticsearch's filter cache, which matters once a filter (e.g. a
+    # future mandatory security clause) runs on every single query.
+    filter_clauses: list[dict] = []
+    if search_filter is not None:
+        filter_clauses = [
+            {"terms": {field: values}} for field, values in search_filter.any_of.items()
+        ]
+    return {
+        "bool": {
+            "must": {"match": {"text": query}},
+            "filter": filter_clauses,
+            # A parent chunk (from parent-child chunking) is meant to be
+            # reached only by resolving up from one of its children, never
+            # matched directly -- excluded here natively rather than
+            # relying on every caller to remember to filter it out
+            # afterward.
+            "must_not": {"term": {"is_parent": True}},
+        }
+    }
 
 
 class ElasticsearchStore(KeywordStore):
@@ -66,6 +96,28 @@ class ElasticsearchStore(KeywordStore):
                     "slides": {"type": "integer"},
                     "parent_id": {"type": "keyword"},
                     "is_parent": {"type": "boolean"},
+                    # Document-level tags (see DocumentMetadata) --
+                    # keyword-typed (exact match, filterable), not
+                    # analyzed text, since none of these are meant to be
+                    # searched by relevance. doc_date stays a keyword
+                    # rather than an ES `date` field for now: nothing
+                    # does range filtering on it yet (a later phase), and
+                    # a strict `date` mapping would reject any
+                    # non-ISO-parseable value at index time instead of
+                    # just storing it.
+                    "classification": {"type": "keyword"},
+                    "private": {"type": "boolean"},
+                    "owner": {"type": "keyword"},
+                    "author": {"type": "keyword"},
+                    "doc_date": {"type": "keyword"},
+                    "data_type": {"type": "keyword"},
+                    "tags": {"type": "keyword"},
+                    # Derived from private/owner, not a DocumentMetadata
+                    # field itself -- see DocumentMetadata.to_payload().
+                    # "*" for a shared document, [owner] for a private
+                    # one, [] for a private document with no owner
+                    # recorded (visible to nobody, deliberately).
+                    "acl_allow": {"type": "keyword"},
                 }
             },
         )
@@ -81,7 +133,10 @@ class ElasticsearchStore(KeywordStore):
         except Exception:
             return False
 
-    def index_chunks(self, chunks: list[Chunk]) -> None:
+    def index_chunks(
+        self, chunks: list[Chunk], doc_metadata: DocumentMetadata | None = None
+    ) -> None:
+        extra_source = doc_metadata.to_payload() if doc_metadata is not None else {}
         actions = [
             {
                 "_index": self._index_name,
@@ -90,13 +145,20 @@ class ElasticsearchStore(KeywordStore):
                     "chunk_id": chunk.id,
                     "text": chunk.text,
                     "source": chunk.metadata.source_file,
-                    "doc_id": chunk.metadata.source_file,
+                    # See qdrant_store._to_point's identical comment --
+                    # this used to be chunk.metadata.source_file (the
+                    # filename), which is the doc_id identity bug fixed
+                    # here on the ES side too.
+                    "doc_id": chunk.metadata.doc_id,
                     "element_types": chunk.metadata.element_types,
                     "elements": [e.model_dump() for e in chunk.metadata.elements],
                     "pages": chunk.metadata.pages,
                     "slides": chunk.metadata.slides,
                     "parent_id": chunk.parent_id,
                     "is_parent": chunk.is_parent,
+                    # Document-level tags -- see qdrant_store._to_point's
+                    # identical merge.
+                    **extra_source,
                 },
             }
             for chunk in chunks
@@ -111,19 +173,32 @@ class ElasticsearchStore(KeywordStore):
 
         retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
 
-    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        # A parent chunk (from parent-child chunking) is meant to be
-        # reached only by resolving up from one of its children, never
-        # matched directly -- excluded here natively rather than relying
-        # on every caller to remember to filter it out afterward.
+    def set_document_metadata(self, doc_id: str, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        # _update_by_query has no plain "merge this partial doc" mode the
+        # way a single-document `update` API call does -- a script is the
+        # standard way to patch many documents' fields at once. Built
+        # from `fields`' own keys rather than hand-listing every possible
+        # metadata field name, so this can never drift out of sync with
+        # DocumentMetadata -- and the keys always come from that fixed
+        # pydantic schema, never from arbitrary caller input, so there's
+        # no injection risk in interpolating them into the script source
+        # (only the VALUES travel through `params`).
+        script_source = "; ".join(f"ctx._source.{key} = params.{key}" for key in fields) + ";"
+        self._client.update_by_query(
+            index=self._index_name,
+            query={"term": {"doc_id": doc_id}},
+            script={"source": script_source, "params": fields},
+            refresh=True,
+        )
+
+    def search(
+        self, query: str, top_k: int = 5, search_filter: SearchFilter | None = None
+    ) -> list[SearchResult]:
         response = self._client.search(
             index=self._index_name,
-            query={
-                "bool": {
-                    "must": {"match": {"text": query}},
-                    "must_not": {"term": {"is_parent": True}},
-                }
-            },
+            query=_build_query(query, search_filter),
             size=top_k,
         )
         return [

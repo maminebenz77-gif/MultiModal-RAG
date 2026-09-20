@@ -38,6 +38,16 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Hybrid + Rerank": ("hybrid_rrf", True),
 }
 
+# /ingest requires a classification on every upload -- no default (see
+# multimodal_rag.metadata.DocumentMetadata) -- so the picker must always
+# have a real value selected, never a blank placeholder option.
+_CLASSIFICATION_OPTIONS: dict[str, str] = {
+    "Public": "public",
+    "C1": "c1",
+    "C2": "c2",
+    "C3": "c3",
+}
+
 # The OS's native folder picker (accept_multiple_files="directory") has
 # no per-file filtering UI of its own -- once you pick a folder, every
 # file inside comes through, recursively. Streamlit's own `type=`
@@ -373,6 +383,14 @@ with st.sidebar:
         uploaded_file = st.file_uploader(
             "Choose a file", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"]
         )
+        classification_label = st.selectbox(
+            "Classification", options=list(_CLASSIFICATION_OPTIONS), index=0
+        )
+        is_private = st.checkbox(
+            "Only visible to me",
+            help="Recorded now; not yet enforced -- that needs real user "
+            "accounts, which don't exist in this deployment yet.",
+        )
         ingest_submitted = st.form_submit_button("Ingest")
 
     if ingest_submitted:
@@ -385,18 +403,25 @@ with st.sidebar:
                     uploaded_file.getvalue(),
                     uploaded_file.type,
                 )
+                metadata_json = json.dumps(
+                    {
+                        "classification": _CLASSIFICATION_OPTIONS[classification_label],
+                        "private": is_private,
+                    }
+                )
                 response = httpx.post(
                     f"{api_base_url}/ingest",
                     files=(
                         {
                             "file": file_payload,
+                            "metadata_json": (None, metadata_json),
                             "runtime_overrides_json": (
                                 None,
                                 json.dumps({"embedder": runtime_overrides["embedder"]}),
                             ),
                         }
                         if apply_runtime_overrides
-                        else {"file": file_payload}
+                        else {"file": file_payload, "metadata_json": (None, metadata_json)}
                     ),
                     timeout=120.0,
                 )
@@ -444,6 +469,18 @@ with st.sidebar:
             )
         st.caption(f"{len(good_files)} file(s) ready to ingest.")
 
+    bulk_classification_label = st.selectbox(
+        "Classification for every file in this batch",
+        options=list(_CLASSIFICATION_OPTIONS),
+        index=0,
+        key="bulk_classification",
+    )
+    bulk_is_private = st.checkbox(
+        "Only visible to me",
+        key="bulk_private",
+        help="Recorded now; not yet enforced -- that needs real user "
+        "accounts, which don't exist in this deployment yet.",
+    )
     bulk_submitted = st.button("Ingest files", disabled=not good_files)
 
     if bulk_submitted:
@@ -452,6 +489,12 @@ with st.sidebar:
         counts = {"ingested": 0, "already_ingested": 0, "duplicate_content": 0}
         duplicates: list[str] = []
         failures: list[str] = []
+        bulk_metadata_json = json.dumps(
+            {
+                "classification": _CLASSIFICATION_OPTIONS[bulk_classification_label],
+                "private": bulk_is_private,
+            }
+        )
 
         for i, uploaded_file in enumerate(good_files, start=1):
             status_line.text(f"({i}/{len(good_files)}) {uploaded_file.name}...")
@@ -466,13 +509,17 @@ with st.sidebar:
                     files=(
                         {
                             "file": file_payload,
+                            "metadata_json": (None, bulk_metadata_json),
                             "runtime_overrides_json": (
                                 None,
                                 json.dumps({"embedder": runtime_overrides["embedder"]}),
                             ),
                         }
                         if apply_runtime_overrides
-                        else {"file": file_payload}
+                        else {
+                            "file": file_payload,
+                            "metadata_json": (None, bulk_metadata_json),
+                        }
                     ),
                     timeout=120.0,
                 )

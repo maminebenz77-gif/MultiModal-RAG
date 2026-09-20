@@ -11,8 +11,14 @@ from typing import Any
 import pytest
 
 from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
+from multimodal_rag.metadata import DocumentMetadata
 from multimodal_rag.providers.schema import EmbeddingVector
-from multimodal_rag.stores.qdrant_store import ModelMismatchError, QdrantStore, UpsertBatchError
+from multimodal_rag.stores.qdrant_store import (
+    _PAYLOAD_INDEXES,
+    ModelMismatchError,
+    QdrantStore,
+    UpsertBatchError,
+)
 
 _COLLECTION = "test_collection"
 
@@ -26,6 +32,7 @@ def _chunk(
     chunk_id: str,
     text: str,
     source: str = "doc.md",
+    doc_id: str | None = None,
     pages: list[int] | None = None,
     parent_id: str | None = None,
     is_parent: bool = False,
@@ -38,6 +45,12 @@ def _chunk(
         is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source,
+            # Defaults to `source` so every pre-existing call site (which
+            # only ever set `source`) keeps asserting doc_id == "doc.md"
+            # unchanged; tests that care about doc_id vs. source being
+            # DIFFERENT (the identity bug this field exists to fix) pass
+            # it explicitly.
+            doc_id=doc_id if doc_id is not None else source,
             element_positions=[0],
             element_types=["title"],
             elements=elements or [],
@@ -102,6 +115,54 @@ def test_publish_swaps_atomically_and_removes_the_previous_version(
     assert not store._client.collection_exists(old_physical)
 
 
+def _indexed_fields(store: QdrantStore, collection_name: str) -> set[str]:
+    return set(store._client.get_collection(collection_name).payload_schema or {})
+
+
+def test_create_collection_indexes_payload_fields_before_publish(
+    store: QdrantStore,
+) -> None:
+    # The indexes must exist on the PENDING collection, before the alias ever
+    # points at it -- otherwise a freshly published version is briefly
+    # searchable but unindexed.
+    store.create_collection(dimension=4, indexing_threshold=0)
+    pending = store._pending_collection
+    assert pending is not None
+
+    assert _PAYLOAD_INDEXES.keys() <= _indexed_fields(store, pending)
+
+
+def test_ensure_ready_indexes_an_already_live_collection(store: QdrantStore) -> None:
+    # Simulate a collection created before payload indexing existed: drop the
+    # indexes from the live version, then let startup heal it. Without this,
+    # an existing deployment would need a full rebuild to gain an index.
+    physical = store._current_alias_target()
+    assert physical is not None
+    for field_name in _PAYLOAD_INDEXES:
+        store._client.delete_payload_index(collection_name=physical, field_name=field_name)
+    assert _indexed_fields(store, physical) == set()
+
+    store.ensure_ready(dimension=4)
+
+    assert _PAYLOAD_INDEXES.keys() <= _indexed_fields(store, physical)
+    # Healing must not have rebuilt anything -- same physical collection.
+    assert store._current_alias_target() == physical
+
+
+def test_ensure_ready_survives_a_payload_index_failure(
+    store: QdrantStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ensure_ready() runs at service startup. An index that conflicts with an
+    # old collection's schema must degrade filter performance, not take the
+    # whole API down at boot.
+    def boom(**kwargs: Any) -> None:
+        raise RuntimeError("index schema conflict")
+
+    monkeypatch.setattr(store._client, "create_payload_index", boom)
+
+    store.ensure_ready(dimension=4)  # must not raise
+
+
 def test_upsert_and_search_roundtrip(store: QdrantStore) -> None:
     chunks = [_chunk("doc.md::a::0", "about GPUs"), _chunk("doc.md::a::1", "about soup recipes")]
     vectors = [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])]
@@ -116,6 +177,85 @@ def test_upsert_and_search_roundtrip(store: QdrantStore) -> None:
     assert results[0].element_types == ["title"]
     assert results[0].model_id == "test-model"
     assert results[0].score > results[1].score
+
+
+def test_upsert_with_doc_metadata_merges_it_into_every_chunks_payload(
+    store: QdrantStore,
+) -> None:
+    metadata = DocumentMetadata(classification="c2", author="Alice", tags=["policy"])
+    chunks = [_chunk("doc.md::a::0", "chunk one"), _chunk("doc.md::a::1", "chunk two")]
+    store.upsert(chunks, [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])], metadata)
+
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=2)
+    for result in results:
+        fetched = store.get_by_chunk_id(result.chunk_id)
+        assert fetched is not None
+    # Fetch raw payloads via search's own top-level fields isn't enough
+    # for classification/tags (SearchResult doesn't surface them yet) --
+    # scroll the client directly to check what actually got stored.
+    points, _ = store._client.scroll(collection_name=store._alias, limit=10, with_payload=True)
+    for point in points:
+        assert point.payload is not None
+        assert point.payload["classification"] == "c2"
+        assert point.payload["author"] == "Alice"
+        assert point.payload["tags"] == ["policy"]
+
+
+def test_upsert_without_doc_metadata_writes_no_metadata_fields(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "chunk one")], [_vector([1.0, 0.0, 0.0, 0.0])])
+
+    points, _ = store._client.scroll(collection_name=store._alias, limit=10, with_payload=True)
+    assert points[0].payload is not None
+    assert "classification" not in points[0].payload
+
+
+def test_set_document_metadata_patches_existing_chunks_without_touching_others(
+    store: QdrantStore,
+) -> None:
+    store.upsert(
+        [
+            _chunk("a.md::x::0", "doc a chunk", doc_id="a"),
+            _chunk("b.md::x::0", "doc b chunk", doc_id="b"),
+        ],
+        [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])],
+    )
+
+    store.set_document_metadata("a", {"classification": "c3", "tags": ["urgent"]})
+
+    fetched_a = store.get_by_chunk_id("a.md::x::0")
+    assert fetched_a is not None
+    points, _ = store._client.scroll(collection_name=store._alias, limit=10, with_payload=True)
+    by_chunk_id = {p.payload["chunk_id"]: p.payload for p in points if p.payload is not None}
+    assert by_chunk_id["a.md::x::0"]["classification"] == "c3"
+    assert by_chunk_id["a.md::x::0"]["tags"] == ["urgent"]
+    # Doc b's chunk was never touched by the filter -- no metadata keys
+    # leaked onto it.
+    assert "classification" not in by_chunk_id["b.md::x::0"]
+
+
+def test_set_document_metadata_is_a_no_op_for_empty_fields(store: QdrantStore) -> None:
+    store.upsert([_chunk("doc.md::a::0", "chunk one")], [_vector([1.0, 0.0, 0.0, 0.0])])
+    store.set_document_metadata("doc.md", {})  # must not raise
+
+    points, _ = store._client.scroll(collection_name=store._alias, limit=10, with_payload=True)
+    assert "classification" not in points[0].payload
+
+
+def test_doc_id_is_independent_of_the_display_filename(store: QdrantStore) -> None:
+    # This is the identity bug (Phase 1): doc_id used to be silently
+    # overwritten with the filename ("source") on write. Prove they're
+    # tracked as two distinct payload fields end to end.
+    chunk = _chunk("real-doc.md::a::0", "content", source="real-doc.md", doc_id="sha256-abc123")
+    store.upsert([chunk], [_vector([1.0, 0.0, 0.0, 0.0])])
+
+    results = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
+    assert results[0].source == "real-doc.md"
+    assert results[0].doc_id == "sha256-abc123"
+
+    fetched = store.get_by_chunk_id("real-doc.md::a::0")
+    assert fetched is not None
+    assert fetched.metadata.source_file == "real-doc.md"
+    assert fetched.metadata.doc_id == "sha256-abc123"
 
 
 def test_search_rejects_a_query_vector_from_a_different_model(store: QdrantStore) -> None:

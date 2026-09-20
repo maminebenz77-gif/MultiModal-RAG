@@ -42,6 +42,7 @@ def parse_answer(raw_answer: str, context_results: list[SearchResult]) -> RagAns
             marker=number,
             chunk_id=context_results[number - 1].chunk_id,
             source=context_results[number - 1].source,
+            doc_id=context_results[number - 1].doc_id,
             pages=context_results[number - 1].pages,
             slides=context_results[number - 1].slides,
             text=context_results[number - 1].text,

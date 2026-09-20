@@ -19,7 +19,7 @@ from ..providers.base import EmbeddingProvider, Reranker
 from ..providers.schema import EmbeddingVector
 from ..similarity import cosine_similarity
 from ..stores.base import KeywordStore, VectorStore
-from ..stores.filters import SearchFilter
+from ..stores.filters import SearchFilter, merge
 from ..stores.schema import SearchResult
 from ..tracing import traced_span, update_span_output
 from .schema import RetrievalMethod
@@ -70,6 +70,7 @@ class Retriever:
         candidate_pool: int = 20,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]:
         with traced_span(
             # Method in the span NAME, not just metadata -- metadata is
@@ -96,17 +97,25 @@ class Retriever:
                 "mmr_lambda": mmr_lambda if method == RetrievalMethod.MMR else None,
             },
         ) as span:
-            # doc_ids is sugar over a real, store-level filter (see
-            # stores.filters.SearchFilter) -- built once here and handed
-            # to whichever store call(s) `method` makes below, so every
-            # retrieval method gets document scoping identically instead
-            # of each reimplementing it. `is not None` (not truthy) so
-            # doc_ids=[] keeps its old meaning -- "match no document" --
-            # rather than silently becoming "no filter"; see
-            # SearchFilter.any_of's docstring.
-            search_filter = (
+            # doc_ids is sugar over the same SearchFilter mechanism --
+            # built here and merged with whatever the caller passed in
+            # `search_filter` directly (e.g. ScopedRetriever's mandatory
+            # security clause). `is not None` (not truthy) so doc_ids=[]
+            # keeps its old meaning -- "match no document" -- rather than
+            # silently becoming "no filter"; see SearchFilter.any_of's
+            # docstring.
+            #
+            # merge() intersects a field present in both -- so a caller's
+            # `search_filter` can only ever NARROW what doc_ids already
+            # allows, never replace or widen it. That property is what
+            # makes it safe for ScopedRetriever to pass its security
+            # filter through this exact parameter: nothing downstream
+            # (not doc_ids, not the agent's own tool arguments) can
+            # override it, only intersect with it.
+            doc_filter = (
                 SearchFilter(any_of={"doc_id": doc_ids}) if doc_ids is not None else None
             )
+            effective_filter = merge(doc_filter, search_filter)
 
             # Reranking needs a broader candidate set than the final top_k
             # to still have top_k left over after re-scoring. Document
@@ -117,13 +126,15 @@ class Retriever:
             pool_size = candidate_pool if rerank else top_k
 
             if method == RetrievalMethod.COSINE:
-                results = self._cosine(query, pool_size, search_filter)
+                results = self._cosine(query, pool_size, effective_filter)
             elif method == RetrievalMethod.MMR:
-                results = self._mmr(query, pool_size, mmr_lambda, candidate_pool, search_filter)
+                results = self._mmr(query, pool_size, mmr_lambda, candidate_pool, effective_filter)
             elif method == RetrievalMethod.BM25:
-                results = self._bm25(query, pool_size, search_filter)
+                results = self._bm25(query, pool_size, effective_filter)
             elif method == RetrievalMethod.HYBRID_RRF:
-                results = self._hybrid_rrf(query, pool_size, rrf_k, candidate_pool, search_filter)
+                results = self._hybrid_rrf(
+                    query, pool_size, rrf_k, candidate_pool, effective_filter
+                )
             else:
                 raise ValueError(f"Unknown retrieval method: {method!r}")
 

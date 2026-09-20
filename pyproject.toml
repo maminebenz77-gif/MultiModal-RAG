@@ -26,6 +26,10 @@ dependencies = [
     # bundles it instead. Never both on the same platform.
     "python-magic>=0.4.27; sys_platform != 'win32'",
     "python-magic-bin>=0.4.14; sys_platform == 'win32'",
+    # [crypto] pulls in `cryptography`, needed to verify RS256-signed
+    # OIDC tokens -- the algorithm every mainstream identity provider
+    # (Okta, Entra, Keycloak, Auth0) uses by default.
+    "pyjwt[crypto]>=2.10.1",
     "python-multipart>=0.0.32",
     "python-pptx>=1.0.2",
     "qdrant-client>=1.18.0",

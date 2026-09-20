@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
+from multimodal_rag.metadata import DocumentMetadata
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
 
 _INDEX = "test_index"
@@ -24,6 +25,7 @@ def _chunk(
     chunk_id: str,
     text: str,
     source: str = "doc.md",
+    doc_id: str | None = None,
     pages: list[int] | None = None,
     parent_id: str | None = None,
     is_parent: bool = False,
@@ -36,6 +38,9 @@ def _chunk(
         is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source,
+            # See test_qdrant_store.py's identical _chunk() helper for why
+            # this defaults to `source`.
+            doc_id=doc_id if doc_id is not None else source,
             element_positions=[0],
             element_types=["title"],
             elements=elements or [],
@@ -72,6 +77,66 @@ def test_index_and_search_roundtrip(store: ElasticsearchStore) -> None:
     assert results[0].doc_id == "doc.md"
     assert results[0].element_types == ["title"]
     assert results[0].model_id is None
+
+
+def test_index_chunks_with_doc_metadata_merges_it_into_the_source(
+    store: ElasticsearchStore,
+) -> None:
+    metadata = DocumentMetadata(classification="c2", author="Alice", tags=["policy"])
+    store.index_chunks([_chunk("doc.md::a::0", "chunk one")], metadata)
+
+    doc = store._client.get(index=store._index_name, id="doc.md::a::0")
+    assert doc["_source"]["classification"] == "c2"
+    assert doc["_source"]["author"] == "Alice"
+    assert doc["_source"]["tags"] == ["policy"]
+
+
+def test_index_chunks_without_doc_metadata_writes_no_metadata_fields(
+    store: ElasticsearchStore,
+) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "chunk one")])
+
+    doc = store._client.get(index=store._index_name, id="doc.md::a::0")
+    assert "classification" not in doc["_source"]
+
+
+def test_set_document_metadata_patches_existing_chunks_without_touching_others(
+    store: ElasticsearchStore,
+) -> None:
+    store.index_chunks(
+        [
+            _chunk("a.md::x::0", "doc a chunk", doc_id="a"),
+            _chunk("b.md::x::0", "doc b chunk", doc_id="b"),
+        ]
+    )
+
+    store.set_document_metadata("a", {"classification": "c3", "tags": ["urgent"]})
+
+    doc_a = store._client.get(index=store._index_name, id="a.md::x::0")
+    assert doc_a["_source"]["classification"] == "c3"
+    assert doc_a["_source"]["tags"] == ["urgent"]
+    doc_b = store._client.get(index=store._index_name, id="b.md::x::0")
+    assert "classification" not in doc_b["_source"]
+
+
+def test_set_document_metadata_is_a_no_op_for_empty_fields(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "chunk one")])
+    store.set_document_metadata("doc.md", {})  # must not raise
+
+    doc = store._client.get(index=store._index_name, id="doc.md::a::0")
+    assert "classification" not in doc["_source"]
+
+
+def test_doc_id_is_independent_of_the_display_filename(store: ElasticsearchStore) -> None:
+    # Same identity bug as test_qdrant_store.py's equivalent test -- doc_id
+    # used to be silently overwritten with the filename ("source") on
+    # write. Prove they're tracked as two distinct fields end to end.
+    chunk = _chunk("real-doc.md::a::0", "content", source="real-doc.md", doc_id="sha256-abc123")
+    store.index_chunks([chunk])
+
+    results = store.search("content", top_k=1)
+    assert results[0].source == "real-doc.md"
+    assert results[0].doc_id == "sha256-abc123"
 
 
 def test_search_ranks_more_relevant_document_higher(store: ElasticsearchStore) -> None:

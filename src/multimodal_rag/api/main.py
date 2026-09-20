@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from starlette.concurrency import run_in_threadpool
 
 from ..config import PROJECT_ROOT, get_settings
@@ -24,6 +24,7 @@ from ..stores.factory import get_keyword_store, get_vector_store
 from ..stores.indexer import HybridIndexer
 from .db import Database
 from .dependencies import AppState
+from .identity import get_principal
 from .routers import conversations, documents, feedback, health, ingest, metrics, query
 
 _DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
@@ -68,12 +69,18 @@ def create_app(
         yield
 
     app = FastAPI(title="Multimodal RAG API", lifespan=lifespan)
-    app.include_router(ingest.router)
-    app.include_router(documents.router)
-    app.include_router(query.router)
-    app.include_router(conversations.router)
-    app.include_router(feedback.router)
-    app.include_router(metrics.router)
+    # Identity is attached where routers are INCLUDED, not on individual
+    # routes -- so a router (or a route inside one) added later can't
+    # forget it. /health is the one deliberate exemption: a load
+    # balancer's liveness probe has no user, and it touches no
+    # application data.
+    identified = [Depends(get_principal)]
+    app.include_router(ingest.router, dependencies=identified)
+    app.include_router(documents.router, dependencies=identified)
+    app.include_router(query.router, dependencies=identified)
+    app.include_router(conversations.router, dependencies=identified)
+    app.include_router(feedback.router, dependencies=identified)
+    app.include_router(metrics.router, dependencies=identified)
     app.include_router(health.router)
     return app
 

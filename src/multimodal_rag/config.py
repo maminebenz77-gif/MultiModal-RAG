@@ -13,6 +13,7 @@ import os
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 import warnings
 
 from pydantic import field_validator
@@ -157,6 +158,17 @@ class Settings(BaseSettings):
     # Certificates
     trust_system_certs: bool = False
 
+    # Identity / access control. "disabled" (the default) means every
+    # caller gets an all-access Principal (see api/identity.py) -- no
+    # token required, existing behavior unchanged. Switching to "oidc"
+    # requires every request to carry a valid bearer token, validated
+    # against oidc_issuer/oidc_audience using keys fetched from
+    # oidc_jwks_url.
+    auth_mode: Literal["disabled", "oidc"] = "disabled"
+    oidc_issuer: str | None = None
+    oidc_audience: str | None = None
+    oidc_jwks_url: str | None = None
+
     @field_validator(
         "llm_base_url",
         "llm_api_key",
@@ -173,6 +185,9 @@ class Settings(BaseSettings):
         "langfuse_public_key",
         "langfuse_secret_key",
         "langfuse_host",
+        "oidc_issuer",
+        "oidc_audience",
+        "oidc_jwks_url",
         mode="before",
     )
     @classmethod

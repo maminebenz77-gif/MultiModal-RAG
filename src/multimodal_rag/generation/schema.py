@@ -12,6 +12,13 @@ class Citation(BaseModel):
 
     chunk_id: str
     source: str
+    doc_id: str = ""
+    """The document's stable id (see ChunkMetadata.doc_id), distinct from
+    `source` (the display filename) -- lets a caller reliably match a
+    citation back to a specific document even if two documents share a
+    filename display quirk. "" for citations recorded before this field
+    existed."""
+
     pages: list[int] = []
     slides: list[int] = []
 

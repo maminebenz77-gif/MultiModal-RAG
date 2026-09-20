@@ -117,6 +117,13 @@ def _ingest_document(path: Path) -> list[Chunk]:
     human-readable filename (see data/golden_set.json and
     run_expert_eval.py, both of which reuse this helper), not doc_id -- so
     source_file gets swapped back to `filename` right after chunking.
+    doc_id itself is kept too (see ChunkMetadata.doc_id) -- same reasoning
+    as routers/ingest.py.
+
+    Unlike the API, doc_id here hashes the filename alone: the API mixes in
+    the authenticated uploader (see routers/ingest.py's _document_id), but
+    an eval run has no uploader, and ids only need to be stable within its
+    own scratch collection.
     """
     filename = path.name
     doc_id = hashlib.sha256(filename.encode()).hexdigest()
@@ -126,6 +133,7 @@ def _ingest_document(path: Path) -> list[Chunk]:
     chunks = ParentChildChunker().chunk(elements)
     for chunk in chunks:
         chunk.metadata.source_file = filename
+        chunk.metadata.doc_id = doc_id
     return chunks
 
 

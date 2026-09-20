@@ -12,7 +12,10 @@ inconsistent) instead of silent, plus a way to detect drift from any
 other cause via check_consistency().
 """
 
+from typing import Any
+
 from ..chunking.schema import Chunk
+from ..metadata import DocumentMetadata
 from ..providers.schema import EmbeddingVector
 from .base import KeywordStore, VectorStore
 from .schema import ConsistencyReport
@@ -36,16 +39,23 @@ class HybridIndexer:
         self._vector_store = vector_store
         self._keyword_store = keyword_store
 
-    def index(self, chunks: list[Chunk], vectors: list[EmbeddingVector]) -> None:
+    def index(
+        self,
+        chunks: list[Chunk],
+        vectors: list[EmbeddingVector],
+        doc_metadata: DocumentMetadata | None = None,
+    ) -> None:
         """Upsert into the vector store, then index into the keyword
         store. Each store already retries transient failures internally
         (see UpsertBatchError / ElasticsearchStore's retry wrapping) —
         this only handles the case where the second step fails
-        *persistently* after the first step already succeeded."""
-        self._vector_store.upsert(chunks, vectors)
+        *persistently* after the first step already succeeded.
+
+        doc_metadata -- see VectorStore.upsert()'s identical parameter."""
+        self._vector_store.upsert(chunks, vectors, doc_metadata)
 
         try:
-            self._keyword_store.index_chunks(chunks)
+            self._keyword_store.index_chunks(chunks, doc_metadata)
         except Exception as exc:
             chunk_ids = [chunk.id for chunk in chunks]
             raise IndexConsistencyError(
@@ -73,6 +83,35 @@ class HybridIndexer:
                 f"Vector store deletion succeeded but keyword deletion failed even "
                 f"after retries; {len(chunk_ids)} chunk_ids are now missing from the "
                 "vector store but still present and stale in the keyword store.",
+                chunk_ids=chunk_ids,
+            ) from exc
+
+    def set_document_metadata(self, doc_id: str, fields: dict[str, Any]) -> None:
+        """Patch `fields` onto every stored chunk belonging to `doc_id`,
+        in both stores -- a payload PATCH, no re-embed. The update
+        counterpart to index(): called once after every successful
+        /ingest (covers chunks left unchanged by an edit's diff, which
+        index() above never touches) and again by
+        PATCH /documents/{doc_id} whenever a caller edits metadata
+        later, so both paths funnel through one implementation and can
+        never drift apart. Same ordering rationale as index()/delete():
+        vector store first, keyword store second, so a persistent
+        failure on the second step is reported precisely."""
+        if not fields:
+            return
+        chunk_ids = sorted(
+            cid for cid in self._vector_store.list_chunk_ids() if cid.startswith(doc_id)
+        )
+        self._vector_store.set_document_metadata(doc_id, fields)
+
+        try:
+            self._keyword_store.set_document_metadata(doc_id, fields)
+        except Exception as exc:
+            raise IndexConsistencyError(
+                f"Vector store metadata update succeeded but keyword store update "
+                f"failed even after retries; {len(chunk_ids)} chunk_ids for "
+                f"doc_id={doc_id!r} may now have inconsistent metadata between the "
+                "two stores.",
                 chunk_ids=chunk_ids,
             ) from exc
 

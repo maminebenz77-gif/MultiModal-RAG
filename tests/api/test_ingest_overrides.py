@@ -6,7 +6,7 @@ import pytest
 from multimodal_rag.providers.base import EmbeddingProvider
 from multimodal_rag.providers.schema import EmbeddingVector
 
-from .conftest import SAMPLE_DOC
+from .conftest import MINIMAL_METADATA_JSON, SAMPLE_DOC
 
 
 class _FakeEmbedder(EmbeddingProvider):
@@ -20,6 +20,7 @@ async def test_ingest_rejects_invalid_runtime_overrides_json(client: httpx.Async
             "/ingest",
             files={
                 "file": ("chunking_demo.md", f, "text/markdown"),
+                "metadata_json": (None, MINIMAL_METADATA_JSON),
                 "runtime_overrides_json": (None, "{bad json"),
             },
         )
@@ -41,6 +42,7 @@ async def test_ingest_uses_embedder_runtime_override(
             "/ingest",
             files={
                 "file": ("chunking_demo.md", f, "text/markdown"),
+                "metadata_json": (None, MINIMAL_METADATA_JSON),
                 "runtime_overrides_json": (
                     None,
                     json.dumps(

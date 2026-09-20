@@ -19,12 +19,15 @@ from ...config import get_settings
 from ...device import resolve_device
 from ...generation.agent import AgentChain
 from ...generation.title import generate_title
+from ...identity import Principal
 from ...providers.base import LLMProvider
 from ...providers.factory import embedder_from_override, llm_from_override
 from ...retrieval.retriever import Retriever
+from ...retrieval.scoped import ScopedRetriever
 from ...tracing import traced_query, update_span_output
 from ..db import Database
 from ..dependencies import get_app_state, get_db, get_retriever
+from ..identity import get_principal
 from ..schemas import (
     ChunkElementOut,
     CitationOut,
@@ -102,6 +105,7 @@ async def query(
     request: QueryRequest,
     retriever: Retriever = Depends(get_retriever),
     db: Database = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ) -> QueryResponse:
     settings = get_settings()
     allow_external = settings.allow_external
@@ -117,11 +121,22 @@ async def query(
     except (ValueError, NotImplementedError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # ScopedRetriever wraps whichever Retriever this request ends up
+    # using (default, or one rebuilt for an embedder override above) --
+    # built fresh per request, from THIS caller's principal, never
+    # reused across requests the way the underlying Retriever singleton
+    # is. Handed to AgentChain in place of the plain Retriever below: it
+    # satisfies the same RetrieverLike shape, so nothing about AgentChain
+    # itself needs to know scoping exists.
+    scoped_retriever = ScopedRetriever(retriever_for_request, principal, db)
+
     if request.conversation_id is None:
-        conversation_id = await run_in_threadpool(db.create_conversation)
+        conversation_id = await run_in_threadpool(db.create_conversation, principal)
         is_new_conversation = True
     else:
-        exists = await run_in_threadpool(db.conversation_exists, request.conversation_id)
+        exists = await run_in_threadpool(
+            db.conversation_exists, principal, request.conversation_id
+        )
         if not exists:
             raise HTTPException(
                 status_code=404,
@@ -129,10 +144,12 @@ async def query(
             )
         conversation_id = request.conversation_id
         is_new_conversation = False
-    history = await run_in_threadpool(db.get_recent_turns, conversation_id, _HISTORY_WINDOW)
+    history = await run_in_threadpool(
+        db.get_recent_turns, principal, conversation_id, _HISTORY_WINDOW
+    )
 
     agent = AgentChain(
-        retriever_for_request,
+        scoped_retriever,
         method=request.retrieval_method,
         top_k=request.top_k,
         rerank=request.rerank,
@@ -184,6 +201,7 @@ async def query(
 
     await run_in_threadpool(
         db.record_query,
+        principal,
         query_id,
         request.question,
         result.answer,
@@ -212,7 +230,9 @@ async def query(
         else:
             title = await run_in_threadpool(generate_title, request.question, result.answer)
         if title:
-            await run_in_threadpool(db.set_conversation_title, conversation_id, title)
+            await run_in_threadpool(
+                db.set_conversation_title, principal, conversation_id, title
+            )
 
     return QueryResponse(
         query_id=query_id,
@@ -224,6 +244,7 @@ async def query(
                 marker=c.marker,
                 chunk_id=c.chunk_id,
                 source=c.source,
+                doc_id=c.doc_id,
                 pages=c.pages,
                 slides=c.slides,
                 text=c.text,
@@ -240,6 +261,7 @@ async def query(
                 score=c.score,
                 text=c.text,
                 source=c.source,
+                doc_id=c.doc_id,
                 pages=c.pages,
                 slides=c.slides,
                 elements=[_to_chunk_element_out(e) for e in c.elements],

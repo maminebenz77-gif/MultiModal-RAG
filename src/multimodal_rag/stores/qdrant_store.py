@@ -25,15 +25,21 @@ publish() removes the immediately-previous version once the swap
 succeeds, rather than accumulating collections indefinitely.
 """
 
+import logging
 import uuid
+from typing import Any
 
 from qdrant_client import QdrantClient, models
 
 from ..chunking.schema import Chunk, ChunkElement, ChunkMetadata
+from ..metadata import DocumentMetadata
 from ..providers.schema import EmbeddingVector, assert_single_model
 from ..retry import retry_with_backoff
 from .base import VectorStore
+from .filters import SearchFilter
 from .schema import SearchResult
+
+_logger = logging.getLogger(__name__)
 
 _DISTANCE_MAP = {
     "cosine": models.Distance.COSINE,
@@ -43,13 +49,56 @@ _DISTANCE_MAP = {
 
 _DEFAULT_BATCH_SIZE = 100
 
+# Qdrant filters an UNINDEXED payload field by evaluating the condition on
+# each candidate as it walks the HNSW graph -- slower, and it loses results,
+# because the traversal keeps wandering into regions where nothing matches.
+# An indexed field instead gets extra graph links that keep the filtered
+# subset connected, plus a cardinality estimate that lets Qdrant fall back to
+# exact search when the filter is selective enough. So a payload index is a
+# precondition for filtering being CORRECT, not just fast.
+#
+# is_parent is already filtered on literally every search (see
+# _EXCLUDE_PARENTS_FILTER) and has never been indexed. doc_id is filtered
+# from the moment document-scoped search exists.
+#
+# Every later filterable payload field adds its entry here alongside the
+# field itself, so this list never describes a schema that isn't really
+# stored.
+_PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType] = {
+    "is_parent": models.PayloadSchemaType.BOOL,
+    "doc_id": models.PayloadSchemaType.KEYWORD,
+    # acl_allow/classification are filtered on EVERY search once identity
+    # is enabled (see retrieval/scoped.py's mandatory security filter) --
+    # unindexed here would mean the one filter that matters most for
+    # correctness falls back to the slow, potentially lossy path (see
+    # "Payload indexes" above).
+    "acl_allow": models.PayloadSchemaType.KEYWORD,
+    "classification": models.PayloadSchemaType.KEYWORD,
+}
+
 # A parent chunk (from parent-child chunking) is meant to be reached only
 # by resolving up from one of its children, never matched directly --
-# this filter enforces that natively, at the store level, rather than
-# relying on every caller to remember to exclude them.
-_EXCLUDE_PARENTS_FILTER = models.Filter(
-    must_not=[models.FieldCondition(key="is_parent", match=models.MatchValue(value=True))]
+# this condition enforces that natively, at the store level, rather than
+# relying on every caller to remember to exclude them. Kept as a bare
+# condition (not a whole Filter) so _build_query_filter() can always AND
+# it into whatever the caller's own search_filter adds -- composed in
+# exactly one place, so it can never be replaced by a caller-supplied
+# filter, only added to.
+_EXCLUDE_PARENTS_CONDITION = models.FieldCondition(
+    key="is_parent", match=models.MatchValue(value=True)
 )
+
+
+def _build_query_filter(search_filter: SearchFilter | None) -> models.Filter:
+    must: list[models.Condition] = []
+    if search_filter is not None:
+        for field, values in search_filter.any_of.items():
+            # MatchAny(any=[]) matches nothing, by design -- see
+            # SearchFilter.any_of's docstring on why an empty value list
+            # is a deliberate "exclude everything" clause, not "no
+            # constraint".
+            must.append(models.FieldCondition(key=field, match=models.MatchAny(any=values)))
+    return models.Filter(must=must, must_not=[_EXCLUDE_PARENTS_CONDITION])
 
 
 def _point_id(chunk_id: str) -> str:
@@ -127,6 +176,9 @@ class QdrantStore(VectorStore):
             hnsw_config=models.HnswConfigDiff(m=m, ef_construct=ef_construct),
             optimizers_config=models.OptimizersConfigDiff(indexing_threshold=indexing_threshold),
         )
+        # Indexed before a single point is written, so the version the alias
+        # eventually cuts over to is never briefly searchable-but-unindexed.
+        self._ensure_payload_indexes(physical_name)
         self._pending_collection = physical_name
 
     def publish(self) -> None:
@@ -164,7 +216,12 @@ class QdrantStore(VectorStore):
                 return alias.collection_name
         return None
 
-    def upsert(self, chunks: list[Chunk], vectors: list[EmbeddingVector]) -> None:
+    def upsert(
+        self,
+        chunks: list[Chunk],
+        vectors: list[EmbeddingVector],
+        doc_metadata: DocumentMetadata | None = None,
+    ) -> None:
         """Insert or update chunks in batches, into whichever collection
         version is currently pending (since the last create_collection()
         call), or the live one via the alias if no new version is
@@ -192,7 +249,7 @@ class QdrantStore(VectorStore):
             batch_chunks = chunks[start : start + self._batch_size]
             batch_vectors = vectors[start : start + self._batch_size]
             points = [
-                self._to_point(chunk, vector)
+                self._to_point(chunk, vector, doc_metadata)
                 for chunk, vector in zip(batch_chunks, batch_vectors, strict=True)
             ]
             try:
@@ -220,23 +277,56 @@ class QdrantStore(VectorStore):
         retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
 
     @staticmethod
-    def _to_point(chunk: Chunk, vector: EmbeddingVector) -> models.PointStruct:
-        return models.PointStruct(
-            id=_point_id(chunk.id),
-            vector=vector.vector,
-            payload={
-                "chunk_id": chunk.id,
-                "text": chunk.text,
-                "source": chunk.metadata.source_file,
-                "doc_id": chunk.metadata.source_file,
-                "element_types": chunk.metadata.element_types,
-                "elements": [e.model_dump() for e in chunk.metadata.elements],
-                "pages": chunk.metadata.pages,
-                "slides": chunk.metadata.slides,
-                "model_id": vector.model_id,
-                "parent_id": chunk.parent_id,
-                "is_parent": chunk.is_parent,
-            },
+    def _to_point(
+        chunk: Chunk, vector: EmbeddingVector, doc_metadata: DocumentMetadata | None = None
+    ) -> models.PointStruct:
+        payload: dict[str, Any] = {
+            "chunk_id": chunk.id,
+            "text": chunk.text,
+            "source": chunk.metadata.source_file,
+            # NOT chunk.metadata.source_file (see ChunkMetadata.doc_id)
+            # -- that's the human-readable filename, and using it here
+            # was the identity bug: this payload field is meant to be
+            # the STABLE id the API hands out (sha256 of the filename),
+            # which is what /query's doc_ids filter and the
+            # supersession flip (future phase) both key against.
+            # Deliberately no `or chunk.metadata.source_file` fallback
+            # -- that would silently resurrect the bug for any chunk
+            # written by code that forgot to set doc_id.
+            "doc_id": chunk.metadata.doc_id,
+            "element_types": chunk.metadata.element_types,
+            "elements": [e.model_dump() for e in chunk.metadata.elements],
+            "pages": chunk.metadata.pages,
+            "slides": chunk.metadata.slides,
+            "model_id": vector.model_id,
+            "parent_id": chunk.parent_id,
+            "is_parent": chunk.is_parent,
+        }
+        if doc_metadata is not None:
+            # Document-level tags (classification, author, tags, ...) --
+            # merged in here rather than living on ChunkMetadata itself,
+            # since they're a property of the DOCUMENT (mutable later via
+            # set_document_metadata, no re-embed needed), not of how this
+            # particular chunk was cut.
+            payload.update(doc_metadata.to_payload())
+        return models.PointStruct(id=_point_id(chunk.id), vector=vector.vector, payload=payload)
+
+    def set_document_metadata(self, doc_id: str, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        # Same target resolution as upsert() -- the pending collection if
+        # one's being built, otherwise the live alias -- so a metadata
+        # patch always lands wherever a concurrent ingest's chunks
+        # actually are, never silently patching the WRONG collection
+        # version during a blue-green rebuild.
+        target = self._pending_collection or self._alias
+        self._client.set_payload(
+            collection_name=target,
+            payload=fields,
+            points=models.Filter(
+                must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))]
+            ),
+            wait=True,
         )
 
     def search(
@@ -245,6 +335,7 @@ class QdrantStore(VectorStore):
         top_k: int = 5,
         ef_search: int | None = None,
         with_vectors: bool = False,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]:
         stored_model_id = self._stored_model_id()
         if stored_model_id is not None and stored_model_id != query_vector.model_id:
@@ -258,7 +349,7 @@ class QdrantStore(VectorStore):
         response = self._client.query_points(
             collection_name=self._alias,
             query=query_vector.vector,
-            query_filter=_EXCLUDE_PARENTS_FILTER,
+            query_filter=_build_query_filter(search_filter),
             limit=top_k,
             search_params=search_params,
             with_payload=True,
@@ -324,9 +415,41 @@ class QdrantStore(VectorStore):
 
     def ensure_ready(self, dimension: int) -> None:
         if self._current_alias_target() is not None:
+            # A collection is already live. It may have been created before
+            # this field was added to _PAYLOAD_INDEXES, so index it now --
+            # otherwise an existing deployment would need a full rebuild to
+            # gain an index, which is exactly what the blue-green design is
+            # meant to avoid having to do for something this cheap.
+            self._ensure_payload_indexes(self._alias)
             return
         self.create_collection(dimension=dimension)
         self.publish()
+
+    def _ensure_payload_indexes(self, collection_name: str) -> None:
+        """Idempotently create every _PAYLOAD_INDEXES entry. Re-creating an
+        index that already exists with the same schema is a no-op in Qdrant,
+        so this is safe to call on every startup.
+
+        Failures are logged, not raised: this runs from ensure_ready(), which
+        runs during service startup, and an index that conflicts with an old
+        collection's existing schema would otherwise take the whole API down
+        at boot. A missing payload index degrades filter performance; a
+        service that won't start is an outage."""
+        for field_name, field_schema in _PAYLOAD_INDEXES.items():
+            try:
+                self._client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
+            except Exception:
+                _logger.warning(
+                    "Could not create Qdrant payload index on %r in %r; filters on "
+                    "that field will fall back to unindexed evaluation.",
+                    field_name,
+                    collection_name,
+                    exc_info=True,
+                )
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
         if not chunk_ids:
@@ -362,6 +485,11 @@ class QdrantStore(VectorStore):
             is_parent=payload.get("is_parent", False),
             metadata=ChunkMetadata(
                 source_file=payload["source"],
+                # .get(..., "") not payload["doc_id"] -- points written
+                # before this field existed won't have it in their
+                # payload, and a missing field should round-trip as
+                # "unknown" (""), not raise a KeyError.
+                doc_id=payload.get("doc_id", ""),
                 element_types=payload["element_types"],
                 elements=[ChunkElement(**e) for e in payload.get("elements", [])],
                 pages=payload.get("pages", []),

@@ -1,13 +1,15 @@
 import httpx
 import warnings
 
-from .conftest import SAMPLE_DOC, ingest_sample_doc
+from .conftest import MINIMAL_METADATA_JSON, SAMPLE_DOC, ingest_sample_doc
 
 
 async def test_ingest_returns_doc_id_and_chunk_counts(client: httpx.AsyncClient) -> None:
     with open(SAMPLE_DOC, "rb") as f:
         response = await client.post(
-            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
         )
 
     assert response.status_code == 200
@@ -17,6 +19,34 @@ async def test_ingest_returns_doc_id_and_chunk_counts(client: httpx.AsyncClient)
     assert body["num_parent_chunks"] == 4
     assert body["num_child_chunks"] > 0
     assert len(body["doc_id"]) == 64  # sha256 hex digest
+
+
+async def test_ingest_rejects_a_document_with_no_classification(
+    client: httpx.AsyncClient,
+) -> None:
+    """classification has no default (see metadata.DocumentMetadata) --
+    an upload that omits it must be rejected, not silently accepted
+    under some assumed level."""
+    with open(SAMPLE_DOC, "rb") as f:
+        response = await client.post(
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": "{}"},
+        )
+    assert response.status_code == 400
+    assert "Invalid document metadata" in response.json()["detail"]
+
+
+async def test_ingest_rejects_a_request_with_no_metadata_at_all(
+    client: httpx.AsyncClient,
+) -> None:
+    """The metadata_json Form field itself is required -- FastAPI's own
+    422 for a missing required field, never reaching application code."""
+    with open(SAMPLE_DOC, "rb") as f:
+        response = await client.post(
+            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+        )
+    assert response.status_code == 422
 
 
 async def test_reingesting_identical_content_returns_the_same_doc_id(
@@ -48,13 +78,17 @@ async def test_reingesting_identical_content_is_marked_already_ingested_and_skip
     alone. A known doc_id should now skip straight to a cheap DB lookup."""
     with open(SAMPLE_DOC, "rb") as f:
         first = await client.post(
-            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
         )
     assert first.json()["status"] == "ingested"
 
     with open(SAMPLE_DOC, "rb") as f:
         second = await client.post(
-            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
         )
     body = second.json()
     assert body["status"] == "already_ingested"
@@ -64,9 +98,35 @@ async def test_reingesting_identical_content_is_marked_already_ingested_and_skip
     assert body["ingested_at"] == first.json()["ingested_at"]
 
 
+async def test_reingesting_identical_content_ignores_new_metadata(
+    client: httpx.AsyncClient,
+) -> None:
+    """The already_ingested short-circuit returns before touching
+    metadata at all -- PATCH /documents/{doc_id} is the only way to
+    change an already-ingested document's tags."""
+    with open(SAMPLE_DOC, "rb") as f:
+        first = await client.post(
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": '{"classification": "public"}'},
+        )
+    assert first.json()["metadata"]["classification"] == "public"
+
+    with open(SAMPLE_DOC, "rb") as f:
+        second = await client.post(
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": '{"classification": "c3"}'},
+        )
+    assert second.json()["status"] == "already_ingested"
+    assert second.json()["metadata"]["classification"] == "public"
+
+
 async def test_ingest_rejects_empty_file(client: httpx.AsyncClient) -> None:
     response = await client.post(
-        "/ingest", files={"file": ("empty.md", b"", "text/markdown")}
+        "/ingest",
+        files={"file": ("empty.md", b"", "text/markdown")},
+        data={"metadata_json": MINIMAL_METADATA_JSON},
     )
     assert response.status_code == 400
 
@@ -90,7 +150,9 @@ async def test_ingest_surfaces_non_fatal_parser_warnings(
     monkeypatch.setattr("multimodal_rag.api.routers.ingest.parse_document", _fake_parse_document)
 
     response = await client.post(
-        "/ingest", files={"file": ("warn.pdf", b"not-empty", "application/pdf")}
+        "/ingest",
+        files={"file": ("warn.pdf", b"not-empty", "application/pdf")},
+        data={"metadata_json": MINIMAL_METADATA_JSON},
     )
 
     assert response.status_code == 200
@@ -111,13 +173,21 @@ async def test_renaming_identical_content_is_recognized_as_a_duplicate_not_reing
     as a duplicate and not re-ingested, without needing doc_id itself to
     survive the rename."""
     with open(SAMPLE_DOC, "rb") as f:
-        response_a = await client.post("/ingest", files={"file": ("a.md", f, "text/markdown")})
+        response_a = await client.post(
+            "/ingest",
+            files={"file": ("a.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
+        )
     assert response_a.status_code == 200
     body_a = response_a.json()
     assert body_a["status"] == "ingested"
 
     with open(SAMPLE_DOC, "rb") as f:
-        response_b = await client.post("/ingest", files={"file": ("b.md", f, "text/markdown")})
+        response_b = await client.post(
+            "/ingest",
+            files={"file": ("b.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
+        )
     assert response_b.status_code == 200
     body_b = response_b.json()
 
@@ -136,10 +206,16 @@ async def test_duplicate_content_check_does_not_trigger_for_genuinely_new_conten
     client: httpx.AsyncClient,
 ) -> None:
     with open(SAMPLE_DOC, "rb") as f:
-        await client.post("/ingest", files={"file": ("a.md", f, "text/markdown")})
+        await client.post(
+            "/ingest",
+            files={"file": ("a.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
+        )
 
     response = await client.post(
-        "/ingest", files={"file": ("b.md", b"completely different content", "text/markdown")}
+        "/ingest",
+        files={"file": ("b.md", b"completely different content", "text/markdown")},
+        data={"metadata_json": MINIMAL_METADATA_JSON},
     )
 
     assert response.json()["status"] == "ingested"
@@ -160,7 +236,9 @@ async def test_editing_content_under_the_same_filename_only_touches_changed_chun
     change."""
     original = SAMPLE_DOC.read_bytes()
     response_1 = await client.post(
-        "/ingest", files={"file": ("doc.md", original, "text/markdown")}
+        "/ingest",
+        files={"file": ("doc.md", original, "text/markdown")},
+        data={"metadata_json": MINIMAL_METADATA_JSON},
     )
     assert response_1.status_code == 200
     body_1 = response_1.json()
@@ -172,7 +250,9 @@ async def test_editing_content_under_the_same_filename_only_touches_changed_chun
 
     modified = original.replace(b"latency", b"latencys", 1)
     response_2 = await client.post(
-        "/ingest", files={"file": ("doc.md", modified, "text/markdown")}
+        "/ingest",
+        files={"file": ("doc.md", modified, "text/markdown")},
+        data={"metadata_json": MINIMAL_METADATA_JSON},
     )
     assert response_2.status_code == 200
     body_2 = response_2.json()

@@ -16,6 +16,7 @@ from multimodal_rag.retrieval import retriever as retriever_module
 from multimodal_rag.retrieval.retriever import Retriever
 from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
+from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.qdrant_store import QdrantStore
 from multimodal_rag.stores.schema import SearchResult
 
@@ -415,6 +416,55 @@ def test_doc_ids_none_means_no_filtering(
     results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
 
     assert {r.chunk_id for r in results} == {"a", "b"}
+
+
+def test_search_filter_and_doc_ids_intersect_rather_than_stack_independently(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    """The mechanism ScopedRetriever depends on: retrieve()'s own
+    search_filter parameter must compose with doc_ids via merge()
+    (narrowing), not just get silently ignored or override it."""
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
+    )
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md", doc_id="sha256-doc-a")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md", doc_id="sha256-doc-b")
+    vector_store.upsert([chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+
+    # doc_ids allows both; search_filter (standing in for a security
+    # clause) allows only "a" -- the intersection must be just "a".
+    results = retriever.retrieve(
+        "query",
+        method=RetrievalMethod.COSINE,
+        top_k=2,
+        doc_ids=["sha256-doc-a", "sha256-doc-b"],
+        search_filter=SearchFilter(any_of={"doc_id": ["sha256-doc-a"]}),
+    )
+
+    assert [r.chunk_id for r in results] == ["a"]
+
+
+def test_search_filter_alone_narrows_results_without_doc_ids(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
+    )
+    chunk_a = _chunk("a", "from doc a", source="doc-a.md", doc_id="sha256-doc-a")
+    chunk_b = _chunk("b", "from doc b", source="doc-b.md", doc_id="sha256-doc-b")
+    vector_store.upsert([chunk_a, chunk_b], embedder.embed([chunk_a.text, chunk_b.text]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve(
+        "query",
+        method=RetrievalMethod.COSINE,
+        top_k=2,
+        search_filter=SearchFilter(any_of={"doc_id": ["sha256-doc-b"]}),
+    )
+
+    assert [r.chunk_id for r in results] == ["b"]
 
 
 def _patch_traced_span():

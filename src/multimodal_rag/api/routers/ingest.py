@@ -1,8 +1,12 @@
 """POST /ingest: file -> parse -> chunk -> embed -> index in both stores.
 
-doc_id is sha256(filename) -- a STABLE identity across content edits,
-deliberately not sha256(file bytes). See schemas.IngestResponse for the
-full reasoning; in short, keying identity to the filename is what makes
+doc_id is a hash of (uploader, filename) -- a STABLE identity across
+content edits, deliberately not sha256(file bytes). The uploader is part
+of it because a filename alone is global: with several users, two
+people's "README.md" would otherwise be the SAME document, and the
+second upload would overwrite the first (content, classification and
+owner included). See schemas.IngestResponse for the rest of the
+reasoning; in short, keying identity to the filename is what makes
 "only re-embed the chunks that actually changed" possible at all,
 because chunk_id (chunking/ids.py) hashes doc_id in -- an identity that
 changed on every edit would invalidate every chunk_id on every edit too,
@@ -24,18 +28,22 @@ from pathlib import Path
 import warnings
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from ...chunking.parent_child import ParentChildChunker
 from ...config import get_settings
 from ...device import resolve_device
 from ...ingestion import parse_document
+from ...identity import Principal
+from ...metadata import DocumentMetadata
 from ...providers.base import EmbeddingProvider
 from ...providers.factory import embedder_from_override
 from ...stores.base import VectorStore
 from ...stores.indexer import HybridIndexer
-from ..db import Database
+from ..db import AccessDeniedError, Database
 from ..dependencies import get_db, get_embedder, get_indexer, get_vector_store
+from ..identity import get_principal
 from ..schemas import IngestResponse, ProviderOverride, RuntimeOverrides
 
 router = APIRouter()
@@ -43,22 +51,43 @@ router = APIRouter()
 _chunker = ParentChildChunker()
 
 
+def _document_id(principal_id: str, filename: str) -> str:
+    """JSON-encoded pair, not "principal:filename" -- a plain join is
+    ambiguous ("a:b" + "c" collides with "a" + "b:c"), and this is the
+    one value that decides whether two uploads are the same document."""
+    return hashlib.sha256(json.dumps([principal_id, filename]).encode()).hexdigest()
+
+
 def _ingest_sync(
     raw_bytes: bytes,
     filename: str,
+    metadata: DocumentMetadata,
+    principal: Principal,
     embedder: EmbeddingProvider,
     indexer: HybridIndexer,
     vector_store: VectorStore,
     db: Database,
 ) -> IngestResponse:
-    doc_id = hashlib.sha256(filename.encode()).hexdigest()
+    doc_id = _document_id(principal.principal_id, filename)
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+    # Ownership comes from who is actually calling, never from what the
+    # uploader typed -- otherwise anyone could upload a document "owned"
+    # by someone else. The one exception is an admin (which is also what
+    # auth_mode="disabled" produces): its principal_id is not a real
+    # person, so it keeps whatever owner the request named.
+    if not principal.is_admin:
+        metadata = metadata.model_copy(update={"owner": principal.principal_id})
 
     ingest_warnings: list[str] = []
 
-    existing = db.get_document(doc_id)
+    existing = db.get_document(principal, doc_id)
     if existing is not None and existing.content_hash == content_hash:
-        # Byte-identical re-upload of the same filename -- nothing to do.
+        # Byte-identical re-upload of the same filename -- nothing to do,
+        # metadata included: whatever this request's `metadata` says is
+        # DISCARDED here, not applied. PATCH /documents/{doc_id} is the
+        # only way to change an already-ingested document's tags --
+        # re-upload is for content, not metadata.
         return IngestResponse(
             doc_id=doc_id,
             filename=existing.filename,
@@ -67,6 +96,7 @@ def _ingest_sync(
             num_child_chunks=existing.num_child_chunks,
             ingested_at=existing.ingested_at,
             ingest_warnings=ingest_warnings,
+            metadata=existing.metadata,
         )
 
     # Not a match on THIS filename -- but is this exact content already
@@ -80,7 +110,7 @@ def _ingest_sync(
     # this, also sidesteps needing to guess which of several possible
     # upload-path naming quirks (a path prefix, Unicode normalization,
     # ...) is responsible in any given case.
-    existing_by_content = db.get_document_by_content_hash(content_hash)
+    existing_by_content = db.get_document_by_content_hash(principal, content_hash)
     if existing_by_content is not None and existing_by_content.doc_id != doc_id:
         return IngestResponse(
             doc_id=existing_by_content.doc_id,
@@ -91,6 +121,10 @@ def _ingest_sync(
             num_child_chunks=existing_by_content.num_child_chunks,
             ingested_at=existing_by_content.ingested_at,
             ingest_warnings=ingest_warnings,
+            # Nothing was stored under THIS filename/doc_id -- reflects
+            # the ALREADY-STORED document's metadata, same reasoning as
+            # the already_ingested branch above.
+            metadata=existing_by_content.metadata,
         )
 
     # On Windows, NamedTemporaryFile keeps an open handle that can block
@@ -121,8 +155,12 @@ def _ingest_sync(
 
     # Chunk IDs are already locked in above -- safe to swap back to the
     # human-readable filename now, purely for citation/display purposes.
+    # doc_id is recorded separately (not swapped -- both values are kept)
+    # so a caller can filter/cite by the STABLE id while still displaying
+    # the human-readable filename; see ChunkMetadata.doc_id.
     for chunk in chunks:
         chunk.metadata.source_file = filename
+        chunk.metadata.doc_id = doc_id
 
     if existing is None:
         # Never seen this filename before -- every chunk is new.
@@ -145,13 +183,28 @@ def _ingest_sync(
     if chunks_to_embed:
         vectors = embedder.embed([c.text for c in chunks_to_embed])
         _validate_vector_store_compatibility(vector_store, vectors)
-        indexer.index(chunks_to_embed, vectors)
+        indexer.index(chunks_to_embed, vectors, doc_metadata=metadata)
     if orphaned_chunk_ids:
         indexer.delete(orphaned_chunk_ids)
+    # Re-apply metadata to EVERY chunk of this document, not just the
+    # ones just embedded above -- an edit-reingest can leave previously-
+    # stored, text-unchanged chunks untouched by index() (they were
+    # never in chunks_to_embed), and those would otherwise still carry
+    # whatever metadata they were written with last time. Cheap: a
+    # payload patch scoped to this doc_id, not a re-embed.
+    indexer.set_document_metadata(doc_id, metadata.to_payload())
 
     num_parent_chunks = sum(1 for c in chunks if c.parent_id is None)
     num_child_chunks = len(chunks) - num_parent_chunks
-    response = db.upsert_document(doc_id, filename, content_hash, num_parent_chunks, num_child_chunks)
+    response = db.upsert_document(
+        principal,
+        doc_id,
+        filename,
+        content_hash,
+        num_parent_chunks,
+        num_child_chunks,
+        metadata=metadata,
+    )
     return response.model_copy(update={"ingest_warnings": ingest_warnings})
 
 
@@ -199,16 +252,29 @@ def _live_vector_dimension(vector_store: VectorStore) -> int | None:
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     file: UploadFile,
+    metadata_json: str = Form(...),
     runtime_overrides_json: str | None = Form(default=None),
     embedder: EmbeddingProvider = Depends(get_embedder),
     indexer: HybridIndexer = Depends(get_indexer),
     vector_store: VectorStore = Depends(get_vector_store),
     db: Database = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ) -> IngestResponse:
     raw_bytes = await file.read()
     if not raw_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     filename = file.filename or "unnamed"
+
+    # Form(...) -- no default -- means FastAPI itself rejects a request
+    # missing this field entirely (422, before this line ever runs).
+    # Parsed and validated here too, for a request that DOES send the
+    # field but with missing/invalid content (e.g. no classification --
+    # see metadata.DocumentMetadata, which has no default for it either):
+    # required at every layer, never silently assumed.
+    try:
+        metadata = DocumentMetadata.model_validate_json(metadata_json)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid document metadata: {exc}") from exc
 
     embedder_to_use = embedder
     if runtime_overrides_json:
@@ -235,7 +301,17 @@ async def ingest(
 
     try:
         return await run_in_threadpool(
-            _ingest_sync, raw_bytes, filename, embedder_to_use, indexer, vector_store, db
+            _ingest_sync,
+            raw_bytes,
+            filename,
+            metadata,
+            principal,
+            embedder_to_use,
+            indexer,
+            vector_store,
+            db,
         )
+    except AccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

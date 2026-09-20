@@ -37,6 +37,20 @@ class ChunkElement(BaseModel):
 
 class ChunkMetadata(BaseModel):
     source_file: str
+
+    doc_id: str = ""
+    """Stable document identity (sha256 of the filename -- see
+    api/routers/ingest.py), distinct from source_file (the human-readable
+    filename shown in citations). Set post-hoc by the ingest router, in
+    the same loop that restores source_file to the filename -- not by any
+    chunker, since it's intrinsic to the DOCUMENT, not to how a chunk was
+    cut, and it's already embedded as the prefix of Chunk.id
+    (chunking/ids.py's chunk_id()), so recording it here just makes an
+    existing fact addressable. Defaults to "" so old chunks upserted
+    before this field existed are visibly incomplete rather than
+    silently wrong -- see stores.qdrant_store._to_point, which
+    deliberately does NOT fall back to source_file here."""
+
     element_positions: list[int] = []
     """Which Element.metadata.position values fed this chunk. Best-effort:
     strategies that flatten elements to raw text before splitting

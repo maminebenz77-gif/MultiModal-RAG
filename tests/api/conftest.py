@@ -24,6 +24,12 @@ from multimodal_rag.stores.factory import get_keyword_store, get_vector_store
 
 SAMPLE_DOC = Path(__file__).resolve().parents[2] / "data" / "samples" / "chunking_demo.md"
 
+MINIMAL_METADATA_JSON = '{"classification": "public"}'
+"""The metadata_json Form field is required on every /ingest call (see
+routers/ingest.py -- classification has no default). Tests that don't
+care about metadata content use this minimal, valid value so the field
+requirement itself doesn't need re-deriving at every call site."""
+
 
 @asynccontextmanager
 async def make_client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
@@ -59,7 +65,9 @@ async def ingest_sample_doc(client: httpx.AsyncClient) -> str:
     """Ingests the shared sample corpus doc and returns its doc_id."""
     with open(SAMPLE_DOC, "rb") as f:
         response = await client.post(
-            "/ingest", files={"file": ("chunking_demo.md", f, "text/markdown")}
+            "/ingest",
+            files={"file": ("chunking_demo.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
         )
     assert response.status_code == 200, response.text
     doc_id: str = response.json()["doc_id"]

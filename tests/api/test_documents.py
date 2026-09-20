@@ -2,7 +2,7 @@ from pathlib import Path
 
 import httpx
 
-from .conftest import ingest_sample_doc
+from .conftest import MINIMAL_METADATA_JSON, ingest_sample_doc
 
 _OTHER_SAMPLE_DOC = Path(__file__).resolve().parents[2] / "data" / "samples" / "sample.md"
 
@@ -23,6 +23,80 @@ async def test_lists_a_document_after_ingestion(client: httpx.AsyncClient) -> No
     assert len(documents) == 1
     assert documents[0]["doc_id"] == doc_id
     assert documents[0]["filename"] == "chunking_demo.md"
+    assert documents[0]["metadata"]["classification"] == "public"
+
+
+async def test_patch_updates_only_the_fields_sent(client: httpx.AsyncClient) -> None:
+    doc_id = await ingest_sample_doc(client)
+
+    response = await client.patch(
+        f"/documents/{doc_id}", json={"classification": "c2", "tags": ["policy"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["classification"] == "c2"
+    assert body["metadata"]["tags"] == ["policy"]
+    # author was never sent -- must be untouched (still its original
+    # default), not wiped by the patch.
+    assert body["metadata"]["author"] is None
+
+
+async def test_patch_is_visible_in_a_later_get(client: httpx.AsyncClient) -> None:
+    doc_id = await ingest_sample_doc(client)
+    await client.patch(f"/documents/{doc_id}", json={"private": True})
+
+    documents = (await client.get("/documents")).json()["documents"]
+    assert documents[0]["metadata"]["private"] is True
+
+
+async def test_patch_with_an_empty_body_changes_nothing(client: httpx.AsyncClient) -> None:
+    doc_id = await ingest_sample_doc(client)
+
+    response = await client.patch(f"/documents/{doc_id}", json={})
+
+    assert response.status_code == 200
+    assert response.json()["metadata"]["classification"] == "public"
+
+
+async def test_patch_returns_404_for_an_unknown_doc_id(client: httpx.AsyncClient) -> None:
+    response = await client.patch("/documents/nonexistent", json={"private": True})
+
+    assert response.status_code == 404
+
+
+async def test_patch_does_not_require_re_embedding(client: httpx.AsyncClient) -> None:
+    """The whole point of PATCH -- a metadata-only change never touches
+    chunk_ids, since it's a payload patch, not a re-ingest."""
+    doc_id = await ingest_sample_doc(client)
+    vector_store = client.app.state.app_state.vector_store  # type: ignore[attr-defined]
+    chunk_ids_before = set(vector_store.list_chunk_ids())
+
+    await client.patch(f"/documents/{doc_id}", json={"classification": "c1"})
+
+    assert set(vector_store.list_chunk_ids()) == chunk_ids_before
+
+
+async def test_patch_recomputes_acl_allow_when_owner_changes_without_private(
+    client: httpx.AsyncClient,
+) -> None:
+    """Regression test: acl_allow (stores/*) is derived from private AND
+    owner together (see DocumentMetadata.to_payload()). A patch touching
+    only `owner`, with `private` already true from a prior patch, must
+    still recompute acl_allow in the store -- not leave it pointing at
+    the OLD owner."""
+    doc_id = await ingest_sample_doc(client)
+    await client.patch(f"/documents/{doc_id}", json={"private": True, "owner": "user:alice"})
+
+    await client.patch(f"/documents/{doc_id}", json={"owner": "user:bob"})
+
+    vector_store = client.app.state.app_state.vector_store  # type: ignore[attr-defined]
+    points, _ = vector_store._client.scroll(
+        collection_name=vector_store._alias, limit=10, with_payload=True
+    )
+    for point in points:
+        assert point.payload is not None
+        assert point.payload["acl_allow"] == ["user:bob"]
 
 
 async def test_wipe_removes_all_documents_and_their_chunks(client: httpx.AsyncClient) -> None:
@@ -57,7 +131,9 @@ async def test_delete_one_document_leaves_the_other_untouched(
     doc_id_to_delete = await ingest_sample_doc(client)
     with open(_OTHER_SAMPLE_DOC, "rb") as f:
         other_response = await client.post(
-            "/ingest", files={"file": ("sample.md", f, "text/markdown")}
+            "/ingest",
+            files={"file": ("sample.md", f, "text/markdown")},
+            data={"metadata_json": MINIMAL_METADATA_JSON},
         )
     other_doc_id = other_response.json()["doc_id"]
 

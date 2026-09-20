@@ -10,12 +10,43 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ..metadata import Classification
 from ..retrieval.schema import RetrievalMethod
+
+
+class DocumentMetadataOut(BaseModel):
+    """The tags a document carries -- see metadata.DocumentMetadata for
+    the internal domain model this mirrors. Kept separate from it (this
+    file's own stated rule) so the API's shape can evolve independently."""
+
+    classification: Classification
+    private: bool = False
+    owner: str | None = None
+    author: str | None = None
+    doc_date: str | None = None
+    data_type: str | None = None
+    tags: list[str] = []
+
+
+class DocumentMetadataUpdate(BaseModel):
+    """PATCH /documents/{doc_id}'s request body. Every field optional --
+    PATCH semantics: only fields the caller actually sends are changed
+    (see Database.update_document_metadata, which reads this via
+    model_dump(exclude_unset=True), not via which fields are None --
+    private=False and private=<omitted> are different requests)."""
+
+    classification: Classification | None = None
+    private: bool | None = None
+    owner: str | None = None
+    author: str | None = None
+    doc_date: str | None = None
+    data_type: str | None = None
+    tags: list[str] | None = None
 
 
 class IngestResponse(BaseModel):
     doc_id: str
-    """sha256 of the FILENAME, not the file's bytes -- doc_id identifies
+    """A hash of (uploader, FILENAME), not the file's bytes -- doc_id identifies
     "this document" as a stable slot that survives edits, so re-ingesting
     the same filename with slightly different content is recognized as
     an update to the SAME document (and only the chunks that actually
@@ -48,6 +79,15 @@ class IngestResponse(BaseModel):
     """Non-fatal ingest warnings (e.g., parser fallback from PDF hi_res
     to fast mode)."""
 
+    metadata: DocumentMetadataOut
+    """What this doc_id is now recorded as -- for "duplicate_content",
+    this is the ALREADY-STORED document's metadata (nothing new was
+    ingested under this doc_id, so there's nothing else to show); for
+    "already_ingested", the existing document's metadata, UNCHANGED by
+    whatever this request's own metadata said (see PATCH
+    /documents/{doc_id} for how metadata is actually updated on an
+    already-ingested document)."""
+
 
 class DocumentSummary(BaseModel):
     doc_id: str
@@ -61,6 +101,7 @@ class DocumentSummary(BaseModel):
     num_parent_chunks: int
     num_child_chunks: int
     ingested_at: datetime
+    metadata: DocumentMetadataOut
 
 
 class DocumentsResponse(BaseModel):
@@ -116,10 +157,11 @@ class QueryRequest(BaseModel):
     deployment (see api/main.py); if not, the request fails."""
 
     doc_ids: list[str] | None = None
-    """Restricts results to these document IDs -- a post-retrieval
-    filter (see Retriever usage in routers/query.py), not a native store
-    query. Fine at this corpus size; would need real store-level
-    filtering to scale."""
+    """Restricts results to these document IDs -- the stable ids GET
+    /documents hands out (sha256 of the filename), NOT filenames. A
+    post-retrieval filter (see Retriever usage in routers/query.py), not
+    a native store query. Fine at this corpus size; would need real
+    store-level filtering to scale."""
 
     runtime_overrides: RuntimeOverrides | None = None
     """Optional per-request provider overrides from the UI. When unset,
@@ -139,6 +181,10 @@ class CitationOut(BaseModel):
     marker: int
     chunk_id: str
     source: str
+    doc_id: str = ""
+    """The document's stable id (see generation.schema.Citation.doc_id).
+    "" for citations recorded before this field existed."""
+
     pages: list[int]
     slides: list[int]
     text: str = ""
@@ -155,6 +201,9 @@ class RetrievedChunkOut(BaseModel):
     score: float
     text: str
     source: str
+    doc_id: str = ""
+    """The document's stable id (see stores.schema.SearchResult.doc_id)."""
+
     pages: list[int]
     slides: list[int]
     elements: list[ChunkElementOut] = []
