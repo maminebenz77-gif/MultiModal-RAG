@@ -48,7 +48,7 @@ _EXPERIMENT_NAME = "Multimodal RAG retrieval comparison"
 def _run_name(label: str) -> str:
     # Timestamped so re-running this script shows up as a new,
     # distinguishable Dataset Run each time -- see
-    # langfuse_expert_eval.py's identical _run_name for the live-caught
+    # run_expert_eval.py's identical _run_name for the live-caught
     # bug this fixes (a bare method name meant every run silently reused
     # the same run identity).
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")

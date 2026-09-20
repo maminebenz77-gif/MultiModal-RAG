@@ -15,7 +15,7 @@ from multimodal_rag.evaluation.judge import JudgeParseError
 
 def test_run_name_includes_the_label_and_a_timestamp() -> None:
     # Regex, not two real calls compared for inequality -- see
-    # test_langfuse_expert_eval.py's identical helper for why that would
+    # test_run_expert_eval.py's identical helper for why that would
     # be flaky (this is second-precision, which is plenty for real usage).
     name = lx._run_name("hybrid_rrf")
     assert re.fullmatch(r"hybrid_rrf-\d{8}T\d{6}Z", name), name

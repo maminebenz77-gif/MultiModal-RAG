@@ -41,42 +41,43 @@ no re-registration anywhere.
 
 ## Running it
 
-Two scripts, for two different things — easy to mix up, so the
-distinction is worth being explicit about:
-
-**Console only, no Langfuse involved:**
+One command:
 
 ```
 uv run python -m multimodal_rag.evaluation.run_expert_eval
 ```
 
-Each expertise folder's documents are ingested into their own isolated
-collection, so a question about one expertise can't accidentally retrieve
-another expertise's content. Prints one row per expertise (average
-correctness over answerable questions, refusal accuracy over
-`expect_refusal` questions) plus an overall average. This never talks to
-Langfuse at all — no dataset, no experiment. The real `AgentChain` calls
-it makes are still individually traced if Langfuse happens to be
-configured (that tracing is unconditional, at the provider/retriever
-layer), but each trace lands disconnected from the others, with nothing
-tying a `retrieve`/`generate_with_tools` pair to the question that
-produced it or to this run.
+It always prints the results to the console — one row per expertise
+(average correctness over answerable questions, refusal accuracy over
+`expect_refusal` questions) plus an overall average. Each expertise
+folder's documents are ingested into their own isolated collection, so a
+question about one expertise can't accidentally retrieve another
+expertise's content.
 
-**Also sent to Langfuse as a real Experiment, with everything properly grouped:**
+It also tries to reach Langfuse first, and tells you which case you're in
+(printed up front, and again under the table, since a run's log noise
+scrolls the first one away):
 
-```
-uv run python -m multimodal_rag.evaluation.langfuse_expert_eval
-```
+- **Connected** — each expertise's `qa.json` is also synced to its own
+  Langfuse Dataset (`expert-eval-<expertise-name>`) and run as a real
+  Experiment, which is what shows up under **Datasets** in the Langfuse
+  UI. Langfuse's own `run_experiment()` opens a trace context per
+  question, so every call one question triggers (embed, retrieve,
+  generate, the correctness/refusal judge) lands nested under one shared
+  trace instead of scattered as unrelated root traces. Each expertise's
+  Dataset Run URL is printed under the table. Every run is timestamped in
+  its own run name (`<expertise-name>-<UTC timestamp>`), so re-running
+  after editing a `qa.json` shows up as a new, distinguishable run rather
+  than silently overwriting the last one.
+- **Not connected** — Langfuse isn't configured, is blocked by the
+  privacy guard (see `tracing.py`), or fails its auth check. The script
+  says so and carries on console-only; it never fails because Langfuse is
+  missing. In this mode the agent's calls are still individually traced if
+  Langfuse happens to be configured (that tracing lives at the
+  provider/retriever layer), but with no Experiment there's nothing tying a
+  `retrieve`/`generate_with_tools` pair to the question that produced it.
 
-Syncs each expertise's `qa.json` to its own Langfuse Dataset
-(`expert-eval-<expertise-name>`) and runs it as a Dataset Experiment —
-this is the one that actually shows up under **Datasets** in the
-Langfuse UI. It also solves the trace-disconnection problem above:
-Langfuse's own `run_experiment()` opens a real trace context per
-question, so every call that one question triggers (embed, retrieve,
-generate, the correctness/refusal judge) lands nested under one shared
-trace instead of scattered as unrelated root traces. Each run is
-timestamped in its own run name (`<expertise-name>-<UTC timestamp>`), so
-re-running after editing a `qa.json` — or just to re-check after a code
-change — shows up as a new, distinguishable run rather than silently
-overwriting the previous run's identity.
+Either way the scoring is identical — the same evaluator functions feed the
+same aggregation — so the console table means the same thing in both
+modes; the only difference is whether Langfuse's `run_experiment()` or a
+plain local loop drives the questions.

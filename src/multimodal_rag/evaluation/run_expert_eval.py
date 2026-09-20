@@ -10,11 +10,24 @@ one asks "which retrieval method is best?" (relative, synthetic corpus).
 This one asks "is the agent a real user actually gets correct, on real
 domain content?" (absolute, real corpus, production config).
 
+ONE script, two outputs. Results always print to the console. It also
+tries to reach Langfuse first; if it can't (not configured, blocked by the
+privacy guard, or unreachable) it says so and carries on console-only --
+never fails because Langfuse is missing -- and if it can, it ALSO syncs
+each expertise's qa.json to its own Langfuse Dataset and runs it as a
+native Experiment, which is what groups every call one question triggers
+(embed, retrieve, generate, judge) under one shared trace per item.
+
+Both paths score with the exact same evaluator functions and feed the
+same aggregation, so the console table means the same thing either way --
+the only difference is who drives the loop (Langfuse's run_experiment()
+when connected, a plain local loop when not).
+
 Convention -- see data/eval/README.md -- lets a new expertise or question
 be added as a pure data change, no code:
 
     data/eval/<expertise-name>/
-      documents/   # real source documents (PDF, DOCX, PPTX, or Markdown)
+      documents/   # real source documents (PDF, DOCX, PPTX, Markdown, CSV, Excel)
       qa.json       # [{"id": ..., "question": ..., "expert_answer": ...,
                      #   "expect_refusal": false}, ...]  -- expect_refusal
                      #   optional, defaults to false
@@ -24,8 +37,13 @@ Run: `uv run python -m multimodal_rag.evaluation.run_expert_eval`
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+
+from langfuse import Evaluation, Langfuse
+from langfuse.experiment import EvaluatorFunction
 
 from ..generation.agent import AgentChain
 from ..providers.factory import get_embedder
@@ -33,6 +51,7 @@ from ..retrieval.retriever import Retriever
 from ..retrieval.schema import RetrievalMethod
 from ..stores.factory import get_keyword_store, get_vector_store
 from ..stores.indexer import HybridIndexer
+from ..tracing import get_langfuse_client
 from .judge import JudgeParseError, score_answer_correctness
 from .run_eval import _ingest_document
 
@@ -42,6 +61,20 @@ _TOP_K = 5
 run_eval.py's _TOP_K=3 -- that one is deliberately tuned to make recall@k
 discriminate between methods; this eval is about the agent a real user
 actually gets, so it uses exactly the config routers/query.py defaults to."""
+
+_DATASET_PREFIX = "expert-eval-"
+_EXPERIMENT_NAME_PREFIX = "Expert eval: "
+
+
+@dataclass
+class _ItemOutcome:
+    """What aggregation needs from one scored question -- deliberately
+    just this, not the agent's answer text: both runners (the local loop
+    and Langfuse's run_experiment()) can produce it, which is what lets
+    them share one aggregation."""
+
+    expect_refusal: bool
+    evaluations: list[Evaluation]
 
 
 @dataclass
@@ -67,6 +100,9 @@ class _ExpertiseResult:
     """Questions skipped because the judge's own output couldn't be
     parsed (see judge.JudgeParseError) -- excluded from the average
     rather than silently corrupting it, same discipline as run_eval.py."""
+    langfuse_url: str | None = None
+    """This expertise's Dataset Run in Langfuse, or None when the run was
+    console-only."""
 
 
 def _discover_expertise_dirs() -> list[Path]:
@@ -88,9 +124,7 @@ def build_expertise_agent(expertise_dir: Path) -> AgentChain:
     it alone -- deliberately, so a question about one expertise can't
     accidentally retrieve another expertise's content just because they
     happen to share a collection -- and returns the real production
-    AgentChain over it (routers/query.py's exact construction). Shared by
-    run_expert_eval.py and langfuse_expert_eval.py so both eval every
-    expertise against the same agent, not two subtly different ones.
+    AgentChain over it (routers/query.py's exact construction).
     """
     name = expertise_dir.name
     documents_dir = expertise_dir / "documents"
@@ -122,48 +156,235 @@ def build_expertise_agent(expertise_dir: Path) -> AgentChain:
     )
 
 
-def _run_expertise(expertise_dir: Path) -> _ExpertiseResult:
+# -- scoring: shared by both runners ---------------------------------------
+
+
+def _expected_output(item: dict[str, Any]) -> dict[str, Any]:
+    """The one place a qa.json item becomes the expected_output both
+    runners hand to the evaluators -- synced to Langfuse as the dataset
+    item's expected_output, and passed directly by the local loop -- so
+    the two paths can't drift apart on what "expected" means."""
+    return {
+        "expert_answer": item["expert_answer"],
+        "expect_refusal": item.get("expect_refusal", False),
+    }
+
+
+def _make_task(agent: AgentChain) -> Any:
+    def task(*, item: Any, **kwargs: Any) -> dict[str, Any]:
+        rag_answer = agent.answer(item.input)
+        return {"answer": rag_answer.answer, "refused": rag_answer.refused}
+
+    return task
+
+
+def _correctness_evaluator(
+    *, input: Any, output: dict[str, Any], expected_output: dict[str, Any], **kwargs: Any
+) -> list[Evaluation]:
+    if expected_output.get("expect_refusal"):
+        # Scored by _refusal_accuracy_evaluator instead -- see its
+        # docstring for why a free-text judge is the wrong tool here.
+        return []
+    if output["refused"]:
+        # A false refusal: an answerable item the agent declined anyway.
+        # A real failure, but not one a free-text correctness judge can
+        # honestly score -- there's no substantive answer to compare.
+        return [Evaluation(name="false_refusal", value=True, data_type="BOOLEAN")]
+    try:
+        score = score_answer_correctness(input, output["answer"], expected_output["expert_answer"])
+    except JudgeParseError:
+        return []
+    return [Evaluation(name="correctness", value=score)]
+
+
+def _refusal_accuracy_evaluator(
+    *, output: dict[str, Any], expected_output: dict[str, Any], **kwargs: Any
+) -> list[Evaluation]:
+    """Deliberately separate from correctness -- grading a refusal's
+    ANSWER TEXT against expert_answer with a free-text judge is exactly
+    the bug caught live in this project: a correct, terse "I don't know"
+    scored 0 against a longer reference explanation. This only checks
+    whether the agent refused at all, never what it said.
+    """
+    if not expected_output.get("expect_refusal"):
+        return []
+    correct = bool(output["refused"])
+    return [Evaluation(name="refusal_accuracy", value=1.0 if correct else 0.0)]
+
+
+_EVALUATOR_FUNCTIONS = (_correctness_evaluator, _refusal_accuracy_evaluator)
+_EVALUATORS: list[EvaluatorFunction] = list(_EVALUATOR_FUNCTIONS)
+
+
+def _aggregate(
+    name: str, outcomes: list[_ItemOutcome], langfuse_url: str | None = None
+) -> _ExpertiseResult:
+    def numeric_values(evaluation_name: str) -> list[float]:
+        return [
+            float(evaluation.value)
+            for outcome in outcomes
+            for evaluation in outcome.evaluations
+            if evaluation.name == evaluation_name and isinstance(evaluation.value, int | float)
+        ]
+
+    answerable_count = sum(1 for o in outcomes if not o.expect_refusal)
+    refusal_count = sum(1 for o in outcomes if o.expect_refusal)
+
+    correctness_scores = numeric_values("correctness")
+    false_refusals = len(numeric_values("false_refusal"))
+    return _ExpertiseResult(
+        name=name,
+        average_correctness=(
+            sum(correctness_scores) / len(correctness_scores) if correctness_scores else 0.0
+        ),
+        answerable_count=answerable_count,
+        refusal_accuracy=(
+            sum(numeric_values("refusal_accuracy")) / refusal_count if refusal_count else None
+        ),
+        refusal_count=refusal_count,
+        false_refusals=false_refusals,
+        # An answerable item that was neither scored nor a false refusal
+        # can only have hit a JudgeParseError (its evaluator returns no
+        # evaluation at all) -- derived rather than tracked separately, so
+        # it holds identically for both runners.
+        judge_failures=answerable_count - len(correctness_scores) - false_refusals,
+        langfuse_url=langfuse_url,
+    )
+
+
+# -- runner 1: plain local loop (no Langfuse) ------------------------------
+
+
+def _run_locally(agent: AgentChain, qa_items: list[dict[str, Any]]) -> list[_ItemOutcome]:
+    task = _make_task(agent)
+    outcomes: list[_ItemOutcome] = []
+    for item in qa_items:
+        expected = _expected_output(item)
+        output = task(item=SimpleNamespace(input=item["question"]))
+        evaluations = [
+            evaluation
+            for evaluator in _EVALUATOR_FUNCTIONS
+            for evaluation in evaluator(
+                input=item["question"], output=output, expected_output=expected
+            )
+        ]
+        outcomes.append(_ItemOutcome(bool(expected["expect_refusal"]), evaluations))
+    return outcomes
+
+
+# -- runner 2: Langfuse Experiment -----------------------------------------
+
+
+def _dataset_name(expertise: str) -> str:
+    return f"{_DATASET_PREFIX}{expertise}"
+
+
+def _run_name(expertise: str) -> str:
+    # A bare expertise name as run_name meant every invocation reused the
+    # exact same run identity -- re-running after editing a qa.json (or
+    # just to re-check after a code change) silently landed on the SAME
+    # Dataset Run in Langfuse's UI instead of creating a new,
+    # distinguishable one; found live when a second run produced fresh
+    # trace data but the printed Dataset Run URL was identical to the
+    # first run's. Timestamped so every run is its own entry, sortable by
+    # when it happened.
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{expertise}-{timestamp}"
+
+
+def _sync_dataset(client: Langfuse, expertise: str, qa_items: list[dict[str, Any]]) -> None:
+    """Both create_dataset and create_dataset_item upsert by name/id (see
+    langfuse_experiment.py's _sync_dataset) -- safe to call on every run,
+    and an edit to qa.json (a new question, a corrected expert_answer)
+    shows up here on the next run too, not just a one-time upload.
+    """
+    dataset_name = _dataset_name(expertise)
+    client.create_dataset(
+        name=dataset_name,
+        description=(
+            f"Expert-authored Q&A for the '{expertise}' expertise (data/eval/{expertise}/qa.json)."
+        ),
+    )
+    for item in qa_items:
+        client.create_dataset_item(
+            dataset_name=dataset_name,
+            id=item["id"],
+            input=item["question"],
+            expected_output=_expected_output(item),
+        )
+
+
+def _run_on_langfuse(
+    client: Langfuse, name: str, agent: AgentChain, qa_items: list[dict[str, Any]]
+) -> tuple[list[_ItemOutcome], str | None]:
+    _sync_dataset(client, name, qa_items)
+    dataset = client.get_dataset(_dataset_name(name))
+    # create_dataset_item upserts but never deletes, so a question removed
+    # or renamed in qa.json would still be sitting in the Langfuse dataset
+    # -- and run_experiment() runs whatever the dataset holds, so it would
+    # silently keep being asked and counted. Restricted to the ids qa.json
+    # has right now, so both runners always evaluate the same questions.
+    current_ids = {item["id"] for item in qa_items}
+    dataset.items = [item for item in dataset.items if item.id in current_ids]
+
+    result = dataset.run_experiment(
+        name=f"{_EXPERIMENT_NAME_PREFIX}{name}",
+        run_name=_run_name(name),
+        task=_make_task(agent),
+        evaluators=_EVALUATORS,
+    )
+    outcomes = [
+        _ItemOutcome(
+            expect_refusal=bool(
+                (getattr(item_result.item, "expected_output", None) or {}).get("expect_refusal")
+            ),
+            evaluations=item_result.evaluations,
+        )
+        for item_result in result.item_results
+    ]
+    return outcomes, result.dataset_run_url
+
+
+def _connect_langfuse() -> tuple[Langfuse | None, str]:
+    """Returns (client, status message). client is None whenever Langfuse
+    can't be used, for any reason -- the message says which -- and the
+    caller just carries on console-only. auth_check() is what actually
+    proves reachability and valid keys; get_langfuse_client() alone only
+    proves the settings looked usable, since constructing the client
+    doesn't touch the network.
+    """
+    client = get_langfuse_client()
+    if client is None:
+        return None, (
+            "Langfuse: not connected -- not configured, or disabled by the privacy guard "
+            "(see tracing.py and the LANGFUSE_* settings in .env.local). "
+            "Results are printed here only."
+        )
+    try:
+        reachable = client.auth_check()
+    except Exception as exc:
+        return None, f"Langfuse: not connected -- {exc}. Results are printed here only."
+    if not reachable:
+        return None, (
+            "Langfuse: not connected -- the auth check failed (bad keys or wrong host). "
+            "Results are printed here only."
+        )
+    return client, "Langfuse: connected -- results are also being sent as Experiments."
+
+
+# -- driver -----------------------------------------------------------------
+
+
+def _run_expertise(expertise_dir: Path, client: Langfuse | None = None) -> _ExpertiseResult:
     name = expertise_dir.name
     qa_items = _load_qa(expertise_dir)
     agent = build_expertise_agent(expertise_dir)
 
-    answerable_items = [item for item in qa_items if not item.get("expect_refusal", False)]
-    refusal_items = [item for item in qa_items if item.get("expect_refusal", False)]
-
-    scores: list[float] = []
-    false_refusals = 0
-    judge_failures = 0
-    for item in answerable_items:
-        rag_answer = agent.answer(item["question"])
-        if rag_answer.refused:
-            # A refusal makes no substantive claims -- grading "I don't
-            # know" against a substantive expert_answer with a free-text
-            # judge is exactly the failure mode that showed up live: the
-            # judge marks a correct-sounding refusal wrong because it
-            # doesn't restate the reference's reasoning. Track it as its
-            # own, real failure instead.
-            false_refusals += 1
-            continue
-        try:
-            score = score_answer_correctness(
-                item["question"], rag_answer.answer, item["expert_answer"]
-            )
-        except JudgeParseError:
-            judge_failures += 1
-            continue
-        scores.append(score)
-
-    correct_refusals = sum(1 for item in refusal_items if agent.answer(item["question"]).refused)
-
-    return _ExpertiseResult(
-        name=name,
-        average_correctness=sum(scores) / len(scores) if scores else 0.0,
-        answerable_count=len(answerable_items),
-        refusal_accuracy=correct_refusals / len(refusal_items) if refusal_items else None,
-        refusal_count=len(refusal_items),
-        false_refusals=false_refusals,
-        judge_failures=judge_failures,
-    )
+    if client is not None:
+        outcomes, langfuse_url = _run_on_langfuse(client, name, agent, qa_items)
+    else:
+        outcomes, langfuse_url = _run_locally(agent, qa_items), None
+    return _aggregate(name, outcomes, langfuse_url)
 
 
 def _fmt_refusal_accuracy(value: float | None) -> str:
@@ -173,7 +394,7 @@ def _fmt_refusal_accuracy(value: float | None) -> str:
 _COLUMN_WIDTHS = {"Expertise": 25, "Correctness": 13, "Answerable": 12, "RefusalAcc": 12}
 
 
-def _print_results(results: list[_ExpertiseResult]) -> None:
+def _print_results(results: list[_ExpertiseResult], langfuse_status: str | None = None) -> None:
     header = "".join(f"{name:<{width}}" for name, width in _COLUMN_WIDTHS.items())
     print(f"\n{header}")
     print("-" * len(header))
@@ -199,6 +420,16 @@ def _print_results(results: list[_ExpertiseResult]) -> None:
         print("-" * len(header))
         print(f"{'Overall':<25}{overall:<13.3f}{total_answerable:<12}")
 
+    # Repeated at the end, not just printed up front: a run makes many real
+    # LLM calls and logs plenty of its own noise, so a status line from the
+    # very start has usually scrolled out of view by the time the table
+    # appears.
+    if langfuse_status is not None:
+        print(f"\n{langfuse_status}")
+    for r in results:
+        if r.langfuse_url:
+            print(f"  {r.name}: {r.langfuse_url}")
+
 
 def main() -> None:
     expertise_dirs = _discover_expertise_dirs()
@@ -210,8 +441,14 @@ def main() -> None:
         )
         return
 
-    results = [_run_expertise(d) for d in expertise_dirs]
-    _print_results(results)
+    client, langfuse_status = _connect_langfuse()
+    print(langfuse_status)
+
+    results = [_run_expertise(d, client) for d in expertise_dirs]
+    _print_results(results, langfuse_status)
+
+    if client is not None:
+        client.flush()
 
 
 if __name__ == "__main__":
