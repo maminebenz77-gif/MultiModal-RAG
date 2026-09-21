@@ -128,7 +128,9 @@ async def query(
     # is. Handed to AgentChain in place of the plain Retriever below: it
     # satisfies the same RetrieverLike shape, so nothing about AgentChain
     # itself needs to know scoping exists.
-    scoped_retriever = ScopedRetriever(retriever_for_request, principal, db)
+    scoped_retriever = ScopedRetriever(
+        retriever_for_request, principal, db, include_superseded=request.include_superseded
+    )
 
     if request.conversation_id is None:
         conversation_id = await run_in_threadpool(db.create_conversation, principal)

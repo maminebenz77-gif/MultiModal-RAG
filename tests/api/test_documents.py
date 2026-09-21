@@ -160,3 +160,30 @@ async def test_delete_document_returns_404_for_an_unknown_doc_id(
     response = await client.delete("/documents/nonexistent")
 
     assert response.status_code == 404
+
+
+async def test_an_old_row_without_a_classification_does_not_take_down_list_or_metrics(
+    client: httpx.AsyncClient,
+) -> None:
+    """The real-world failure this pins: a database from before
+    classification existed has rows with classification ''. Reading one
+    used to raise, so GET /documents and GET /metrics both answered 500 --
+    for every user, whether or not their own documents were fine."""
+    import sqlite3
+
+    good = await ingest_sample_doc(client)
+    db = client.app.state.app_state.db  # type: ignore[attr-defined]
+    with sqlite3.connect(db._db_path) as conn:
+        conn.execute(
+            "INSERT INTO documents (doc_id, filename, content_hash, num_parent_chunks, "
+            "num_child_chunks, ingested_at, classification) VALUES ('old', 'old.md', 'h', 1, 1, "
+            "'2026-09-06T00:00:00+00:00', '')"
+        )
+
+    listed = await client.get("/documents")
+    metrics = await client.get("/metrics")
+
+    assert listed.status_code == 200
+    assert [d["doc_id"] for d in listed.json()["documents"]] == [good]
+    assert metrics.status_code == 200
+    assert metrics.json()["total_documents"] == 1

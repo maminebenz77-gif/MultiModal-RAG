@@ -19,6 +19,7 @@ rather than adding a new abstraction layer on top of everything else.
 """
 
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -41,6 +42,8 @@ from .schemas import (
     MetricsResponse,
 )
 
+_logger = logging.getLogger(__name__)
+
 
 class AccessDeniedError(PermissionError):
     """The caller can SEE the thing they tried to change, but isn't
@@ -48,6 +51,13 @@ class AccessDeniedError(PermissionError):
     it at all" -- that's indistinguishable from "doesn't exist" (a 404),
     on purpose: a 403 there would confirm the thing exists, which is
     exactly what someone probing for other people's data wants to know."""
+
+
+class DocumentNotFoundError(LookupError):
+    """A document the caller named doesn't exist -- or exists but they
+    cannot see it, which is deliberately the same thing (see
+    AccessDeniedError). POST /ingest turns this into a 404 when
+    supersedes_doc_id points at one."""
 
 
 class QueryNotFoundError(LookupError):
@@ -97,7 +107,12 @@ class Database:
                 author TEXT,
                 doc_date TEXT,
                 data_type TEXT,
-                tags TEXT NOT NULL DEFAULT '[]'
+                tags TEXT NOT NULL DEFAULT '[]',
+                effective_from TEXT,
+                status TEXT NOT NULL DEFAULT 'current',
+                doc_family_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                effective_to TEXT
             )
             """
         )
@@ -116,6 +131,13 @@ class Database:
         Database._ensure_column(conn, "documents", "doc_date", "TEXT")
         Database._ensure_column(conn, "documents", "data_type", "TEXT")
         Database._ensure_column(conn, "documents", "tags", "TEXT NOT NULL DEFAULT '[]'")
+        # Lifecycle (see metadata.Status). A row from before these existed
+        # is, correctly, a current first version.
+        Database._ensure_column(conn, "documents", "effective_from", "TEXT")
+        Database._ensure_column(conn, "documents", "status", "TEXT NOT NULL DEFAULT 'current'")
+        Database._ensure_column(conn, "documents", "doc_family_id", "TEXT")
+        Database._ensure_column(conn, "documents", "version", "INTEGER NOT NULL DEFAULT 1")
+        Database._ensure_column(conn, "documents", "effective_to", "TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS conversations (
@@ -208,7 +230,10 @@ class Database:
         the caller may see it) uses this directly."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
-        return self._row_to_document(row) if row is not None else None
+        if row is None:
+            return None
+        readable = self._readable([row])
+        return readable[0] if readable else None  # unreadable reads as not found
 
     @staticmethod
     def _visible(principal: Principal, doc: DocumentSummary) -> bool:
@@ -257,8 +282,7 @@ class Database:
                 f"SELECT * FROM documents WHERE doc_id IN ({placeholders})",
                 tuple(doc_ids),
             ).fetchall()
-        docs = [self._row_to_document(row) for row in rows]
-        return [d for d in docs if self._visible(principal, d)]
+        return [d for d in self._readable(rows) if self._visible(principal, d)]
 
     def get_document_by_content_hash(
         self, principal: Principal, content_hash: str
@@ -280,11 +304,36 @@ class Database:
                 "SELECT * FROM documents WHERE content_hash = ? ORDER BY ingested_at DESC",
                 (content_hash,),
             ).fetchall()
-        for row in rows:
-            doc = self._row_to_document(row)
+        for doc in self._readable(rows):
             if self._visible(principal, doc):
                 return doc
         return None
+
+    @classmethod
+    def _readable(cls, rows: list[sqlite3.Row]) -> list[DocumentSummary]:
+        """The rows that can be read, skipping (loudly) any that can't.
+
+        A row from before classification existed has classification '' and
+        _row_to_metadata refuses to read it. Raising there is right for a
+        single row -- inventing a classification would be a guess about
+        access -- but letting it propagate out of a LIST turned one old
+        row into a 500 on every endpoint that lists, counts or looks up
+        documents. So a list skips it. It is not hidden quietly: each one
+        is logged at ERROR with what to do about it, and it is never
+        assigned a classification, so it stays invisible (and unsearchable)
+        until someone deliberately re-ingests or backfills it."""
+        readable: list[DocumentSummary] = []
+        for row in rows:
+            try:
+                readable.append(cls._row_to_document(row))
+            except ValueError as exc:
+                _logger.error(
+                    "Skipping unreadable document row %r: %s -- re-ingest it (wipe, or delete and "
+                    "upload again) or backfill its metadata.",
+                    row["doc_id"],
+                    exc,
+                )
+        return readable
 
     @staticmethod
     def _row_to_document(row: sqlite3.Row) -> DocumentSummary:
@@ -324,6 +373,11 @@ class Database:
             doc_date=row["doc_date"],
             data_type=row["data_type"],
             tags=json.loads(row["tags"]),
+            effective_from=row["effective_from"],
+            status=row["status"],
+            doc_family_id=row["doc_family_id"],
+            version=row["version"],
+            effective_to=row["effective_to"],
         )
 
     def upsert_document(
@@ -355,8 +409,9 @@ class Database:
                 INSERT INTO documents
                     (doc_id, filename, content_hash, num_parent_chunks, num_child_chunks,
                      ingested_at, classification, private, owner, author, doc_date,
-                     data_type, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     data_type, tags, effective_from, status, doc_family_id, version,
+                     effective_to)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(doc_id) DO UPDATE SET
                     filename = excluded.filename,
                     content_hash = excluded.content_hash,
@@ -369,7 +424,12 @@ class Database:
                     author = excluded.author,
                     doc_date = excluded.doc_date,
                     data_type = excluded.data_type,
-                    tags = excluded.tags
+                    tags = excluded.tags,
+                    effective_from = excluded.effective_from,
+                    status = excluded.status,
+                    doc_family_id = excluded.doc_family_id,
+                    version = excluded.version,
+                    effective_to = excluded.effective_to
                 """,
                 (
                     doc_id,
@@ -385,6 +445,11 @@ class Database:
                     metadata.doc_date,
                     metadata.data_type,
                     json.dumps(metadata.tags),
+                    metadata.effective_from,
+                    metadata.status,
+                    metadata.doc_family_id,
+                    metadata.version,
+                    metadata.effective_to,
                 ),
             )
         return IngestResponse(
@@ -417,7 +482,17 @@ class Database:
         if not patch:
             return doc
 
-        allowed = {"classification", "private", "owner", "author", "doc_date", "data_type", "tags"}
+        allowed = {
+            "classification",
+            "private",
+            "owner",
+            "author",
+            "doc_date",
+            "data_type",
+            "tags",
+            "effective_from",
+            "status",
+        }
         unknown = set(patch) - allowed
         if unknown:
             # Defensive, not expected in practice -- the router validates
@@ -425,6 +500,18 @@ class Database:
             # is ever called. Guards against a field name ending up in a
             # dynamically-built SQL statement by any other path.
             raise ValueError(f"Unknown metadata field(s): {sorted(unknown)}")
+
+        if "status" in patch:
+            # effective_to follows status automatically -- it is not
+            # something a caller sets. Retiring stamps it; undoing the
+            # retirement clears it, so a current document never carries an
+            # end date.
+            patch = {
+                **patch,
+                "effective_to": (
+                    datetime.now(UTC).isoformat() if patch["status"] == "superseded" else None
+                ),
+            }
 
         set_clauses = []
         values: list[Any] = []
@@ -460,8 +547,7 @@ class Database:
             rows = conn.execute(
                 "SELECT * FROM documents ORDER BY ingested_at DESC"
             ).fetchall()
-        docs = [self._row_to_document(row) for row in rows]
-        return [d for d in docs if self._visible(principal, d)]
+        return [d for d in self._readable(rows) if self._visible(principal, d)]
 
     def wipe_documents(self, principal: Principal) -> int:
         """Deletes every row from `documents` -- the sqlite side of a
@@ -771,11 +857,7 @@ class Database:
             doc_rows = conn.execute(
                 "SELECT * FROM documents"
             ).fetchall()
-            visible_docs = [
-                d
-                for d in (self._row_to_document(r) for r in doc_rows)
-                if self._visible(principal, d)
-            ]
+            visible_docs = [d for d in self._readable(doc_rows) if self._visible(principal, d)]
             total_documents = len(visible_docs)
             total_chunks = sum(d.num_parent_chunks + d.num_child_chunks for d in visible_docs)
 

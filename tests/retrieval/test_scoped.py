@@ -73,13 +73,24 @@ def _ingest(
     classification: str,
     private: bool = False,
     owner: str | None = None,
+    status: str = "current",
+    catalogue_status: str | None = None,
 ) -> None:
     """Mirrors what routers/ingest.py actually does: a store write AND a
     sqlite row, both carrying the same metadata -- the post-check reads
     the sqlite side, the store-level filter reads the payload side, and
-    a real ingest keeps both in sync."""
+    a real ingest keeps both in sync.
+
+    `catalogue_status` lets a test make them DISAGREE (the store copy says
+    `status`, sqlite says `catalogue_status`) to simulate drift."""
     metadata = DocumentMetadata(
-        classification=classification, private=private, owner=owner  # type: ignore[arg-type]
+        classification=classification,  # type: ignore[arg-type]
+        private=private,
+        owner=owner,
+        status=status,  # type: ignore[arg-type]
+    )
+    catalogue_metadata = metadata.model_copy(
+        update={"status": catalogue_status or status}
     )
     chunk = Chunk(
         id=f"{doc_id}::a::0",
@@ -90,7 +101,13 @@ def _ingest(
     )
     indexer.index([chunk], embedder.embed([text]), doc_metadata=metadata)
     db.upsert_document(
-        Principal.unrestricted(), doc_id, doc_id, f"hash-{doc_id}", 1, 0, metadata=metadata
+        Principal.unrestricted(),
+        doc_id,
+        doc_id,
+        f"hash-{doc_id}",
+        1,
+        0,
+        metadata=catalogue_metadata,
     )
 
 
@@ -248,3 +265,145 @@ def test_post_check_drops_a_result_the_catalogue_no_longer_recognizes(
         db,
     )
     assert retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=5) == []
+
+
+# ---------------------------------------------------------------- lifecycle
+
+
+def _retrieve(vector_store, keyword_store, embedder, db, principal, top_k=10, **kwargs):
+    retriever = ScopedRetriever(
+        Retriever(vector_store, keyword_store, embedder), principal, db, **kwargs
+    )
+    return sorted(r.chunk_id for r in retriever.retrieve("query", RetrievalMethod.COSINE, top_k))
+
+
+_BOB = Principal(principal_id="user:bob", clearance="c3")
+
+
+def test_a_superseded_document_is_hidden_by_default_but_kept_for_history(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "old policy": [1.0, 0.0], "new policy": [0.9, 0.1]}
+    )
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(
+        indexer, db, embedder, doc_id="old", text="old policy", classification="public",
+        status="superseded",
+    )
+    _ingest(indexer, db, embedder, doc_id="new", text="new policy", classification="public")
+
+    assert _retrieve(vector_store, keyword_store, embedder, db, _BOB) == ["new::a::0"]
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, _BOB, include_superseded=True
+    ) == ["new::a::0", "old::a::0"]
+
+
+def test_asking_for_history_never_reveals_someone_elses_private_document(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    """include_superseded widens along the LIFECYCLE axis only. It must not
+    become a way around access control."""
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "alices old notes": [1.0, 0.0]})
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(
+        indexer, db, embedder, doc_id="alices", text="alices old notes",
+        classification="public", private=True, owner="user:alice", status="superseded",
+    )
+
+    owner = Principal(principal_id="user:alice", clearance="public")
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, owner, include_superseded=True
+    ) == ["alices::a::0"]  # precondition: the document is findable at all
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, _BOB, include_superseded=True
+    ) == []
+
+
+def test_the_post_check_drops_a_retired_version_the_store_has_not_caught_up_on(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    """Drift: the catalogue (the authority) already says superseded, but the
+    store's copy still says current -- exactly the window after a
+    supersession whose store update failed. The store-level filter lets it
+    through; only the post-check's catalogue lookup stops it."""
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "stale copy": [1.0, 0.0]})
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(
+        indexer, db, embedder, doc_id="doc", text="stale copy", classification="public",
+        status="current", catalogue_status="superseded",
+    )
+
+    assert _retrieve(vector_store, keyword_store, embedder, db, _BOB) == []
+    # ...and history, when asked for, still finds it.
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, _BOB, include_superseded=True
+    ) == ["doc::a::0"]
+
+
+def test_an_admin_also_gets_current_versions_only_by_default(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "old policy": [1.0, 0.0]})
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(
+        indexer, db, embedder, doc_id="old", text="old policy", classification="public",
+        status="superseded",
+    )
+
+    admin = Principal.unrestricted()
+    assert _retrieve(vector_store, keyword_store, embedder, db, admin) == []
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, admin, include_superseded=True
+    ) == ["old::a::0"]
+
+
+def test_a_chunk_with_no_status_in_the_store_is_not_treated_as_current(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    """Fail closed, same as classification: data written before lifecycle
+    existed has no status, and "unknown" must not read as "current"."""
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "legacy": [1.0, 0.0]})
+    indexer = HybridIndexer(vector_store, keyword_store)
+    chunk = Chunk(
+        id="legacy::a::0",
+        text="legacy",
+        metadata=ChunkMetadata(
+            source_file="legacy", doc_id="legacy", element_positions=[0], element_types=["title"]
+        ),
+    )
+    indexer.index([chunk], embedder.embed(["legacy"]))  # no doc_metadata at all
+    db.upsert_document(
+        Principal.unrestricted(), "legacy", "legacy", "hash-legacy", 1, 0,
+        metadata=DocumentMetadata(classification="public"),
+    )
+
+    assert _retrieve(vector_store, keyword_store, embedder, db, Principal.unrestricted()) == []
+
+
+def test_asking_for_history_keeps_the_access_filter_in_the_store_query_itself(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    """The result-level test above passes even if the access filter is
+    dropped from the store query, because the sqlite post-check would still
+    remove what shouldn't be seen. What that layer CANNOT do is put back the
+    results other people's documents crowded out. Here Mallory's private
+    document is the closest match; with top_k=1 an unfiltered store query
+    returns it, the post-check discards it, and Bob -- who has a perfectly
+    good document of his own -- gets nothing."""
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "mallorys note": [1.0, 0.0], "bobs note": [0.5, 0.5]}
+    )
+    indexer = HybridIndexer(vector_store, keyword_store)
+    for doc_id, text, owner in [
+        ("mallorys", "mallorys note", "user:mallory"),
+        ("bobs", "bobs note", "user:bob"),
+    ]:
+        _ingest(
+            indexer, db, embedder, doc_id=doc_id, text=text, classification="public",
+            private=True, owner=owner, status="superseded",
+        )
+
+    assert _retrieve(
+        vector_store, keyword_store, embedder, db, _BOB, top_k=1, include_superseded=True
+    ) == ["bobs::a::0"]

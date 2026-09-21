@@ -98,15 +98,10 @@ async def update_document_metadata(
     # than trying to special-case "did this patch touch private or
     # owner" -- means this can never be forgotten as a new derived field
     # is added later.
-    full_metadata = DocumentMetadata(
-        classification=updated.metadata.classification,
-        private=updated.metadata.private,
-        owner=updated.metadata.owner,
-        author=updated.metadata.author,
-        doc_date=updated.metadata.doc_date,
-        data_type=updated.metadata.data_type,
-        tags=updated.metadata.tags,
-    )
+    # model_dump(), not a hand-written field list: a list silently drops
+    # any field added later -- and a dropped `status` would reset a
+    # superseded document to "current" in the stores on its next PATCH.
+    full_metadata = DocumentMetadata(**updated.metadata.model_dump())
     await run_in_threadpool(indexer.set_document_metadata, doc_id, full_metadata.to_payload())
     return updated
 

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from ..identity import Principal
 from ..metadata import clearance_or_below
-from ..stores.filters import SearchFilter
+from ..stores.filters import SearchFilter, merge
 from .retriever import Retriever
 from .schema import RetrievalMethod
 
@@ -59,11 +59,25 @@ def _security_filter_for(principal: Principal) -> SearchFilter | None:
     )
 
 
+_CURRENT_ONLY = SearchFilter(any_of={"status": ["current"]})
+"""The lifecycle default: a document someone has replaced is not an
+answer, it is history. Deliberately NOT part of _security_filter_for --
+this is not about who may see a document, and an admin gets it too
+(an admin asking a question also wants the current policy)."""
+
+
 class ScopedRetriever:
-    def __init__(self, inner: Retriever, principal: Principal, db: "Database") -> None:
+    def __init__(
+        self,
+        inner: Retriever,
+        principal: Principal,
+        db: "Database",
+        include_superseded: bool = False,
+    ) -> None:
         self._inner = inner
         self._principal = principal
         self._db = db
+        self._include_superseded = include_superseded
 
     def retrieve(
         self,
@@ -82,35 +96,55 @@ class ScopedRetriever:
             rerank=rerank,
             resolve_parent_context=resolve_parent_context,
             doc_ids=doc_ids,
-            search_filter=_security_filter_for(self._principal),
+            # merge() intersects, so the lifecycle default can only narrow
+            # what the security filter allows -- and asking for history
+            # (include_superseded) removes ONLY the lifecycle clause, never
+            # the security one: someone else's private old version stays
+            # invisible.
+            search_filter=merge(
+                _security_filter_for(self._principal),
+                None if self._include_superseded else _CURRENT_ONLY,
+            ),
         )
         return self._post_check(results)
 
     def _post_check(self, results: "list[SearchResult]") -> "list[SearchResult]":
-        if not results or self._principal.is_admin:
+        if not results:
             return results
+        if self._principal.is_admin and self._include_superseded:
+            return results  # admin asked for everything: no rule left to verify
 
         # The database applies Principal.can_see itself (see
         # Database.get_documents_by_ids), so "not returned" covers both
         # "exists but not visible to this caller" and "not in the
         # catalogue at all" -- neither can be confirmed safe to show,
         # so neither is. Fail closed, same direction as every other gap
-        # in this check.
-        visible = {
-            doc.doc_id
+        # in this check. Status is verified here too, against the
+        # catalogue, so a store copy that hasn't caught up with a
+        # supersession can't put a retired version back in an answer.
+        documents = {
+            doc.doc_id: doc
             for doc in self._db.get_documents_by_ids(
                 self._principal, {r.doc_id for r in results}
             )
         }
-        allowed = [r for r in results if r.doc_id in visible]
-        dropped = [r.chunk_id for r in results if r.doc_id not in visible]
+
+        def acceptable(result: "SearchResult") -> bool:
+            doc = documents.get(result.doc_id)
+            if doc is None:
+                return False
+            return self._include_superseded or doc.metadata.status == "current"
+
+        allowed = [r for r in results if acceptable(r)]
+        dropped = [r.chunk_id for r in results if not acceptable(r)]
 
         if dropped:
             # This should be rare -- it means the store-level filter let
             # through something sqlite (the authority) says this
-            # principal can't see: a missing/stale payload index, a
-            # permission change that hasn't been repatched yet, or a
-            # chunk indexed before classification/acl_allow existed.
+            # principal can't see or shouldn't get: a missing/stale
+            # payload index, a permission or supersession change that
+            # hasn't been repatched yet, or a chunk indexed before
+            # classification/acl_allow/status existed.
             # ERROR, not a silent drop, because each occurrence is worth
             # investigating even though this check is doing exactly its
             # job by catching it.

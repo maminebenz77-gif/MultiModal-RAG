@@ -24,6 +24,12 @@ defaulting it silently to something "safe-looking" is exactly the kind
 of swallowed requirement that turns into a leak or a lockout nobody can
 diagnose from the outside."""
 
+Status = Literal["current", "superseded"]
+"""Where a document is in its life. "superseded" means someone declared a
+newer document replaces it: search hides it by default but it is NOT
+deleted -- it stays stored so the replacement can be undone and old
+versions can still be looked up on request."""
+
 _CLEARANCE_LADDER: list[Classification] = ["public", "c1", "c2", "c3"]
 
 
@@ -78,6 +84,36 @@ class DocumentMetadata(BaseModel):
     tags: list[str] = []
     """Free-form labels -- the general escape hatch for whatever
     doesn't fit a dedicated field above. Validated against nothing yet."""
+
+    effective_from: str | None = None
+    """When this document takes (or took) force -- an ISO date, supplied
+    by the uploader. Distinct from `doc_date` (when it was WRITTEN) and
+    from `documents.ingested_at` (when this system saw it): a policy
+    can be written in November to start in January."""
+
+    # ---- lifecycle: managed by the SERVER, never trusted from a caller ----
+    # POST /ingest overwrites all four whatever the request said (see
+    # routers/ingest.py), and PATCH only lets an owner change `status`. They
+    # live here rather than in a separate structure so every write path
+    # sends them through the same to_payload() -- the lesson of the
+    # acl_allow bug: any field written by hand-picked subset eventually
+    # goes stale in the stores.
+
+    status: Status = "current"
+    """See Status. Search filters on this in the store."""
+
+    doc_family_id: str | None = None
+    """Groups the versions of one logical document. The first version's
+    doc_id; every replacement inherits it."""
+
+    version: int = 1
+    """1 for a first version; a replacement is the replaced document's
+    version + 1. Re-uploading the same filename edits IN PLACE and does
+    not change it -- a "v3" with no v1 and v2 behind it would mislead."""
+
+    effective_to: str | None = None
+    """When this stopped being current (an ISO timestamp), set when it is
+    superseded and cleared if that is undone. None while current."""
 
     def to_payload(self) -> dict[str, Any]:
         """The flat dict merged into every chunk's stored payload

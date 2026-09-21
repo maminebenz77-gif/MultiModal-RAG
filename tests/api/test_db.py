@@ -708,3 +708,116 @@ def test_get_own_document_never_returns_someone_elses_document(tmp_path: Path) -
     assert db.get_document(_BOB, "doc-a") is not None
     assert db.get_own_document(_BOB, "doc-a") is None
     assert db.get_own_document(_ALICE, "doc-a") is not None
+
+
+def test_a_row_round_trips_its_lifecycle_fields(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.upsert_document(
+        _ALICE,
+        "doc-a",
+        "a.md",
+        "hash-a",
+        1,
+        1,
+        DocumentMetadata(
+            classification="public",
+            owner="user:alice",
+            doc_family_id="fam-1",
+            version=2,
+            effective_from="2026-01-01",
+        ),
+    )
+
+    stored = db.get_document(_ALICE, "doc-a")
+
+    assert stored is not None
+    assert (stored.metadata.status, stored.metadata.doc_family_id, stored.metadata.version) == (
+        "current",
+        "fam-1",
+        2,
+    )
+    assert stored.metadata.effective_from == "2026-01-01"
+    assert stored.metadata.effective_to is None
+
+
+def test_retiring_a_document_stamps_an_end_date_and_undoing_it_clears_it(
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    _doc(db, _ALICE, "doc-a")
+
+    retired = db.update_document_metadata(_ALICE, "doc-a", {"status": "superseded"})
+    assert retired is not None
+    assert retired.metadata.status == "superseded"
+    assert retired.metadata.effective_to is not None
+
+    restored = db.update_document_metadata(_ALICE, "doc-a", {"status": "current"})
+    assert restored is not None
+    assert restored.metadata.status == "current"
+    assert restored.metadata.effective_to is None
+
+
+def test_a_caller_cannot_set_the_end_date_directly(tmp_path: Path) -> None:
+    """effective_to follows status; it is not an editable field."""
+    db = Database(tmp_path / "state.db")
+    _doc(db, _ALICE, "doc-a")
+
+    with pytest.raises(ValueError):
+        db.update_document_metadata(_ALICE, "doc-a", {"effective_to": "2020-01-01"})
+
+
+# ---------------------------------------------------------------------------
+# Rows from before classification existed. One unreadable row must not take
+# down every list and count endpoint -- but it must never be handed a
+# classification, and it must be reported loudly.
+# ---------------------------------------------------------------------------
+
+
+def _legacy_row(db_path: Path, doc_id: str = "legacy", content_hash: str = "legacy-hash") -> None:
+    """A row exactly as an old database has it: classification ''."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        Database._create_tables(conn)  # the tables are created lazily, on first use
+        conn.execute(
+            "INSERT INTO documents (doc_id, filename, content_hash, num_parent_chunks, "
+            "num_child_chunks, ingested_at, classification) VALUES (?, 'old.md', ?, 1, 1, "
+            "'2026-09-06T00:00:00+00:00', '')",
+            (doc_id, content_hash),
+        )
+
+
+def test_a_legacy_row_does_not_break_listing_or_metrics(tmp_path: Path, caplog) -> None:
+    db = Database(tmp_path / "state.db")
+    _doc(db, _ALICE, "good", private=False)
+    _legacy_row(tmp_path / "state.db")
+
+    with caplog.at_level("ERROR"):
+        listed = db.list_documents(_ADMIN)
+        metrics = db.metrics(_ADMIN)
+
+    assert [d.doc_id for d in listed] == ["good"]
+    assert metrics.total_documents == 1
+    # Reported, not swallowed silently:
+    assert "legacy" in caplog.text and "classification" in caplog.text
+
+
+def test_a_legacy_row_is_reported_as_not_found_rather_than_raising(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    _legacy_row(tmp_path / "state.db")
+
+    assert db.get_document(_ADMIN, "legacy") is None
+    assert db.get_own_document(_ADMIN, "legacy") is None
+    assert db.get_documents_by_ids(_ADMIN, {"legacy"}) == []
+    assert db.get_document_by_content_hash(_ADMIN, "legacy-hash") is None
+
+
+def test_a_legacy_row_is_never_given_a_classification(tmp_path: Path) -> None:
+    """Skipping is not the same as defaulting: the stored value stays ''."""
+    db = Database(tmp_path / "state.db")
+    _legacy_row(tmp_path / "state.db")
+
+    db.list_documents(_ADMIN)
+    db.metrics(_ADMIN)
+
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        assert conn.execute("SELECT classification FROM documents").fetchone()[0] == ""

@@ -41,6 +41,31 @@ _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
 # /ingest requires a classification on every upload -- no default (see
 # multimodal_rag.metadata.DocumentMetadata) -- so the picker must always
 # have a real value selected, never a blank placeholder option.
+_NO_REPLACEMENT = "(none -- a new document)"
+
+
+def _replace_options(api_base_url: str) -> dict[str, str | None]:
+    """Label -> doc_id for the "this replaces..." picker: the CURRENT
+    documents only (replacing an already-retired one means nothing). The
+    API decides whether the caller may actually replace one; this only
+    offers them. Falls back to no choices if the API can't be reached --
+    replacing is optional, the upload form must still render."""
+    options: dict[str, str | None] = {_NO_REPLACEMENT: None}
+    try:
+        documents = httpx.get(f"{api_base_url}/documents", timeout=5.0).json()["documents"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return options
+    for doc in documents:
+        metadata = doc["metadata"]
+        if metadata["status"] != "current":
+            continue
+        # The short id keeps two same-named documents from collapsing into
+        # one choice.
+        label = f"{doc['filename']} (v{metadata['version']}, {doc['doc_id'][:8]})"
+        options[label] = doc["doc_id"]
+    return options
+
+
 _CLASSIFICATION_OPTIONS: dict[str, str] = {
     "Public": "public",
     "C1": "c1",
@@ -379,9 +404,16 @@ with st.sidebar:
     except httpx.HTTPError:
         st.caption("Status: unreachable")
 
+    replace_options = _replace_options(api_base_url)
     with st.form("ingest_form", clear_on_submit=True):
         uploaded_file = st.file_uploader(
             "Choose a file", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"]
+        )
+        replaces_label = st.selectbox(
+            "This replaces (optional)",
+            options=list(replace_options),
+            help="Pick the document this new file supersedes. The old one stops "
+            "appearing in answers but is kept, and the replacement can be undone.",
         )
         classification_label = st.selectbox(
             "Classification", options=list(_CLASSIFICATION_OPTIONS), index=0
@@ -409,20 +441,21 @@ with st.sidebar:
                         "private": is_private,
                     }
                 )
+                form_fields: dict = {
+                    "file": file_payload,
+                    "metadata_json": (None, metadata_json),
+                }
+                if apply_runtime_overrides:
+                    form_fields["runtime_overrides_json"] = (
+                        None,
+                        json.dumps({"embedder": runtime_overrides["embedder"]}),
+                    )
+                replaces_id = replace_options[replaces_label]
+                if replaces_id is not None:
+                    form_fields["supersedes_doc_id"] = (None, replaces_id)
                 response = httpx.post(
                     f"{api_base_url}/ingest",
-                    files=(
-                        {
-                            "file": file_payload,
-                            "metadata_json": (None, metadata_json),
-                            "runtime_overrides_json": (
-                                None,
-                                json.dumps({"embedder": runtime_overrides["embedder"]}),
-                            ),
-                        }
-                        if apply_runtime_overrides
-                        else {"file": file_payload, "metadata_json": (None, metadata_json)}
-                    ),
+                    files=form_fields,
                     timeout=120.0,
                 )
                 response.raise_for_status()
@@ -548,7 +581,9 @@ with st.sidebar:
     st.divider()
     with st.expander("📈 Metrics"):
         try:
-            metrics = httpx.get(f"{api_base_url}/metrics", timeout=10.0).json()
+            _metrics_response = httpx.get(f"{api_base_url}/metrics", timeout=10.0)
+            _metrics_response.raise_for_status()  # a 500's body isn't JSON
+            metrics = _metrics_response.json()
             tile_cols = st.columns(2)
             tile_cols[0].metric("Documents", metrics["total_documents"])
             tile_cols[1].metric("Chunks", metrics["total_chunks"])
@@ -563,7 +598,9 @@ with st.sidebar:
 
     with st.expander("📚 Documents in the corpus"):
         try:
-            documents = httpx.get(f"{api_base_url}/documents", timeout=10.0).json()["documents"]
+            _documents_response = httpx.get(f"{api_base_url}/documents", timeout=10.0)
+            _documents_response.raise_for_status()  # a 500's body isn't JSON
+            documents = _documents_response.json()["documents"]
             if documents:
                 for _doc in documents:
                     _doc_id = _doc["doc_id"]
@@ -590,8 +627,11 @@ with st.sidebar:
                             st.rerun()
                     else:
                         _info_col, _delete_col = st.columns([5, 1])
+                        _meta = _doc["metadata"]
+                        _retired = " · ⚠️ superseded" if _meta["status"] == "superseded" else ""
                         _info_col.markdown(
-                            f"**{_doc['filename']}** — {_doc['num_parent_chunks']} parent, "
+                            f"**{_doc['filename']}** v{_meta['version']}{_retired} — "
+                            f"{_doc['num_parent_chunks']} parent, "
                             f"{_doc['num_child_chunks']} child chunks"
                         )
                         if _delete_col.button("🗑️", key=f"delete_doc_{_doc_id}"):

@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..metadata import Classification
+from ..metadata import Classification, Status
 from ..retrieval.schema import RetrievalMethod
 
 
@@ -26,6 +26,11 @@ class DocumentMetadataOut(BaseModel):
     doc_date: str | None = None
     data_type: str | None = None
     tags: list[str] = []
+    effective_from: str | None = None
+    status: Status = "current"
+    doc_family_id: str | None = None
+    version: int = 1
+    effective_to: str | None = None
 
 
 class DocumentMetadataUpdate(BaseModel):
@@ -42,6 +47,12 @@ class DocumentMetadataUpdate(BaseModel):
     doc_date: str | None = None
     data_type: str | None = None
     tags: list[str] | None = None
+    effective_from: str | None = None
+    status: Status | None = None
+    """The one lifecycle field an owner may change by hand: retire a
+    document without replacing it, or undo a wrong replacement. version,
+    doc_family_id and effective_to are server-managed and deliberately
+    absent here."""
 
 
 class IngestResponse(BaseModel):
@@ -155,6 +166,12 @@ class QueryRequest(BaseModel):
     cross-encoder before the top_k cut -- higher precision, higher
     latency/cost. Requires a Reranker to be configured for this
     deployment (see api/main.py); if not, the request fails."""
+
+    include_superseded: bool = False
+    """Also search versions that a newer document has replaced. Off by
+    default: an answer should come from the current version. Only widens
+    along the lifecycle axis -- access control still applies in full, so
+    it never reveals a document the caller couldn't otherwise see."""
 
     doc_ids: list[str] | None = None
     """Restricts results to these document IDs -- the stable ids GET

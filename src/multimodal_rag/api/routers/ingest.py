@@ -23,6 +23,7 @@ real path, not an in-memory buffer.
 
 import hashlib
 import json
+import logging
 import tempfile
 from pathlib import Path
 import warnings
@@ -41,14 +42,81 @@ from ...providers.base import EmbeddingProvider
 from ...providers.factory import embedder_from_override
 from ...stores.base import VectorStore
 from ...stores.indexer import HybridIndexer
-from ..db import AccessDeniedError, Database
+from ..db import AccessDeniedError, Database, DocumentNotFoundError
 from ..dependencies import get_db, get_embedder, get_indexer, get_vector_store
 from ..identity import get_principal
-from ..schemas import IngestResponse, ProviderOverride, RuntimeOverrides
+from ..schemas import DocumentSummary, IngestResponse, ProviderOverride, RuntimeOverrides
 
 router = APIRouter()
 
+_logger = logging.getLogger(__name__)
+
+_REPLACE_IGNORED = (
+    "supersedes_doc_id was ignored: this file's content is already stored, so nothing was "
+    "ingested and nothing was replaced."
+)
+
 _chunker = ParentChildChunker()
+
+
+def _lifecycle_for(
+    doc_id: str, existing: DocumentSummary | None, replaces: DocumentSummary | None = None
+) -> dict[str, object]:
+    """The lifecycle fields a document is stored with -- decided here, by
+    the server, whatever the request's metadata_json claimed. A caller
+    that could send status="current" or version=9 could forge its own
+    place in a document's history. A document that REPLACES another joins
+    its family as the next version. A re-upload of an existing document
+    (an in-place edit) keeps the lifecycle it already has; a new one
+    starts as the current first version of its own family."""
+    if replaces is not None:
+        return {
+            "status": "current",
+            "doc_family_id": replaces.metadata.doc_family_id or replaces.doc_id,
+            "version": replaces.metadata.version + 1,
+            "effective_to": None,
+        }
+    if existing is not None:
+        current = existing.metadata
+        return {
+            "status": current.status,
+            "doc_family_id": current.doc_family_id or doc_id,
+            "version": current.version,
+            "effective_to": current.effective_to,
+        }
+    return {"status": "current", "doc_family_id": doc_id, "version": 1, "effective_to": None}
+
+
+def _retire(
+    principal: Principal,
+    old_doc_id: str,
+    db: Database,
+    indexer: HybridIndexer,
+    warnings: list[str],
+) -> None:
+    """Mark a replaced document superseded -- catalogue first (it is the
+    authority, and search re-checks it), then the stores' copy. No
+    embedding happens: this patches tags, the chunks are untouched.
+
+    A failure in the store step does NOT fail the upload: the replacement
+    is already fully stored, and the catalogue already says the old one is
+    retired (which search enforces on its own), so the worst case is a
+    stale store copy that search drops with a logged error. It is reported
+    as a warning, and repeating it is a PATCH of the document's status."""
+    retired = db.update_document_metadata(principal, old_doc_id, {"status": "superseded"})
+    if retired is None:
+        return  # deleted in the meantime -- nothing left to retire
+    try:
+        indexer.set_document_metadata(
+            old_doc_id, DocumentMetadata(**retired.metadata.model_dump()).to_payload()
+        )
+    except Exception:
+        _logger.exception("Could not update the stores' copy of superseded doc %r", old_doc_id)
+        warnings.append(
+            f"The replaced document {old_doc_id!r} is retired in the catalogue, but updating its "
+            "search index failed; repeat it with PATCH /documents/{doc_id} "
+            '{"status": "superseded"}.'
+        )
 
 
 def _document_id(principal_id: str, filename: str) -> str:
@@ -67,6 +135,7 @@ def _ingest_sync(
     indexer: HybridIndexer,
     vector_store: VectorStore,
     db: Database,
+    supersedes_doc_id: str | None = None,
 ) -> IngestResponse:
     doc_id = _document_id(principal.principal_id, filename)
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
@@ -81,6 +150,22 @@ def _ingest_sync(
 
     ingest_warnings: list[str] = []
 
+    # Replacing a document hides it from search, so it is checked before
+    # anything is parsed or embedded -- a bad target must fail the whole
+    # upload, not half-happen.
+    replaces: DocumentSummary | None = None
+    if supersedes_doc_id is not None:
+        if supersedes_doc_id == doc_id:
+            raise ValueError(
+                "A document cannot supersede itself -- re-upload the same filename to edit it "
+                "in place."
+            )
+        replaces = db.get_document(principal, supersedes_doc_id)
+        if replaces is None:
+            raise DocumentNotFoundError(f"No document with id={supersedes_doc_id!r}")
+        if not principal.can_modify(replaces.metadata.owner):
+            raise AccessDeniedError(f"Not allowed to replace document {supersedes_doc_id!r}")
+
     # get_own_document, not get_document: "do I already have this
     # document?" must not depend on whether I can currently SEE it -- see
     # Database.get_own_document.
@@ -91,6 +176,8 @@ def _ingest_sync(
         # DISCARDED here, not applied. PATCH /documents/{doc_id} is the
         # only way to change an already-ingested document's tags --
         # re-upload is for content, not metadata.
+        if replaces is not None:
+            ingest_warnings.append(_REPLACE_IGNORED)
         return IngestResponse(
             doc_id=doc_id,
             filename=existing.filename,
@@ -115,6 +202,8 @@ def _ingest_sync(
     # ...) is responsible in any given case.
     existing_by_content = db.get_document_by_content_hash(principal, content_hash)
     if existing_by_content is not None and existing_by_content.doc_id != doc_id:
+        if replaces is not None:
+            ingest_warnings.append(_REPLACE_IGNORED)
         return IngestResponse(
             doc_id=existing_by_content.doc_id,
             filename=filename,
@@ -129,6 +218,8 @@ def _ingest_sync(
             # the already_ingested branch above.
             metadata=existing_by_content.metadata,
         )
+
+    metadata = metadata.model_copy(update=_lifecycle_for(doc_id, existing, replaces))
 
     # On Windows, NamedTemporaryFile keeps an open handle that can block
     # other readers (python-magic/libmagic) from opening the same path.
@@ -208,6 +299,12 @@ def _ingest_sync(
         num_child_chunks,
         metadata=metadata,
     )
+    # Only now, with the replacement completely stored, is the old one
+    # retired. The other order would leave a window (or, if the ingest
+    # failed, a permanent state) where the old version is hidden and
+    # nothing has taken its place -- worse than briefly showing both.
+    if replaces is not None:
+        _retire(principal, replaces.doc_id, db, indexer, ingest_warnings)
     return response.model_copy(update={"ingest_warnings": ingest_warnings})
 
 
@@ -256,6 +353,7 @@ def _live_vector_dimension(vector_store: VectorStore) -> int | None:
 async def ingest(
     file: UploadFile,
     metadata_json: str = Form(...),
+    supersedes_doc_id: str | None = Form(default=None),
     runtime_overrides_json: str | None = Form(default=None),
     embedder: EmbeddingProvider = Depends(get_embedder),
     indexer: HybridIndexer = Depends(get_indexer),
@@ -313,7 +411,10 @@ async def ingest(
             indexer,
             vector_store,
             db,
+            supersedes_doc_id or None,  # "" from a form means "no replacement"
         )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except AccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

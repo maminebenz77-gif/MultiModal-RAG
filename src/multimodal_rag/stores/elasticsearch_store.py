@@ -118,6 +118,14 @@ class ElasticsearchStore(KeywordStore):
                     # one, [] for a private document with no owner
                     # recorded (visible to nobody, deliberately).
                     "acl_allow": {"type": "keyword"},
+                    # Lifecycle (see DocumentMetadata). effective_* stay
+                    # keyword for the same reason doc_date does -- nothing
+                    # range-filters them yet.
+                    "status": {"type": "keyword"},
+                    "doc_family_id": {"type": "keyword"},
+                    "version": {"type": "integer"},
+                    "effective_from": {"type": "keyword"},
+                    "effective_to": {"type": "keyword"},
                 }
             },
         )

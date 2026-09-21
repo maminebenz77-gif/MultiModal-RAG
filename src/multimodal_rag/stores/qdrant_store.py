@@ -74,6 +74,11 @@ _PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType] = {
     # "Payload indexes" above).
     "acl_allow": models.PayloadSchemaType.KEYWORD,
     "classification": models.PayloadSchemaType.KEYWORD,
+    # Every search filters on status == "current" unless history is asked
+    # for (retrieval/scoped.py). Like the two above, unindexed would make
+    # the filter that decides which version of a document you read the
+    # slow, lossy kind.
+    "status": models.PayloadSchemaType.KEYWORD,
 }
 
 # A parent chunk (from parent-child chunking) is meant to be reached only
