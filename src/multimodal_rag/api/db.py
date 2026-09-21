@@ -223,6 +223,20 @@ class Database:
         doc = self._fetch_document(doc_id)
         return doc if doc is not None and self._visible(principal, doc) else None
 
+    def get_own_document(self, principal: Principal, doc_id: str) -> DocumentSummary | None:
+        """A document the caller OWNS, whether or not they can currently
+        SEE it. The two differ: an owner can raise their own document's
+        classification above their own clearance, after which
+        get_document() returns None for them. Ingest needs this one --
+        it decides "is this a re-upload of a document I already have?",
+        and a caller who can't see their own document must still get
+        the edit path (diff the chunks, delete the stale ones), not the
+        brand-new-document path that leaves the old version's chunks
+        behind in the stores. Safe because ownership is still checked:
+        this never returns someone else's document."""
+        doc = self._fetch_document(doc_id)
+        return doc if doc is not None and principal.can_modify(doc.metadata.owner) else None
+
     def get_documents_by_ids(
         self, principal: Principal, doc_ids: set[str]
     ) -> list[DocumentSummary]:

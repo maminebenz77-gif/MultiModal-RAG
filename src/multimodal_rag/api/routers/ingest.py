@@ -81,7 +81,10 @@ def _ingest_sync(
 
     ingest_warnings: list[str] = []
 
-    existing = db.get_document(principal, doc_id)
+    # get_own_document, not get_document: "do I already have this
+    # document?" must not depend on whether I can currently SEE it -- see
+    # Database.get_own_document.
+    existing = db.get_own_document(principal, doc_id)
     if existing is not None and existing.content_hash == content_hash:
         # Byte-identical re-upload of the same filename -- nothing to do,
         # metadata included: whatever this request's `metadata` says is

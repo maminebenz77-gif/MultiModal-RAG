@@ -684,3 +684,27 @@ def test_a_conversation_with_no_owner_is_visible_only_to_an_admin(tmp_path: Path
 
     assert db.conversation_exists(_ALICE, conversation) is False
     assert db.conversation_exists(_ADMIN, conversation) is True
+
+
+def test_get_own_document_returns_your_document_even_when_you_can_no_longer_see_it(
+    tmp_path: Path,
+) -> None:
+    """"Documents I own" and "documents I can see" are different sets: an
+    owner may raise their own document above their own clearance. Ingest
+    depends on the first one to decide whether an upload is an edit."""
+    db = Database(tmp_path / "state.db")
+    low = Principal(principal_id="user:alice", clearance="public")
+    _doc(db, low, "doc-a")
+    db.update_document_metadata(low, "doc-a", {"classification": "c3"})
+
+    assert db.get_document(low, "doc-a") is None  # can't see it...
+    assert db.get_own_document(low, "doc-a") is not None  # ...but it is hers
+
+
+def test_get_own_document_never_returns_someone_elses_document(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    _doc(db, _ALICE, "doc-a")  # shared, so Bob can SEE it
+
+    assert db.get_document(_BOB, "doc-a") is not None
+    assert db.get_own_document(_BOB, "doc-a") is None
+    assert db.get_own_document(_ALICE, "doc-a") is not None
