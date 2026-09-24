@@ -5,6 +5,7 @@ from multimodal_rag.generation.prompt import CONFLICT_RESOLUTION_RULE
 from multimodal_rag.providers.base import LLMProvider
 from multimodal_rag.providers.schema import ToolCall, ToolResponse
 from multimodal_rag.retrieval.schema import RetrievalMethod
+from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.schema import SearchResult
 
 
@@ -46,6 +47,7 @@ class FakeRetriever:
         rerank: bool = False,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]:
         self.calls.append(
             {
@@ -55,6 +57,7 @@ class FakeRetriever:
                 "rerank": rerank,
                 "resolve_parent_context": resolve_parent_context,
                 "doc_ids": doc_ids,
+                "search_filter": search_filter,
             }
         )
         return self._results_by_query.get(query, [])
@@ -364,6 +367,30 @@ def test_doc_ids_are_passed_through_to_every_retrieve_call(
     agent.answer("a question", doc_ids=["doc-a"])
 
     assert retriever.calls[0]["doc_ids"] == ["doc-a"]
+
+
+def test_search_filter_is_passed_through_to_every_retrieve_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same guarantee as doc_ids above, for the frontend's tags/author/
+    # date-range "Filters" panel: it's a fixed argument to answer(), set
+    # once by the human asking the question -- never something the
+    # model's own tool-call arguments could add, remove, or widen.
+    fake_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "q")]),
+            ToolResponse(content="Answer ⟦1⟧.", tool_calls=[]),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"q": [_result("a", "text")]})
+    agent = AgentChain(retriever)
+    search_filter = SearchFilter(any_of={"tags": ["runbook"]})
+
+    agent.answer("a question", search_filter=search_filter)
+
+    assert retriever.calls[0]["search_filter"] == search_filter
 
 
 def test_agent_system_prompt_includes_the_same_conflict_resolution_rule_as_the_chain() -> None:

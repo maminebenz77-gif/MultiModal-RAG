@@ -65,3 +65,45 @@ def test_merge_of_three_filters_intersects_pairwise() -> None:
 
     assert result is not None
     assert result.any_of == {"doc_id": ["y"]}
+
+
+def test_merge_with_one_real_date_range_filter_returns_it_unchanged() -> None:
+    f = SearchFilter(date_range={"doc_date": ("2024-01-01", "2024-12-31")})
+    assert merge(f, None) == f
+
+
+def test_merge_narrows_a_date_range_present_in_both_filters_to_the_overlap() -> None:
+    # Same security property as any_of's intersection case: a caller's
+    # own date range can only shrink what a mandatory range already
+    # allows, never extend past it in either direction.
+    wide = SearchFilter(date_range={"doc_date": ("2024-01-01", "2025-12-31")})
+    narrower = SearchFilter(date_range={"doc_date": ("2025-01-01", "2025-06-30")})
+
+    result = merge(wide, narrower)
+
+    assert result is not None
+    assert result.date_range == {"doc_date": ("2025-01-01", "2025-06-30")}
+
+
+def test_merge_a_date_range_that_does_not_overlap_produces_an_empty_range() -> None:
+    # No special-casing needed: an inverted (from > to) range is simply
+    # never satisfied by any real date, the same "matches nothing"
+    # outcome any_of's empty-list case produces deliberately.
+    a = SearchFilter(date_range={"doc_date": ("2024-01-01", "2024-06-30")})
+    b = SearchFilter(date_range={"doc_date": ("2025-01-01", "2025-06-30")})
+
+    result = merge(a, b)
+
+    assert result is not None
+    assert result.date_range == {"doc_date": ("2025-01-01", "2024-06-30")}
+
+
+def test_merge_unions_date_range_fields_present_in_only_one_filter() -> None:
+    a = SearchFilter(any_of={"classification": ["public"]})
+    b = SearchFilter(date_range={"doc_date": ("2024-01-01", "2024-12-31")})
+
+    result = merge(a, b)
+
+    assert result is not None
+    assert result.any_of == {"classification": ["public"]}
+    assert result.date_range == {"doc_date": ("2024-01-01", "2024-12-31")}

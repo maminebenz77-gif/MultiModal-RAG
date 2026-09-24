@@ -21,6 +21,7 @@ from typing import Any
 from ..providers.factory import get_llm
 from ..providers.schema import ToolCall, ToolResponse
 from ..retrieval.schema import RetrievalMethod
+from ..stores.filters import SearchFilter
 from ..stores.schema import SearchResult
 from .chain import RetrieverLike
 from .context import assemble_context, format_context_block
@@ -201,6 +202,7 @@ class AgentChain:
         message: str,
         history: list[tuple[str, str]] | None = None,
         doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
         on_tool_call: Callable[[int, str, list[SearchResult]], None] | None = None,
     ) -> RagAnswer:
         """`history` is prior (question, answer) turns, oldest first, sent
@@ -208,10 +210,17 @@ class AgentChain:
         conversation, rather than a flattened transcript, and decides for
         itself whether/how to search again for a follow-up. `doc_ids`, if
         given, restricts every search this turn to those documents.
-        `on_tool_call`, if given, is invoked with (round_index, query,
-        results) right after each search executes -- for observability
-        (the demo's trace printing, or server-side logging later), never
-        for control flow."""
+        `search_filter`, if given, is a caller-set constraint (e.g. the
+        frontend's tags/author/date-range "Filters" panel) applied to
+        every search this turn -- set by the human asking the question,
+        never by the model: it's a fixed argument to retrieve(), not one
+        of the model's own tool-call arguments, so a prompt-injected
+        document has no path to widen or remove it (see
+        retrieval/scoped.py's identical reasoning for the mandatory
+        security filter). `on_tool_call`, if given, is invoked with
+        (round_index, query, results) right after each search executes --
+        for observability (the demo's trace printing, or server-side
+        logging later), never for control flow."""
         messages = self._build_initial_messages(message, history or [])
         context: list[SearchResult] = []
         seen_chunk_ids: dict[str, int] = {}
@@ -287,6 +296,7 @@ class AgentChain:
                     rerank=self._rerank,
                     resolve_parent_context=self._resolve_parent_context,
                     doc_ids=doc_ids,
+                    search_filter=search_filter,
                 )
                 results = assemble_context(results, self._token_budget)
                 blocks = self._record_results(context, seen_chunk_ids, results)

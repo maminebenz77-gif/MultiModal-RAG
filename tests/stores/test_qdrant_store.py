@@ -13,6 +13,7 @@ import pytest
 from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from multimodal_rag.metadata import DocumentMetadata
 from multimodal_rag.providers.schema import EmbeddingVector
+from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.qdrant_store import (
     _PAYLOAD_INDEXES,
     ModelMismatchError,
@@ -290,6 +291,46 @@ def test_search_defaults_lineage_fields_for_a_chunk_with_none(store: QdrantStore
         None,
         "current",
     )
+
+
+def test_search_filters_by_date_range(store: QdrantStore) -> None:
+    old = DocumentMetadata(classification="public", doc_date="2023-01-01")
+    new = DocumentMetadata(classification="public", doc_date="2025-01-01")
+    store.upsert(
+        [_chunk("old.md::a::0", "shared wording", source="old.md", doc_id="old")],
+        [_vector([1.0, 0.0, 0.0, 0.0])],
+        doc_metadata=old,
+    )
+    store.upsert(
+        [_chunk("new.md::a::0", "shared wording", source="new.md", doc_id="new")],
+        [_vector([1.0, 0.0, 0.0, 0.0])],
+        doc_metadata=new,
+    )
+
+    results = store.search(
+        _vector([1.0, 0.0, 0.0, 0.0]),
+        top_k=10,
+        search_filter=SearchFilter(date_range={"doc_date": ("2024-01-01", "2025-12-31")}),
+    )
+
+    assert [r.chunk_id for r in results] == ["new.md::a::0"]
+
+
+def test_search_filters_by_date_range_inclusive_of_the_boundary_date(
+    store: QdrantStore,
+) -> None:
+    metadata = DocumentMetadata(classification="public", doc_date="2024-12-31")
+    store.upsert(
+        [_chunk("doc.md::a::0", "content")], [_vector([1.0, 0.0, 0.0, 0.0])], doc_metadata=metadata
+    )
+
+    results = store.search(
+        _vector([1.0, 0.0, 0.0, 0.0]),
+        top_k=10,
+        search_filter=SearchFilter(date_range={"doc_date": ("2024-01-01", "2024-12-31")}),
+    )
+
+    assert [r.chunk_id for r in results] == ["doc.md::a::0"]
 
 
 def test_search_rejects_a_query_vector_from_a_different_model(store: QdrantStore) -> None:

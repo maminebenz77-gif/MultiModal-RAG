@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..metadata import Classification, Status
 from ..retrieval.schema import RetrievalMethod
+from ..stores.filters import SearchFilter
 
 
 class DocumentMetadataOut(BaseModel):
@@ -148,6 +149,38 @@ class RuntimeOverrides(BaseModel):
     embedder: ProviderOverride | None = None
 
 
+class MetadataFilterRequest(BaseModel):
+    """The human-set "Filters" panel (frontend): tags/author narrow with
+    OR-within-field, AND-across-field semantics (see
+    stores.filters.SearchFilter.any_of); date_from/date_to narrow
+    doc_date (see SearchFilter.date_range). Every field optional -- an
+    entirely empty request is equivalent to omitting metadata_filter."""
+
+    tags: list[str] | None = None
+    author: list[str] | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+
+    def to_search_filter(self) -> SearchFilter | None:
+        any_of: dict[str, list[str]] = {}
+        if self.tags is not None:
+            any_of["tags"] = self.tags
+        if self.author is not None:
+            any_of["author"] = self.author
+
+        date_range: dict[str, tuple[str, str]] = {}
+        if self.date_from is not None or self.date_to is not None:
+            # An open-ended bound widens to the full possible range on
+            # that side, rather than requiring the frontend to already
+            # know the corpus's actual min/max doc_date just to set only
+            # one side of the filter.
+            date_range["doc_date"] = (self.date_from or "0000-01-01", self.date_to or "9999-12-31")
+
+        if not any_of and not date_range:
+            return None
+        return SearchFilter(any_of=any_of, date_range=date_range)
+
+
 class QueryRequest(BaseModel):
     question: str
     conversation_id: str | None = None
@@ -179,6 +212,14 @@ class QueryRequest(BaseModel):
     post-retrieval filter (see Retriever usage in routers/query.py), not
     a native store query. Fine at this corpus size; would need real
     store-level filtering to scale."""
+
+    metadata_filter: MetadataFilterRequest | None = None
+    """The frontend's tags/author/date-range "Filters" panel. Narrowing
+    only, exactly like doc_ids and include_superseded -- merge()
+    (stores/filters.py) means this can never widen past what the
+    security filter already allows, and it's set once per request by the
+    human asking the question, never by the agent's own tool-call
+    arguments (see generation/agent.py's AgentChain.answer)."""
 
     runtime_overrides: RuntimeOverrides | None = None
     """Optional per-request provider overrides from the UI. When unset,

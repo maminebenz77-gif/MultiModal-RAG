@@ -11,9 +11,10 @@ import it, and stores must never depend on api/ (see stores/base.py's
 own ports/adapters boundary).
 """
 
+from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 Classification = Literal["public", "c1", "c2", "c3"]
 """Confidentiality level, cumulative from least to most sensitive --
@@ -73,6 +74,25 @@ class DocumentMetadata(BaseModel):
     from `documents.ingested_at` (when this system first saw it, see
     api/db.py) -- conflating "written" with "ingested" is a common way
     to pick the wrong document when two versions disagree."""
+
+    @field_validator("doc_date")
+    @classmethod
+    def _doc_date_must_be_iso(cls, value: str | None) -> str | None:
+        """Elasticsearch maps doc_date as a real `date` field now (to
+        support the date-range filter panel -- see
+        stores/elasticsearch_store.py), which would otherwise turn a
+        malformed value into a bulk-indexing failure deep inside
+        HybridIndexer.index(), long after the caller who typo'd it is
+        gone. Rejecting it HERE -- the earliest possible boundary, a 422
+        on /ingest or PATCH -- is the same "fail at the boundary, not
+        three layers down" discipline classification's required-field
+        check already uses."""
+        if value is not None:
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError(f"doc_date must be an ISO date (YYYY-MM-DD): {value!r}") from exc
+        return value
 
     data_type: str | None = None
     """What kind of document this is (policy, runbook, spec, contract,

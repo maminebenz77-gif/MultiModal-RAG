@@ -2,6 +2,9 @@
 classification ladder, since everything else is a plain pydantic model
 already exercised through the store/API tests."""
 
+import pytest
+from pydantic import ValidationError
+
 from multimodal_rag.metadata import DocumentMetadata, clearance_or_below
 
 
@@ -12,6 +15,26 @@ def test_classification_has_no_default() -> None:
     except Exception:
         raised = True
     assert raised, "DocumentMetadata() without classification must fail, not default"
+
+
+def test_doc_date_accepts_a_real_iso_date() -> None:
+    metadata = DocumentMetadata(classification="public", doc_date="2024-05-01")
+    assert metadata.doc_date == "2024-05-01"
+
+
+def test_doc_date_of_none_is_fine() -> None:
+    metadata = DocumentMetadata(classification="public", doc_date=None)
+    assert metadata.doc_date is None
+
+
+def test_doc_date_rejects_a_malformed_value() -> None:
+    # Elasticsearch now maps doc_date as a real `date` field (for the
+    # date-range filter panel), which would otherwise turn this into a
+    # bulk-indexing failure deep inside HybridIndexer.index() instead of
+    # a 422 at the API boundary -- the earliest point a caller's typo
+    # can be caught.
+    with pytest.raises(ValidationError, match="doc_date must be an ISO date"):
+        DocumentMetadata(classification="public", doc_date="not-a-date")
 
 
 def test_to_payload_marks_a_non_private_document_shared_with_everyone() -> None:

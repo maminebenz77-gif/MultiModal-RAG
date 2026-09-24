@@ -30,6 +30,7 @@ from langchain_core.runnables import RunnableLambda
 
 from ..providers.factory import get_llm
 from ..retrieval.schema import RetrievalMethod
+from ..stores.filters import SearchFilter
 from ..stores.schema import SearchResult
 from .context import assemble_context
 from .parse import parse_answer
@@ -54,6 +55,7 @@ class RetrieverLike(Protocol):
         rerank: bool = False,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
     ) -> list[SearchResult]: ...
 
 

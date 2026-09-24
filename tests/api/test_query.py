@@ -175,6 +175,29 @@ async def test_query_doc_ids_filter_excludes_non_matching_documents(
     assert response.json()["citations"] == []
 
 
+async def test_query_metadata_filter_excludes_documents_missing_the_requested_tag(
+    client: httpx.AsyncClient,
+) -> None:
+    # End-to-end proof the frontend's "Filters" panel reaches all the way
+    # through: router -> AgentChain.answer(search_filter=...) ->
+    # ScopedRetriever -> the real store's own filter translation. The
+    # ingested sample doc carries no tags at all, so ANY tag filter must
+    # exclude it -- same "narrows to nothing it doesn't already have"
+    # property doc_ids proves above.
+    await ingest_sample_doc(client)
+
+    response = await client.post(
+        "/query",
+        json={
+            "question": "How does local inference latency compare to the internal gateway?",
+            "metadata_filter": {"tags": ["runbook"]},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["citations"] == []
+
+
 async def test_query_defaults_to_hybrid_rrf_retrieval_method(client: httpx.AsyncClient) -> None:
     response = await client.post("/query", json={"question": "anything"})
     assert response.json()["retrieval_method"] == "hybrid_rrf"

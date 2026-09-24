@@ -88,6 +88,7 @@ class ScopedRetriever:
         rerank: bool = False,
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
     ) -> "list[SearchResult]":
         results = self._inner.retrieve(
             query,
@@ -96,14 +97,17 @@ class ScopedRetriever:
             rerank=rerank,
             resolve_parent_context=resolve_parent_context,
             doc_ids=doc_ids,
-            # merge() intersects, so the lifecycle default can only narrow
-            # what the security filter allows -- and asking for history
-            # (include_superseded) removes ONLY the lifecycle clause, never
-            # the security one: someone else's private old version stays
-            # invisible.
+            # merge() intersects, so neither the lifecycle default nor a
+            # caller-supplied search_filter (the user-facing "Filters"
+            # panel's tags/author/date range) can ever do anything but
+            # NARROW what the security filter allows -- and asking for
+            # history (include_superseded) removes ONLY the lifecycle
+            # clause, never the security one: someone else's private old
+            # version stays invisible.
             search_filter=merge(
                 _security_filter_for(self._principal),
                 None if self._include_superseded else _CURRENT_ONLY,
+                search_filter,
             ),
             # Family collapse (retrieval/retriever.py) keeps only the
             # highest version of a family by default -- correct when the

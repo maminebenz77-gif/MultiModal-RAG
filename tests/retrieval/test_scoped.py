@@ -22,6 +22,7 @@ from multimodal_rag.retrieval.retriever import Retriever
 from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.retrieval.scoped import ScopedRetriever
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
+from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.indexer import HybridIndexer
 from multimodal_rag.stores.qdrant_store import QdrantStore
 
@@ -75,6 +76,7 @@ def _ingest(
     owner: str | None = None,
     status: str = "current",
     catalogue_status: str | None = None,
+    tags: list[str] | None = None,
 ) -> None:
     """Mirrors what routers/ingest.py actually does: a store write AND a
     sqlite row, both carrying the same metadata -- the post-check reads
@@ -88,6 +90,7 @@ def _ingest(
         private=private,
         owner=owner,
         status=status,  # type: ignore[arg-type]
+        tags=tags or [],
     )
     catalogue_metadata = metadata.model_copy(
         update={"status": catalogue_status or status}
@@ -407,3 +410,52 @@ def test_asking_for_history_keeps_the_access_filter_in_the_store_query_itself(
     assert _retrieve(
         vector_store, keyword_store, embedder, db, _BOB, top_k=1, include_superseded=True
     ) == ["bobs::a::0"]
+
+
+def test_a_caller_supplied_search_filter_narrows_the_results(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "runbook content": [1.0, 0.0], "policy content": [0.9, 0.1]}
+    )
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(
+        indexer, db, embedder, doc_id="runbook", text="runbook content",
+        classification="public", tags=["runbook"],
+    )
+    _ingest(
+        indexer, db, embedder, doc_id="policy", text="policy content",
+        classification="public", tags=["policy"],
+    )
+
+    retriever = ScopedRetriever(Retriever(vector_store, keyword_store, embedder), _BOB, db)
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=10,
+        search_filter=SearchFilter(any_of={"tags": ["runbook"]}),
+    )
+
+    assert [r.chunk_id for r in results] == ["runbook::a::0"]
+
+
+def test_a_caller_supplied_search_filter_cannot_widen_past_the_security_filter(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+) -> None:
+    # Same property merge()'s own unit tests prove in isolation (see
+    # test_filters.py), now end to end through the real store: a
+    # search_filter naming a classification the caller isn't cleared for
+    # must intersect down to nothing, never grant access to it -- the
+    # frontend's "Filters" panel can only narrow, same as doc_ids.
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "secret content": [1.0, 0.0]})
+    indexer = HybridIndexer(vector_store, keyword_store)
+    _ingest(indexer, db, embedder, doc_id="secret", text="secret content", classification="c3")
+
+    low_clearance = Principal(principal_id="user:bob", clearance="public")
+    retriever = ScopedRetriever(
+        Retriever(vector_store, keyword_store, embedder), low_clearance, db
+    )
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=10,
+        search_filter=SearchFilter(any_of={"classification": ["c3"]}),
+    )
+
+    assert results == []

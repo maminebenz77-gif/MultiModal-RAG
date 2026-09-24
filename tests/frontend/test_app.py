@@ -164,6 +164,48 @@ def test_new_conversation_clears_session_history() -> None:
     assert at.session_state["turns"] == []
 
 
+def test_ingest_form_has_author_and_tags_inputs() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    labels = [t.label for t in at.sidebar.text_input]
+    assert "Author (optional)" in labels
+    assert "Tags (optional, comma-separated)" in labels
+
+
+def test_bulk_ingest_form_has_author_and_tags_inputs() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    labels = [t.label for t in at.sidebar.text_input]
+    assert "Author for every file in this batch (optional)" in labels
+    assert "Tags for every file in this batch (optional, comma-separated)" in labels
+
+
+def test_filters_button_opens_without_exception_on_an_empty_corpus() -> None:
+    # No real API is listening (see the module docstring), so /documents
+    # returns [] -- the Filters dialog must still render cleanly with no
+    # tags, no authors, and no date range to offer, rather than crashing
+    # on an empty options list or an unset date bound.
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    next(b for b in at.main.button if b.label == "🔍 Filters").click()
+    at.run(timeout=30)
+
+    assert not at.exception
+
+
+def test_active_filters_caption_reflects_session_state() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+    at.session_state["filter_tags"] = ["runbook"]
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("Filtering by tags: runbook" in c.value for c in at.main.caption)
+
+
 def test_resuming_from_an_unknown_conversation_id_in_the_url_starts_fresh() -> None:
     """No real API is listening in this test environment (see the module
     docstring), so a resume attempt fails exactly like the /health check

@@ -17,6 +17,7 @@ unrelated widget (like the retrieval-method dropdown).
 import base64
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 # `streamlit run` puts this script's own directory on sys.path
@@ -129,6 +130,13 @@ def _is_junk_file(filename: str) -> bool:
     return Path(name).suffix.lower() not in _ALLOWED_EXTENSIONS
 
 
+def _parse_tags(raw: str) -> list[str]:
+    """"runbook, q3-2026, " -> ["runbook", "q3-2026"] -- stripped, and
+    empty entries (a trailing comma, or the field left blank) dropped
+    rather than sent through as a literal "" tag."""
+    return [tag.strip() for tag in raw.split(",") if tag.strip()]
+
+
 st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
@@ -177,6 +185,14 @@ if "confirm_delete_conversation_id" not in st.session_state:
     st.session_state.confirm_delete_conversation_id = None
 if "confirm_delete_doc_id" not in st.session_state:
     st.session_state.confirm_delete_doc_id = None
+if "filter_tags" not in st.session_state:
+    st.session_state.filter_tags: list[str] = []
+if "filter_authors" not in st.session_state:
+    st.session_state.filter_authors: list[str] = []
+if "filter_date_from" not in st.session_state:
+    st.session_state.filter_date_from: str | None = None
+if "filter_date_to" not in st.session_state:
+    st.session_state.filter_date_to: str | None = None
 
 provider_catalog = _load_provider_catalog()
 
@@ -420,8 +436,17 @@ with st.sidebar:
         )
         is_private = st.checkbox(
             "Only visible to me",
-            help="Recorded now; not yet enforced -- that needs real user "
-            "accounts, which don't exist in this deployment yet.",
+            help="Enforced in search and the document list -- but this deployment's "
+            "default auth_mode is 'disabled', where every caller shares one "
+            "unrestricted identity, so there's no OTHER principal to hide it from "
+            "yet. Meaningful once real distinct users exist (auth_mode='oidc').",
+        )
+        author_input = st.text_input(
+            "Author (optional)", help="Who actually wrote this document, for the Filters panel."
+        )
+        tags_input = st.text_input(
+            "Tags (optional, comma-separated)",
+            help='Free-form labels for the Filters panel later -- e.g. "runbook, q3-2026".',
         )
         ingest_submitted = st.form_submit_button("Ingest")
 
@@ -439,6 +464,8 @@ with st.sidebar:
                     {
                         "classification": _CLASSIFICATION_OPTIONS[classification_label],
                         "private": is_private,
+                        "author": author_input.strip() or None,
+                        "tags": _parse_tags(tags_input),
                     }
                 )
                 form_fields: dict = {
@@ -511,8 +538,19 @@ with st.sidebar:
     bulk_is_private = st.checkbox(
         "Only visible to me",
         key="bulk_private",
-        help="Recorded now; not yet enforced -- that needs real user "
-        "accounts, which don't exist in this deployment yet.",
+        help="Enforced in search and the document list -- but this deployment's "
+        "default auth_mode is 'disabled', where every caller shares one "
+        "unrestricted identity, so there's no OTHER principal to hide it from "
+        "yet. Meaningful once real distinct users exist (auth_mode='oidc').",
+    )
+    bulk_author_input = st.text_input(
+        "Author for every file in this batch (optional)", key="bulk_author"
+    )
+    bulk_tags_input = st.text_input(
+        "Tags for every file in this batch (optional, comma-separated)",
+        key="bulk_tags",
+        help='Applied to every file in this batch identically -- e.g. "runbook, q3-2026". '
+        "Ingest files one at a time above if they need different tags.",
     )
     bulk_submitted = st.button("Ingest files", disabled=not good_files)
 
@@ -526,6 +564,8 @@ with st.sidebar:
             {
                 "classification": _CLASSIFICATION_OPTIONS[bulk_classification_label],
                 "private": bulk_is_private,
+                "author": bulk_author_input.strip() or None,
+                "tags": _parse_tags(bulk_tags_input),
             }
         )
 
@@ -596,6 +636,12 @@ with st.sidebar:
         except httpx.HTTPError as exc:
             st.error(f"Could not load metrics: {exc}")
 
+    # Bound here, not only inside the try below -- the Filters panel
+    # (near the chat input, further down the script) reads this same
+    # list to populate its tags/author/date options, and must still have
+    # SOMETHING to iterate even when /documents itself failed to load.
+    documents: list = []
+
     with st.expander("📚 Documents in the corpus"):
         try:
             _documents_response = httpx.get(f"{api_base_url}/documents", timeout=10.0)
@@ -626,17 +672,57 @@ with st.sidebar:
                             st.session_state.confirm_delete_doc_id = None
                             st.rerun()
                     else:
-                        _info_col, _delete_col = st.columns([5, 1])
                         _meta = _doc["metadata"]
                         _retired = " · ⚠️ superseded" if _meta["status"] == "superseded" else ""
-                        _info_col.markdown(
-                            f"**{_doc['filename']}** v{_meta['version']}{_retired} — "
+                        _summary = (
+                            f"{_doc['filename']} — v{_meta['version']}{_retired} — "
                             f"{_doc['num_parent_chunks']} parent, "
                             f"{_doc['num_child_chunks']} child chunks"
                         )
-                        if _delete_col.button("🗑️", key=f"delete_doc_{_doc_id}"):
-                            st.session_state.confirm_delete_doc_id = _doc_id
-                            st.rerun()
+                        # An expander, not a flat row -- the tags/author/dates a
+                        # document carries are useful but crowd out the list at
+                        # a glance if always shown; click one to see them.
+                        with st.expander(_summary):
+                            st.caption(
+                                f"Classification: **{_meta['classification']}**"
+                                + (" · 🔒 only visible to its owner" if _meta["private"] else "")
+                            )
+                            if _meta.get("owner"):
+                                st.caption(f"Owner: {_meta['owner']}")
+                            if _meta.get("author"):
+                                st.caption(f"Author: {_meta['author']}")
+                            if _meta.get("doc_date"):
+                                st.caption(f"Document date: {_meta['doc_date']}")
+                            if _meta.get("data_type"):
+                                st.caption(f"Type: {_meta['data_type']}")
+                            if _meta.get("effective_from"):
+                                st.caption(f"Effective from: {_meta['effective_from']}")
+                            if _meta.get("effective_to"):
+                                st.caption(f"Effective to: {_meta['effective_to']}")
+
+                            _tags_input = st.text_input(
+                                "Tags (comma-separated)",
+                                value=", ".join(_meta["tags"]),
+                                key=f"tags_input_{_doc_id}",
+                                help="Editable here at any time -- a tag change is a "
+                                "metadata-only patch, nothing gets re-embedded.",
+                            )
+                            _save_col, _delete_col = st.columns(2)
+                            if _save_col.button("Save tags", key=f"save_tags_{_doc_id}"):
+                                try:
+                                    _patch_response = httpx.patch(
+                                        f"{api_base_url}/documents/{_doc_id}",
+                                        json={"tags": _parse_tags(_tags_input)},
+                                        timeout=30.0,
+                                    )
+                                    _patch_response.raise_for_status()
+                                    st.toast("Tags updated.")
+                                    st.rerun()
+                                except httpx.HTTPError as exc:
+                                    st.error(f"Could not update tags: {_http_error_detail(exc)}")
+                            if _delete_col.button("🗑️ Delete document", key=f"delete_doc_{_doc_id}"):
+                                st.session_state.confirm_delete_doc_id = _doc_id
+                                st.rerun()
             else:
                 st.caption("No documents ingested yet.")
         except httpx.HTTPError as exc:
@@ -727,11 +813,127 @@ for turn in st.session_state.turns:
         if fb_down.button("👎", key=f"fb_down_{turn['query_id']}"):
             _submit_feedback(turn["query_id"], "down")
 
+def _distinct_tags(documents: list) -> list[str]:
+    seen: set[str] = set()
+    for doc in documents:
+        seen.update(doc["metadata"]["tags"])
+    return sorted(seen)
+
+
+def _distinct_authors(documents: list) -> list[str]:
+    return sorted({doc["metadata"]["author"] for doc in documents if doc["metadata"]["author"]})
+
+
+def _doc_date_bounds(documents: list) -> tuple[date, date] | None:
+    """(earliest, latest) doc_date across the corpus, or None if no
+    ingested document has one set at all -- the date filter has nothing
+    real to bound itself by in that case, so it isn't shown rather than
+    offering a meaningless single-point range."""
+    dates = [
+        date.fromisoformat(doc["metadata"]["doc_date"])
+        for doc in documents
+        if doc["metadata"]["doc_date"]
+    ]
+    return (min(dates), max(dates)) if dates else None
+
+
+@st.dialog("🔍 Filters")
+def _filters_dialog(documents: list) -> None:
+    tag_options = _distinct_tags(documents)
+    author_options = _distinct_authors(documents)
+    bounds = _doc_date_bounds(documents)
+
+    selected_tags = st.multiselect(
+        "Tags",
+        options=tag_options,
+        # Filtered against options, not used as-is -- a tag/author
+        # chosen in an earlier session can vanish from the corpus (its
+        # last document deleted), and st.multiselect raises if `default`
+        # contains a value `options` no longer has.
+        default=[t for t in st.session_state.filter_tags if t in tag_options],
+    )
+    selected_authors = st.multiselect(
+        "Author",
+        options=author_options,
+        default=[a for a in st.session_state.filter_authors if a in author_options],
+    )
+
+    if bounds is None:
+        st.caption("No ingested document has a document date recorded yet.")
+        selected_from, selected_to = None, None
+    else:
+        earliest, latest = bounds
+        default_from = (
+            date.fromisoformat(st.session_state.filter_date_from)
+            if st.session_state.filter_date_from
+            else earliest
+        )
+        default_to = (
+            date.fromisoformat(st.session_state.filter_date_to)
+            if st.session_state.filter_date_to
+            else latest
+        )
+        date_range = st.date_input(
+            "Document date range",
+            value=(default_from, default_to),
+            min_value=earliest,
+            max_value=latest,
+        )
+        # A range date_input returns a 1-tuple while the user has picked
+        # only the start of the pair (mid-selection, before the second
+        # click) -- not yet a real range to filter by.
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            selected_from, selected_to = date_range
+        else:
+            selected_from, selected_to = earliest, latest
+
+    apply_col, clear_col = st.columns(2)
+    if apply_col.button("Apply", type="primary"):
+        st.session_state.filter_tags = selected_tags
+        st.session_state.filter_authors = selected_authors
+        st.session_state.filter_date_from = (
+            selected_from.isoformat() if selected_from is not None else None
+        )
+        st.session_state.filter_date_to = (
+            selected_to.isoformat() if selected_to is not None else None
+        )
+        st.rerun()
+    if clear_col.button("Clear filters"):
+        st.session_state.filter_tags = []
+        st.session_state.filter_authors = []
+        st.session_state.filter_date_from = None
+        st.session_state.filter_date_to = None
+        st.rerun()
+
+
+_active_filter_parts = []
+if st.session_state.filter_tags:
+    _active_filter_parts.append(f"tags: {', '.join(st.session_state.filter_tags)}")
+if st.session_state.filter_authors:
+    _active_filter_parts.append(f"author: {', '.join(st.session_state.filter_authors)}")
+if st.session_state.filter_date_from or st.session_state.filter_date_to:
+    _active_filter_parts.append(
+        f"{st.session_state.filter_date_from or '…'} → {st.session_state.filter_date_to or '…'}"
+    )
+
+_filter_button_col, _filter_caption_col = st.columns([1, 5])
+if _filter_button_col.button("🔍 Filters"):
+    _filters_dialog(documents)
+if _active_filter_parts:
+    _filter_caption_col.caption("Filtering by " + " · ".join(_active_filter_parts))
+
 prompt = st.chat_input("Ask a question")
 if prompt and prompt.strip():
+    _metadata_filter = {
+        "tags": st.session_state.filter_tags or None,
+        "author": st.session_state.filter_authors or None,
+        "date_from": st.session_state.filter_date_from,
+        "date_to": st.session_state.filter_date_to,
+    }
     query_payload = {
         "question": prompt,
         "conversation_id": st.session_state.conversation_id,
+        "metadata_filter": _metadata_filter,
         "retrieval_method": retrieval_method,
         "top_k": top_k,
         "rerank": rerank,

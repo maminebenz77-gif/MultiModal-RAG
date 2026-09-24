@@ -12,6 +12,7 @@ import pytest
 from multimodal_rag.chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from multimodal_rag.metadata import DocumentMetadata
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
+from multimodal_rag.stores.filters import SearchFilter
 
 _INDEX = "test_index"
 
@@ -166,6 +167,40 @@ def test_search_defaults_lineage_fields_for_a_chunk_with_none(store: Elasticsear
         None,
         "current",
     )
+
+
+def test_search_filters_by_date_range(store: ElasticsearchStore) -> None:
+    old = DocumentMetadata(classification="public", doc_date="2023-01-01")
+    new = DocumentMetadata(classification="public", doc_date="2025-01-01")
+    store.index_chunks(
+        [_chunk("old.md::a::0", "shared wording", source="old.md", doc_id="old")], old
+    )
+    store.index_chunks(
+        [_chunk("new.md::a::0", "shared wording", source="new.md", doc_id="new")], new
+    )
+
+    results = store.search(
+        "shared wording",
+        top_k=10,
+        search_filter=SearchFilter(date_range={"doc_date": ("2024-01-01", "2025-12-31")}),
+    )
+
+    assert [r.chunk_id for r in results] == ["new.md::a::0"]
+
+
+def test_search_filters_by_date_range_inclusive_of_the_boundary_date(
+    store: ElasticsearchStore,
+) -> None:
+    metadata = DocumentMetadata(classification="public", doc_date="2024-12-31")
+    store.index_chunks([_chunk("doc.md::a::0", "content")], metadata)
+
+    results = store.search(
+        "content",
+        top_k=10,
+        search_filter=SearchFilter(date_range={"doc_date": ("2024-01-01", "2024-12-31")}),
+    )
+
+    assert [r.chunk_id for r in results] == ["doc.md::a::0"]
 
 
 def test_search_ranks_more_relevant_document_higher(store: ElasticsearchStore) -> None:

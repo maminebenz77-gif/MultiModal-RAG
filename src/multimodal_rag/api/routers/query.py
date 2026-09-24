@@ -170,6 +170,10 @@ async def query(
             allow_external=allow_external,
         )
 
+    search_filter = (
+        request.metadata_filter.to_search_filter() if request.metadata_filter is not None else None
+    )
+
     query_id = str(uuid.uuid4())
     start_time = time.perf_counter()
     try:
@@ -178,12 +182,14 @@ async def query(
 
                 def _answer_with_override():
                     with _temporary_llm_provider(llm_override):
-                        return agent.answer(request.question, history, request.doc_ids)
+                        return agent.answer(
+                            request.question, history, request.doc_ids, search_filter
+                        )
 
                 result = await run_in_threadpool(_answer_with_override)
             else:
                 result = await run_in_threadpool(
-                    agent.answer, request.question, history, request.doc_ids
+                    agent.answer, request.question, history, request.doc_ids, search_filter
                 )
             update_span_output(query_span, result.answer)
     except ValueError as exc:

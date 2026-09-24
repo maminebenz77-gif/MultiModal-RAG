@@ -79,6 +79,16 @@ _PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType] = {
     # the filter that decides which version of a document you read the
     # slow, lossy kind.
     "status": models.PayloadSchemaType.KEYWORD,
+    # tags/author back the user-facing "Filters" panel (frontend); no
+    # security property rides on them, but the same correctness argument
+    # applies -- an unindexed filter on a real corpus is a slow scan that
+    # can silently lose results, not just a slow one.
+    "tags": models.PayloadSchemaType.KEYWORD,
+    "author": models.PayloadSchemaType.KEYWORD,
+    # DATETIME, not KEYWORD -- this is the field the date-range side of
+    # the filter panel narrows on (SearchFilter.date_range), and a range
+    # condition needs a range-comparable index, not exact-match.
+    "doc_date": models.PayloadSchemaType.DATETIME,
 }
 
 # A parent chunk (from parent-child chunking) is meant to be reached only
@@ -103,6 +113,16 @@ def _build_query_filter(search_filter: SearchFilter | None) -> models.Filter:
             # is a deliberate "exclude everything" clause, not "no
             # constraint".
             must.append(models.FieldCondition(key=field, match=models.MatchAny(any=values)))
+        for field, (from_date, to_date) in search_filter.date_range.items():
+            # gte/lte on the bare "YYYY-MM-DD" strings as stored --
+            # Qdrant's DATETIME payload index accepts date-only RFC 3339
+            # values directly, no need to round-trip through a real
+            # datetime object just to build this condition.
+            must.append(
+                models.FieldCondition(
+                    key=field, range=models.DatetimeRange(gte=from_date, lte=to_date)
+                )
+            )
     return models.Filter(must=must, must_not=[_EXCLUDE_PARENTS_CONDITION])
 
 

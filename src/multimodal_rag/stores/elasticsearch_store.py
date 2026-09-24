@@ -48,6 +48,10 @@ def _build_query(query: str, search_filter: SearchFilter | None) -> dict:
         filter_clauses = [
             {"terms": {field: values}} for field, values in search_filter.any_of.items()
         ]
+        filter_clauses.extend(
+            {"range": {field: {"gte": from_date, "lte": to_date}}}
+            for field, (from_date, to_date) in search_filter.date_range.items()
+        )
     return {
         "bool": {
             "must": {"match": {"text": query}},
@@ -99,17 +103,21 @@ class ElasticsearchStore(KeywordStore):
                     # Document-level tags (see DocumentMetadata) --
                     # keyword-typed (exact match, filterable), not
                     # analyzed text, since none of these are meant to be
-                    # searched by relevance. doc_date stays a keyword
-                    # rather than an ES `date` field for now: nothing
-                    # does range filtering on it yet (a later phase), and
-                    # a strict `date` mapping would reject any
-                    # non-ISO-parseable value at index time instead of
-                    # just storing it.
+                    # searched by relevance.
                     "classification": {"type": "keyword"},
                     "private": {"type": "boolean"},
                     "owner": {"type": "keyword"},
                     "author": {"type": "keyword"},
-                    "doc_date": {"type": "keyword"},
+                    # A real `date` field, not keyword -- this is what the
+                    # date-range side of the user-facing "Filters" panel
+                    # narrows on (SearchFilter.date_range), and a range
+                    # query needs a range-comparable type. A strict `date`
+                    # mapping rejects a non-ISO-parseable value at INDEX
+                    # time instead of just storing it -- that's why
+                    # DocumentMetadata.doc_date now validates the format
+                    # itself, at the API boundary, well before it would
+                    # ever reach here.
+                    "doc_date": {"type": "date", "format": "yyyy-MM-dd"},
                     "data_type": {"type": "keyword"},
                     "tags": {"type": "keyword"},
                     # Derived from private/owner, not a DocumentMetadata
