@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 
 import openpyxl
@@ -30,6 +31,29 @@ def _write_bar_chart_workbook(path: Path) -> Path:
     return path
 
 
+def _rewrite_chart_target_as_package_relative(path: Path) -> None:
+    """openpyxl's own writer always emits a package-ABSOLUTE relationship
+    target ("/xl/charts/chart1.xml"). Real Excel (and LibreOffice) write
+    the spec-correct form instead: relative to the SOURCE part's own
+    directory ("../charts/chart1.xml" from "xl/drawings/") -- see
+    excel_charts._resolve_part_path's docstring for why that distinction
+    caused a real KeyError this project hit. Every other test in this
+    file builds its workbook with openpyxl and would never exercise
+    that path, so this rewrites one .rels part byte-for-byte after
+    saving, standing in for a real Excel-produced file without checking
+    one into the repo.
+    """
+    with zipfile.ZipFile(path) as zf:
+        entries = {name: zf.read(name) for name in zf.namelist()}
+    rels_name = "xl/drawings/_rels/drawing1.xml.rels"
+    entries[rels_name] = entries[rels_name].replace(
+        b'Target="/xl/charts/chart1.xml"', b'Target="../charts/chart1.xml"'
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+
+
 @pytest.fixture
 def _stub_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     # Not autouse -- test_summarize_returns_none_when_* need the REAL
@@ -46,6 +70,44 @@ def test_charts_for_worksheet_finds_the_chart_on_its_own_sheet(tmp_path: Path) -
     chart_paths = charts_for_worksheet(path, workbook["Sheet1"])
 
     assert chart_paths == ["xl/charts/chart1.xml"]
+
+
+def test_charts_for_worksheet_resolves_a_package_relative_chart_target(
+    tmp_path: Path,
+) -> None:
+    # Regression for a real KeyError hit ingesting an actual Excel-saved
+    # workbook: real Excel writes the chart's relationship Target
+    # relative to xl/drawings/ ("../charts/chart1.xml"), not as a
+    # package-absolute path. Resolving it wrong doesn't fail loudly on
+    # a mismatched-but-plausible path -- it produces a string ("../charts
+    # /chart1.xml") that isn't ANY real entry in the archive, so
+    # zipfile.read raises KeyError deep inside describe_chart.
+    path = _write_bar_chart_workbook(tmp_path / "wb.xlsx")
+    _rewrite_chart_target_as_package_relative(path)
+    workbook = openpyxl.load_workbook(path, data_only=True)
+
+    chart_paths = charts_for_worksheet(path, workbook["Sheet1"])
+
+    assert chart_paths == ["xl/charts/chart1.xml"]
+
+
+def test_describe_chart_does_not_raise_on_a_package_relative_target(
+    tmp_path: Path, _stub_llm: None
+) -> None:
+    # Same regression, end to end through describe_chart (what
+    # excel.py's parse_excel actually calls) -- proves the resolved
+    # path is also a real, readable archive entry, not just a string
+    # that happens to equal the expected one.
+    path = _write_bar_chart_workbook(tmp_path / "wb.xlsx")
+    _rewrite_chart_target_as_package_relative(path)
+    workbook = openpyxl.load_workbook(path, data_only=True)
+    worksheet = workbook["Sheet1"]
+    [chart_path] = charts_for_worksheet(path, worksheet)
+
+    description = describe_chart(path, chart_path, worksheet)
+
+    assert description is not None
+    assert "North: 120" in description
 
 
 def test_charts_for_worksheet_empty_when_sheet_has_no_chart(tmp_path: Path) -> None:

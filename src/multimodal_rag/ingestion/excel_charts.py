@@ -27,6 +27,7 @@ under different tag names, e.g. <xVal>/<yVal>) fall back to a minimal
 type+title description rather than being silently dropped or crashing.
 """
 
+import posixpath
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -91,8 +92,27 @@ def charts_for_worksheet(path: Path, worksheet: Worksheet) -> list[str]:
                 if rel.get("Type") == _CHART_REL_TYPE:
                     target = rel.get("Target")
                     if target:
-                        chart_paths.append(target.lstrip("/"))
+                        chart_paths.append(_resolve_part_path(drawing_dir, target))
     return chart_paths
+
+
+def _resolve_part_path(source_dir: str, target: str) -> str:
+    """An OPC relationship Target is either package-absolute
+    ("/xl/charts/chart1.xml") or -- the spec-correct, and far more
+    common, form -- relative to the SOURCE part's own directory (e.g.
+    "../charts/chart1.xml" from "xl/drawings/"), never relative to the
+    zip archive's flat root. The old code did `target.lstrip("/")`
+    unconditionally, which only happens to produce a real archive name
+    for an absolute target; every relative target silently became a
+    literal, nonexistent entry name ("../charts/chart1.xml") and
+    zipfile raised KeyError. That went unnoticed because openpyxl's own
+    writer -- the only thing this module's tests ever built workbooks
+    with -- always emits absolute targets; real Excel/LibreOffice write
+    relative ones. See test_excel_charts.py for the regression built
+    from an actual Excel-written relative target."""
+    if target.startswith("/"):
+        return target.lstrip("/")
+    return posixpath.normpath(posixpath.join(source_dir, target))
 
 
 def describe_chart(path: Path, chart_xml_path: str, worksheet: Worksheet) -> str | None:
