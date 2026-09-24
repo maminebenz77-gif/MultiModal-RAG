@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -183,6 +184,87 @@ def test_run_expertise_scores_refusal_accuracy_separately_from_correctness(
     assert result.average_correctness == pytest.approx(1.0)
     assert result.refusal_count == 1
     assert result.refusal_accuracy == pytest.approx(1.0)
+
+
+def test_load_document_metadata_returns_empty_dict_when_no_sidecar_file(tmp_path: Path) -> None:
+    expertise_dir = tmp_path / "legal"
+    expertise_dir.mkdir()
+
+    assert ree._load_document_metadata(expertise_dir) == {}
+
+
+def test_load_document_metadata_parses_the_sidecar_file(tmp_path: Path) -> None:
+    expertise_dir = tmp_path / "legal"
+    expertise_dir.mkdir()
+    (expertise_dir / "documents_metadata.json").write_text(
+        json.dumps(
+            {
+                "old.xlsx": {
+                    "classification": "public",
+                    "doc_family_id": "fam",
+                    "version": 1,
+                    "status": "superseded",
+                },
+                "new.xlsx": {"classification": "public", "doc_family_id": "fam", "version": 2},
+            }
+        )
+    )
+
+    result = ree._load_document_metadata(expertise_dir)
+
+    assert result["old.xlsx"].status == "superseded"
+    assert result["new.xlsx"].version == 2
+    assert result["old.xlsx"].doc_family_id == result["new.xlsx"].doc_family_id == "fam"
+
+
+def test_build_expertise_agent_indexes_each_document_with_its_own_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: build_expertise_agent used to batch every document's
+    # chunks into ONE indexer call with no DocumentMetadata at all --
+    # collapse_families and the recency tilt both key off fields that
+    # path never set, so this eval could never exercise Phase 5/6.
+    # Proves two things at once: a document WITH a sidecar entry gets
+    # exactly its own declared fields, and one WITHOUT an entry still
+    # gets indexed (not skipped) with the plain default -- not the
+    # other document's metadata leaking across.
+    expertise_dir = tmp_path / "legal"
+    documents_dir = expertise_dir / "documents"
+    documents_dir.mkdir(parents=True)
+    (documents_dir / "a.md").write_text("a")
+    (documents_dir / "b.md").write_text("b")
+    (expertise_dir / "documents_metadata.json").write_text(
+        json.dumps({"a.md": {"classification": "c2", "author": "Alice"}})
+    )
+
+    monkeypatch.setattr(ree, "_ingest_document", lambda path: [SimpleNamespace(text=path.name)])
+    monkeypatch.setattr(
+        ree, "get_embedder", lambda: MagicMock(embed=lambda texts: [MagicMock() for _ in texts])
+    )
+    monkeypatch.setattr(ree, "get_vector_store", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(ree, "get_keyword_store", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(ree, "Retriever", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(ree, "AgentChain", lambda *a, **k: MagicMock())
+
+    index_calls: list[tuple[list[Any], Any]] = []
+
+    class _SpyIndexer:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def index(self, chunks: list[Any], vectors: list[Any], doc_metadata: Any) -> None:
+            index_calls.append((chunks, doc_metadata))
+
+    monkeypatch.setattr(ree, "HybridIndexer", _SpyIndexer)
+
+    ree.build_expertise_agent(expertise_dir)
+
+    assert len(index_calls) == 2
+    by_source = {chunks[0].text: metadata for chunks, metadata in index_calls}
+    assert by_source["a.md"].classification == "c2"
+    assert by_source["a.md"].author == "Alice"
+    assert by_source["b.md"].classification == "public"  # default -- no sidecar entry
+    assert by_source["b.md"].author is None
 
 
 def test_print_results_shows_n_a_for_refusal_accuracy_when_no_refusal_items(

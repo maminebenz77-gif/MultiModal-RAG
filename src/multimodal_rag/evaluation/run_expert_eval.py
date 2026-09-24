@@ -46,6 +46,7 @@ from langfuse import Evaluation, Langfuse
 from langfuse.experiment import EvaluatorFunction
 
 from ..generation.agent import AgentChain
+from ..metadata import DocumentMetadata
 from ..providers.factory import get_embedder
 from ..retrieval.retriever import Retriever
 from ..retrieval.schema import RetrievalMethod
@@ -119,31 +120,73 @@ def _load_qa(expertise_dir: Path) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], json.loads((expertise_dir / "qa.json").read_text()))
 
 
+_DEFAULT_DOC_METADATA = DocumentMetadata(classification="public")
+"""What every document got before documents_metadata.json existed: no
+DocumentMetadata passed to the indexer at all, i.e. no classification,
+no lineage. A bare classification is the closest equivalent that's
+still a real DocumentMetadata -- needed now because every document is
+indexed through one, not because any existing expertise needs the
+other fields."""
+
+
+def _load_document_metadata(expertise_dir: Path) -> dict[str, DocumentMetadata]:
+    """Optional data/eval/<expertise>/documents_metadata.json: filename ->
+    DocumentMetadata fields, for an expertise set that needs to exercise
+    real lineage (doc_family_id/version/status/effective_from) or a
+    non-default classification -- see company-spreadsheets' budget-cap
+    pair (declared supersession -- same doc_family_id, versions 1 and 2)
+    and vendor-approval pair (two independently dated documents, no
+    family relationship at all, that simply disagree) for why. Before
+    this, every document here was ingested with NO DocumentMetadata at
+    all, so neither collapse_families (Phase 6) nor the recency tilt
+    could ever be exercised by this eval -- both key off fields that
+    path never set. A filename with no entry here keeps the old
+    default."""
+    path = expertise_dir / "documents_metadata.json"
+    if not path.is_file():
+        return {}
+    raw = cast(dict[str, dict[str, Any]], json.loads(path.read_text()))
+    return {filename: DocumentMetadata(**fields) for filename, fields in raw.items()}
+
+
 def build_expertise_agent(expertise_dir: Path) -> AgentChain:
     """Ingests an expertise folder's documents into a collection scoped to
     it alone -- deliberately, so a question about one expertise can't
     accidentally retrieve another expertise's content just because they
     happen to share a collection -- and returns the real production
     AgentChain over it (routers/query.py's exact construction).
+
+    Indexes one document at a time (each with its own DocumentMetadata),
+    not all documents' chunks in one shared call -- metadata is
+    per-document, and HybridIndexer.index()'s doc_metadata parameter is
+    a single value applied to every chunk in that call. Embedding stays
+    batched across all documents for one round-trip to the embedder.
     """
     name = expertise_dir.name
     documents_dir = expertise_dir / "documents"
-    chunks = [
-        chunk
-        for path in sorted(documents_dir.iterdir())
-        if path.is_file() and not path.name.startswith(".")
-        for chunk in _ingest_document(path)
-    ]
+    doc_metadata_by_filename = _load_document_metadata(expertise_dir)
+    paths = sorted(
+        p for p in documents_dir.iterdir() if p.is_file() and not p.name.startswith(".")
+    )
+    chunks_by_path = {path: _ingest_document(path) for path in paths}
+    all_chunks = [chunk for chunks in chunks_by_path.values() for chunk in chunks]
 
     collection = f"expert_eval_{name}"
     embedder = get_embedder()
-    vectors = embedder.embed([c.text for c in chunks])
+    all_vectors = embedder.embed([c.text for c in all_chunks])
 
     vector_store = get_vector_store(collection_name=collection)
-    vector_store.create_collection(dimension=vectors[0].dimension, indexing_threshold=0)
+    vector_store.create_collection(dimension=all_vectors[0].dimension, indexing_threshold=0)
     keyword_store = get_keyword_store(index_name=collection)
     keyword_store.create_index()
-    HybridIndexer(vector_store, keyword_store).index(chunks, vectors)
+
+    indexer = HybridIndexer(vector_store, keyword_store)
+    offset = 0
+    for path, chunks in chunks_by_path.items():
+        vectors = all_vectors[offset : offset + len(chunks)]
+        offset += len(chunks)
+        metadata = doc_metadata_by_filename.get(path.name, _DEFAULT_DOC_METADATA)
+        indexer.index(chunks, vectors, metadata)
     vector_store.publish()
 
     retriever = Retriever(vector_store, keyword_store, embedder)

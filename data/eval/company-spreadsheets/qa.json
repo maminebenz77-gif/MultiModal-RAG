@@ -24,5 +24,15 @@
     "question": "What year does the vendor spend log cover?",
     "expert_answer": "That isn't specified. The log records quarters (Q1 through Q4) for each entry but never records a year, so there's no way to tell which year (or years) the data covers.",
     "expect_refusal": true
+  },
+  {
+    "id": "budget-cap-declared-lineage",
+    "question": "What is the current approved annual budget cap for Legal Services vendor spend?",
+    "expert_answer": "$150,000. An earlier document put the cap at $100,000, but that version has been explicitly superseded and is no longer in effect."
+  },
+  {
+    "id": "vendor-approval-undeclared-conflict",
+    "question": "Which vendor is currently the approved primary cloud infrastructure vendor?",
+    "expert_answer": "Umbrella Software, approved in 2025. An older, 2023 document names Northwind Cloud instead, but the 2025 approval is more recent and takes precedence."
   }
 ]

@@ -1,0 +1,29 @@
+{
+  "vendor_budget_cap.xlsx": {
+    "classification": "public",
+    "doc_date": "2024-01-01",
+    "doc_family_id": "vendor-budget-cap",
+    "version": 1,
+    "status": "superseded",
+    "effective_from": "2024-01-01",
+    "effective_to": "2025-01-01"
+  },
+  "vendor_budget_cap_v2.xlsx": {
+    "classification": "public",
+    "doc_date": "2025-01-01",
+    "doc_family_id": "vendor-budget-cap",
+    "version": 2,
+    "status": "current",
+    "effective_from": "2025-01-01"
+  },
+  "preferred_cloud_vendor_2023.xlsx": {
+    "classification": "public",
+    "doc_date": "2023-06-01",
+    "effective_from": "2023-06-01"
+  },
+  "preferred_cloud_vendor_2025.xlsx": {
+    "classification": "public",
+    "doc_date": "2025-06-01",
+    "effective_from": "2025-06-01"
+  }
+}

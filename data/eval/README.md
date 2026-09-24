@@ -14,10 +14,24 @@ No code changes needed — just add files:
 
 ```
 data/eval/<expertise-name>/
-  documents/   # real source documents (PDF, DOCX, PPTX, Markdown, CSV, or Excel)
-  qa.json       # [{"id": "...", "question": "...", "expert_answer": "...",
-                #   "expect_refusal": false}, ...]
+  documents/               # real source documents (PDF, DOCX, PPTX, Markdown, CSV, or Excel)
+  documents_metadata.json  # optional: filename -> DocumentMetadata fields
+  qa.json                  # [{"id": "...", "question": "...", "expert_answer": "...",
+                            #   "expect_refusal": false}, ...]
 ```
+
+- `documents_metadata.json` -- optional. Without it, every document is ingested
+  with a bare `{"classification": "public"}` and no lineage, same as before this
+  file existed. Add an entry for a filename to give it real `DocumentMetadata`
+  fields -- most commonly `doc_family_id`/`version`/`status`/`effective_from`, to
+  make two of your documents genuinely supersede each other (so you can write a
+  question whose correct answer depends on Phase 5/6 actually working, not just
+  on retrieval quality). See `company-spreadsheets/documents_metadata.json` for
+  two real examples: a **declared** supersession (same `doc_family_id`, versions
+  1 and 2, old one `status: "superseded"`) and an **undeclared** conflict (two
+  unrelated, independently dated documents that simply disagree -- no
+  `doc_family_id` at all, so nothing hides either one; the correct answer
+  depends on the agent reading both dates itself).
 
 - `id` — a short, stable identifier for the question (for your own reference only).
 - `question` — exactly what you'd ask the agent.
