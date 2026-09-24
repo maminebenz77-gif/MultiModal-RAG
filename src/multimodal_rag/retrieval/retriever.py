@@ -13,6 +13,8 @@ is off, which is true for the vast majority of callers (run_eval.py,
 demo.py, most tests).
 """
 
+import math
+from datetime import UTC, date, datetime
 from typing import Any
 
 from ..providers.base import EmbeddingProvider, Reranker
@@ -53,11 +55,20 @@ class Retriever:
         keyword_store: KeywordStore,
         embedder: EmbeddingProvider,
         reranker: Reranker | None = None,
+        recency_tilt_weight: float = 0.1,
+        recency_half_life_days: int = 180,
     ) -> None:
         self._vector_store = vector_store
         self._keyword_store = keyword_store
         self._embedder = embedder
         self._reranker = reranker
+        # See Settings.recency_tilt_weight/recency_half_life_days -- kept as
+        # constructor config, not read from Settings per call, so Retriever
+        # stays plain dependency injection (like `reranker`) rather than
+        # gaining a direct config-module dependency, and so a test can set
+        # an exact weight without monkeypatching global settings.
+        self._recency_tilt_weight = recency_tilt_weight
+        self._recency_half_life_days = recency_half_life_days
 
     def retrieve(
         self,
@@ -71,6 +82,7 @@ class Retriever:
         resolve_parent_context: bool = False,
         doc_ids: list[str] | None = None,
         search_filter: SearchFilter | None = None,
+        collapse_families: bool = True,
     ) -> list[SearchResult]:
         with traced_span(
             # Method in the span NAME, not just metadata -- metadata is
@@ -144,9 +156,28 @@ class Retriever:
                 # VectorStore/KeywordStore.search() exclude is_parent=True
                 # chunks natively. Parent context is substituted in
                 # afterward, only for the results that actually made the cut.
-                results = self._rerank(query, results, top_k)
-            else:
-                results = results[:top_k]
+                #
+                # Reorders the WHOLE pool -- does NOT cut to top_k itself.
+                # Family collapse right after this needs the full reordered
+                # pool: cutting first could leave a stale duplicate sitting
+                # in top_k with the current version discarded just outside it.
+                results = self._rerank(query, results)
+
+            # The recency tilt re-scores and re-sorts -- sound only when
+            # `.score` genuinely reflects the order results are already in.
+            # True for cosine/BM25/RRF fusion; NOT true once rerank=True
+            # (a cross-encoder never even sees .score, only text) or for
+            # MMR (its own code deliberately never rewrites .score -- see
+            # _mmr's comment -- since it picks for diversity, not pure
+            # relevance). Re-sorting by score in either of those cases
+            # would silently undo that method's own judgment, not nudge it.
+            # Family collapse has no such problem -- it only ever REMOVES
+            # items, so it can't disturb an order it doesn't understand.
+            score_reflects_order = method != RetrievalMethod.MMR and not rerank
+            results = self._apply_recency_and_collapse(
+                results, apply_tilt=score_reflects_order, collapse_families=collapse_families
+            )
+            results = results[:top_k]
 
             if resolve_parent_context:
                 results = self._resolve_parent_context(results)
@@ -362,7 +393,10 @@ class Retriever:
             update_span_output(span, summaries)
             return fused
 
-    def _rerank(self, query: str, candidates: list[SearchResult], top_k: int) -> list[SearchResult]:
+    def _rerank(self, query: str, candidates: list[SearchResult]) -> list[SearchResult]:
+        """Reorders `candidates` by the cross-encoder's own judgment of
+        relevance. Does NOT cut to a smaller list -- see the call site for
+        why the recency tilt needs the full pool, not just the winners."""
         if self._reranker is None:
             raise ValueError("rerank=True requires a Reranker to be provided to the Retriever.")
         if not candidates:
@@ -371,6 +405,88 @@ class Retriever:
             "rerank", as_type="span", input=query, metadata={"candidates": len(candidates)}
         ) as span:
             order = self._reranker.rerank(query, [c.text for c in candidates])
-            reranked = [candidates[i] for i in order[:top_k]]
+            reranked = [candidates[i] for i in order]
             update_span_output(span, _summarize_results(reranked))
             return reranked
+
+    def _apply_recency_and_collapse(
+        self, results: list[SearchResult], *, apply_tilt: bool, collapse_families: bool
+    ) -> list[SearchResult]:
+        """Two adjustments to an already-ranked pool, both about VERSION
+        LINEAGE (metadata.py), neither about relevance:
+
+        1. If `apply_tilt` (see the call site for when it's sound), a
+           small, bounded, multiplicative recency boost -- a tiebreaker
+           between otherwise-close candidates, never strong enough to
+           promote a weakly relevant recent result over a strongly
+           relevant old one (see Settings.recency_tilt_weight).
+        2. If `collapse_families`, collapsing multiple results from the
+           SAME document family (metadata.DocumentMetadata.doc_family_id)
+           down to the highest-version one. This is not just a
+           superseded/current-only search's problem -- two documents in
+           one family can both be "current" (an undone replacement, or two
+           uploads with no supersedes_doc_id between them), and without
+           this the model would see the same section twice under two
+           different sources. A pure filter -- it only ever removes items,
+           so it's safe on ANY method's output, including one
+           apply_tilt=False left alone. Callers that deliberately WANT
+           every version (ScopedRetriever's include_superseded -- see
+           retrieval/scoped.py) pass collapse_families=False: collapsing
+           there would silently defeat the one thing that flag exists to
+           show, keeping only the newest version even when the caller
+           explicitly asked to see history.
+
+        Runs on the WHOLE pool, before the top_k cut -- see retrieve()'s
+        call site for why order matters here."""
+        if not results:
+            return results
+
+        if apply_tilt:
+            results = [
+                result.model_copy(
+                    update={"score": result.score * (1 + self._recency_boost(result))}
+                )
+                for result in results
+            ]
+            results.sort(key=lambda r: r.score, reverse=True)
+
+        if not collapse_families:
+            return results
+
+        # Grouped by doc_family_id ONLY -- never falls back to doc_id. Two
+        # chunks that share a doc_id are two PASSAGES of the same document
+        # (different pages/sections), not duplicates of each other; nothing
+        # about them being from one document says one should be dropped.
+        # A chunk with no family tag is left alone entirely, the same
+        # "no signal, no penalty" rule the recency tilt uses -- it is never
+        # compared against anything, not even another untagged chunk.
+        highest_version_in_family: dict[str, int] = {}
+        for result in results:
+            if result.doc_family_id is not None:
+                highest_version_in_family[result.doc_family_id] = max(
+                    highest_version_in_family.get(result.doc_family_id, 0), result.version
+                )
+
+        return [
+            result
+            for result in results
+            if result.doc_family_id is None
+            or result.version == highest_version_in_family[result.doc_family_id]
+        ]
+
+    def _recency_boost(self, result: SearchResult) -> float:
+        """0 for a result with no effective_from (neutral -- never a
+        penalty for lacking a date), decaying exponentially with age
+        otherwise, scaled by recency_tilt_weight so the maximum possible
+        boost (a result dated today) is exactly that weight."""
+        if not result.effective_from or self._recency_tilt_weight <= 0:
+            return 0.0
+        try:
+            effective = date.fromisoformat(result.effective_from[:10])
+        except ValueError:
+            return 0.0
+        age_days = (datetime.now(UTC).date() - effective).days
+        if age_days < 0:
+            age_days = 0  # a future effective_from is "as recent as it gets", not extrapolated
+        decay = math.exp(-age_days / self._recency_half_life_days)
+        return self._recency_tilt_weight * decay

@@ -5,6 +5,7 @@ over similarity values that real embeddings don't offer.
 """
 
 from collections.abc import Iterator
+from datetime import date
 from unittest.mock import patch
 
 import pytest
@@ -631,3 +632,204 @@ def test_summarize_results_truncates_long_text_for_trace_legibility() -> None:
 
     assert len(summary[0]["text_preview"]) == retriever_module._TEXT_PREVIEW_LENGTH
     assert summary[0]["text_preview"] == long_text[: retriever_module._TEXT_PREVIEW_LENGTH]
+
+
+# --------------------------------------------------- recency tilt / collapse
+
+
+def _dated_chunk(chunk_id: str, text: str, doc_id: str) -> Chunk:
+    """A plain chunk -- lineage (effective_from/version/doc_family_id)
+    isn't a Chunk/ChunkMetadata field (see _upsert_with_lineage): it's
+    document metadata, injected at the store-write boundary."""
+    return Chunk(
+        id=chunk_id,
+        text=text,
+        metadata=ChunkMetadata(
+            source_file=doc_id, doc_id=doc_id, element_positions=[0], element_types=["title"]
+        ),
+    )
+
+
+def _upsert_with_lineage(vector_store, chunks_and_vectors, **metadata_kwargs):
+    from multimodal_rag.metadata import DocumentMetadata
+
+    for chunk, vector in chunks_and_vectors:
+        metadata = DocumentMetadata(classification="public", **metadata_kwargs)
+        vector_store.upsert([chunk], [vector], doc_metadata=metadata)
+
+
+def test_recency_tilt_breaks_a_near_tie_in_favor_of_the_newer_result(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "old text": [1.0, 0.0], "new text": [0.999, 0.001]}
+    )
+    old = _dated_chunk("old", "old text", "old-doc")
+    new = _dated_chunk("new", "new text", "new-doc")
+    _upsert_with_lineage(
+        vector_store, [(old, embedder.embed(["old text"])[0])], effective_from="2020-01-01"
+    )
+    _upsert_with_lineage(
+        vector_store,
+        [(new, embedder.embed(["new text"])[0])],
+        effective_from=date.today().isoformat(),
+    )
+
+    retriever = Retriever(vector_store, keyword_store, embedder, recency_tilt_weight=0.2)
+    # Without a tilt, "old" (near-perfect similarity) outranks "new"
+    # (slightly lower). With one, the small residual gap is exactly what
+    # the tilt is sized to close.
+    no_tilt = Retriever(vector_store, keyword_store, embedder, recency_tilt_weight=0.0)
+    assert [r.chunk_id for r in no_tilt.retrieve("query", RetrievalMethod.COSINE, top_k=2)] == [
+        "old",
+        "new",
+    ]
+
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
+    assert [r.chunk_id for r in results] == ["new", "old"]
+
+
+def test_recency_tilt_cannot_override_a_real_relevance_gap(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "clearly relevant": [1.0, 0.0], "barely relevant": [0.1, 0.99]}
+    )
+    relevant = _dated_chunk("relevant", "clearly relevant", "old-doc")
+    barely = _dated_chunk("barely", "barely relevant", "new-doc")
+    _upsert_with_lineage(
+        vector_store,
+        [(relevant, embedder.embed(["clearly relevant"])[0])],
+        effective_from="2015-01-01",
+    )
+    _upsert_with_lineage(
+        vector_store,
+        [(barely, embedder.embed(["barely relevant"])[0])],
+        effective_from=date.today().isoformat(),
+    )
+
+    # An intentionally extreme weight -- even this must not flip a real gap.
+    retriever = Retriever(vector_store, keyword_store, embedder, recency_tilt_weight=0.2)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2)
+
+    assert results[0].chunk_id == "relevant"
+
+
+def test_a_result_with_no_effective_from_gets_no_boost_and_no_penalty(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "undated": [1.0, 0.0]})
+    chunk = _dated_chunk("undated", "undated", "doc")
+    vector_store.upsert([chunk], embedder.embed(["undated"]))  # no doc_metadata at all
+
+    retriever = Retriever(vector_store, keyword_store, embedder, recency_tilt_weight=0.5)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
+
+    assert results[0].score == pytest.approx(1.0, abs=1e-6)
+
+
+def test_two_current_versions_of_one_family_collapse_to_the_higher_version(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    """Not just a superseded/current problem -- two uploads that were never
+    linked by supersedes_doc_id can both be "current" in the same family."""
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "v1 text": [1.0, 0.0], "v2 text": [0.99, 0.01]}
+    )
+    v1 = _dated_chunk("v1", "v1 text", "fam")
+    v2 = _dated_chunk("v2", "v2 text", "fam")
+    _upsert_with_lineage(
+        vector_store, [(v1, embedder.embed(["v1 text"])[0])],
+        doc_family_id="fam", version=1, effective_from="2024-01-01",
+    )
+    _upsert_with_lineage(
+        vector_store, [(v2, embedder.embed(["v2 text"])[0])],
+        doc_family_id="fam", version=2, effective_from="2025-01-01",
+    )
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=5)
+
+    assert [r.chunk_id for r in results] == ["v2"]
+
+
+def test_untagged_documents_are_never_collapsed_into_each_other(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    """No doc_family_id must mean "its own family of one", not "the same
+    family as every other untagged document"."""
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "a text": [1.0, 0.0], "b text": [0.99, 0.0]})
+    chunk_a = _dated_chunk("a", "a text", "doc-a")
+    chunk_b = _dated_chunk("b", "b text", "doc-b")
+    vector_store.upsert([chunk_a, chunk_b], embedder.embed(["a text", "b text"]))
+
+    retriever = Retriever(vector_store, keyword_store, embedder)
+    results = retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=5)
+
+    assert {r.chunk_id for r in results} == {"a", "b"}
+
+
+def test_recency_tilt_is_not_applied_after_reranking(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    """A cross-encoder reranker judges (query, text) pairs directly -- it
+    never sees .score, and its own returned order isn't driven by .score
+    either (see _rerank's docstring). Re-sorting its output by a tilted
+    score afterward wouldn't nudge its judgment, it would silently
+    overwrite it -- so the tilt must not run at all once reranked,
+    however recent one result is."""
+    embedder = FakeEmbedder({"query": [1.0, 0.0], "old": [1.0, 0.0], "new": [0.8, 0.6]})
+    old = _dated_chunk("old", "old", "old-doc")
+    new = _dated_chunk("new", "new", "new-doc")
+    _upsert_with_lineage(
+        vector_store, [(old, embedder.embed(["old"])[0])], effective_from="2015-01-01"
+    )
+    _upsert_with_lineage(
+        vector_store, [(new, embedder.embed(["new"])[0])], effective_from=date.today().isoformat()
+    )
+
+    # The reranker deliberately puts the OLDER result first -- its own
+    # judgment, which an extreme tilt weight must not override.
+    reranker = FakeReranker(order=[0, 1])  # candidates arrive [old, new] from cosine
+    retriever = Retriever(
+        vector_store, keyword_store, embedder, reranker=reranker, recency_tilt_weight=1.0
+    )
+
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=2, rerank=True, candidate_pool=2
+    )
+
+    assert [r.chunk_id for r in results] == ["old", "new"]
+
+
+def test_family_collapse_still_runs_on_the_full_reranked_pool_not_just_survivors(
+    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+) -> None:
+    """The reason _rerank stops truncating: family collapse (unlike the
+    tilt) is safe and still runs after reranking -- if it cut to top_k
+    first, a stale duplicate could occupy a slot while the current
+    version of the same family sat just outside it, uncollapsed."""
+    embedder = FakeEmbedder(
+        {"query": [1.0, 0.0], "stale dup": [1.0, 0.0], "current": [0.9, 0.0]}
+    )
+    stale = _dated_chunk("stale", "stale dup", "fam-old")
+    current = _dated_chunk("current", "current", "fam-new")
+    _upsert_with_lineage(
+        vector_store, [(stale, embedder.embed(["stale dup"])[0])],
+        doc_family_id="fam", version=1,
+    )
+    _upsert_with_lineage(
+        vector_store, [(current, embedder.embed(["current"])[0])],
+        doc_family_id="fam", version=2,
+    )
+
+    # The reranker ranks the stale duplicate first -- both still enter a
+    # top_k=1 cut unless collapse removes the lower version first.
+    reranker = FakeReranker(order=[0, 1])  # unchanged: stale, current
+    retriever = Retriever(vector_store, keyword_store, embedder, reranker=reranker)
+
+    results = retriever.retrieve(
+        "query", method=RetrievalMethod.COSINE, top_k=1, rerank=True, candidate_pool=2
+    )
+
+    assert [r.chunk_id for r in results] == ["current"]

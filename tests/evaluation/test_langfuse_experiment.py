@@ -50,7 +50,19 @@ def test_sync_dataset_creates_the_dataset_and_upserts_each_item() -> None:
 
 def test_make_task_returns_answer_refused_sources_and_context() -> None:
     chunk = SimpleNamespace(
-        source="doc.md", pages=[1], slides=[], text="the chunk text", elements=[]
+        source="doc.md",
+        pages=[1],
+        slides=[],
+        text="the chunk text",
+        elements=[],
+        # format_context_block() now also reads lineage fields (§10) --
+        # a real SearchResult defaults these; this hand-rolled fake has to
+        # set them explicitly to stand in for an untagged, current, v1
+        # document (the common case, and the one that produces a citation
+        # identical to before these fields existed).
+        version=1,
+        status="current",
+        effective_from=None,
     )
     fake_answer = SimpleNamespace(answer="the answer", refused=False, retrieved_chunks=[chunk])
     chain = MagicMock()

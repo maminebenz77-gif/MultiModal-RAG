@@ -404,6 +404,12 @@ async def test_undoing_a_replacement_puts_the_old_version_back_in_answers(
     _as(client, _ALICE)
     await client.patch(f"/documents/{v1}", json={"status": "current"})
 
-    # Both are current again -- nothing stops that (deciding between them
-    # is the next phase's job), but the undo must really have taken effect.
-    assert await _sources(client, _ALICE) == {v1, v2}
+    # Both are current again -- nothing stops that -- but the DEFAULT
+    # search response is unchanged: family collapse (§10) keeps only the
+    # higher version, exactly the case it exists for (two current versions
+    # of one family, reached WITHOUT a declared replacement in between).
+    # The undo is real, it just isn't visible here -- it's visible in
+    # include_superseded, which now genuinely has two current versions
+    # to return, not one current and one superseded.
+    assert await _sources(client, _ALICE) == {v2}
+    assert await _sources(client, _ALICE, include_superseded=True) == {v1, v2}

@@ -1,8 +1,10 @@
 import pytest
 
-from multimodal_rag.generation.agent import AgentChain
+from multimodal_rag.generation.agent import AgentChain, _build_system_prompt
+from multimodal_rag.generation.prompt import CONFLICT_RESOLUTION_RULE
 from multimodal_rag.providers.base import LLMProvider
 from multimodal_rag.providers.schema import ToolCall, ToolResponse
+from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.stores.schema import SearchResult
 
 
@@ -362,3 +364,12 @@ def test_doc_ids_are_passed_through_to_every_retrieve_call(
     agent.answer("a question", doc_ids=["doc-a"])
 
     assert retriever.calls[0]["doc_ids"] == ["doc-a"]
+
+
+def test_agent_system_prompt_includes_the_same_conflict_resolution_rule_as_the_chain() -> None:
+    """Both prompts embed the identical CONFLICT_RESOLUTION_RULE string --
+    the whole point being that this rule can't drift between them the way
+    the module docstring names as a real risk for the OTHER, hand-typed
+    rules they share."""
+    prompt = _build_system_prompt(RetrievalMethod.HYBRID_RRF, max_tool_rounds=4)
+    assert CONFLICT_RESOLUTION_RULE in prompt

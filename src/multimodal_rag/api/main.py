@@ -63,7 +63,14 @@ def create_app(
             keyword_store=keyword_store,
             embedder=embedder,
             indexer=HybridIndexer(vector_store, keyword_store),
-            retriever=Retriever(vector_store, keyword_store, embedder, reranker=reranker),
+            retriever=Retriever(
+                vector_store,
+                keyword_store,
+                embedder,
+                reranker=reranker,
+                recency_tilt_weight=settings.recency_tilt_weight,
+                recency_half_life_days=settings.recency_half_life_days,
+            ),
             db=Database(db_path),
         )
         yield

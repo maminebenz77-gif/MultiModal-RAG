@@ -155,6 +155,22 @@ class Settings(BaseSettings):
     device: str = "auto"
     allow_external: bool = True
 
+    # Retrieval ranking
+    recency_tilt_weight: float = 0.1
+    """Maximum multiplicative score boost for the most recent result in a
+    pool (see Retriever._apply_recency_and_collapse) -- 0.1 = up to +10%.
+    Multiplicative, not additive: fusion and reranking produce scores on
+    unrelated scales, and a fixed additive nudge would mean something
+    completely different depending which one ran. Deliberately small: a
+    tiebreaker between close candidates, never enough to promote a weakly
+    relevant recent document over a strongly relevant old one."""
+
+    recency_half_life_days: int = 180
+    """How fast the recency boost decays with age -- a document dated
+    exactly this many days ago gets half the maximum boost. ~6 months: long
+    enough that a quarter-old policy isn't already being penalized, short
+    enough that a multi-year-old one gets essentially none."""
+
     # Certificates
     trust_system_certs: bool = False
 

@@ -373,6 +373,10 @@ class QdrantStore(VectorStore):
                 slides=point.payload.get("slides", []),
                 parent_id=point.payload.get("parent_id"),
                 model_id=point.payload["model_id"],
+                version=point.payload.get("version", 1),
+                doc_family_id=point.payload.get("doc_family_id"),
+                effective_from=point.payload.get("effective_from"),
+                status=point.payload.get("status", "current"),
                 vector=point.vector if isinstance(point.vector, list) else None,
             )
             for point in response.points

@@ -25,7 +25,7 @@ from ..stores.schema import SearchResult
 from .chain import RetrieverLike
 from .context import assemble_context, format_context_block
 from .parse import parse_answer
-from .prompt import REFUSAL_TEXT
+from .prompt import CONFLICT_RESOLUTION_RULE, REFUSAL_TEXT
 from .schema import RagAnswer
 
 _DEFAULT_TOKEN_BUDGET = 2000
@@ -134,6 +134,9 @@ response with exactly this sentence:
 You may add one brief sentence after it explaining what the context has instead, if anything \
 relevant is present (e.g. "The context gives P95 latency, not P99."). Do not substitute that \
 adjacent fact as if it answered the question -- only mention it as context for why you can't.
+
+## HANDLING CONFLICTING SOURCES
+{CONFLICT_RESOLUTION_RULE}
 
 ## CITATION FORMAT
 When you use information from a context block, cite it inline using EXACTLY the same marker \

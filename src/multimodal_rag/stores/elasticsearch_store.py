@@ -222,6 +222,10 @@ class ElasticsearchStore(KeywordStore):
                 slides=hit["_source"].get("slides", []),
                 parent_id=hit["_source"].get("parent_id"),
                 model_id=None,
+                version=hit["_source"].get("version", 1),
+                doc_family_id=hit["_source"].get("doc_family_id"),
+                effective_from=hit["_source"].get("effective_from"),
+                status=hit["_source"].get("status", "current"),
             )
             for hit in response["hits"]["hits"]
         ]

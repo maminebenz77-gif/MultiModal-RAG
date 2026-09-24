@@ -110,3 +110,48 @@ def test_assemble_context_budgets_against_the_raw_table_not_the_summary() -> Non
     # so "b" never gets added -- this would fail if budgeting still used
     # the cheap embedded summary instead of the real generation text.
     assert [r.chunk_id for r in included] == ["a"]
+
+
+def _lineage_result(
+    chunk_id: str, version: int = 1, status: str = "current", effective_from: str | None = None
+) -> SearchResult:
+    return SearchResult(
+        chunk_id=chunk_id,
+        score=1.0,
+        text="text",
+        source="doc.md",
+        doc_id="doc.md",
+        element_types=["title"],
+        version=version,
+        status=status,
+        effective_from=effective_from,
+    )
+
+
+def test_format_context_block_shows_nothing_extra_for_an_untagged_document() -> None:
+    """version 1, current, no date -- the state of a document with no
+    lineage tags at all -- must look exactly as a citation always has."""
+    block = format_context_block(1, _lineage_result("a"))
+    assert block == "⟦1⟧ (source: doc.md)\ntext"
+
+
+def test_format_context_block_shows_the_version_when_above_one() -> None:
+    block = format_context_block(1, _lineage_result("a", version=3))
+    assert "v3" in block
+
+
+def test_format_context_block_shows_superseded_status() -> None:
+    block = format_context_block(1, _lineage_result("a", status="superseded"))
+    assert "superseded" in block
+
+
+def test_format_context_block_shows_the_effective_date() -> None:
+    block = format_context_block(1, _lineage_result("a", effective_from="2026-01-01"))
+    assert "effective 2026-01-01" in block
+
+
+def test_format_context_block_combines_all_three_lineage_facts() -> None:
+    block = format_context_block(
+        1, _lineage_result("a", version=2, status="superseded", effective_from="2025-06-01")
+    )
+    assert block.startswith("⟦1⟧ (source: doc.md, v2, superseded, effective 2025-06-01)\n")

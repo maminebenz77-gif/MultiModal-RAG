@@ -258,6 +258,40 @@ def test_doc_id_is_independent_of_the_display_filename(store: QdrantStore) -> No
     assert fetched.metadata.doc_id == "sha256-abc123"
 
 
+def test_search_populates_lineage_fields_from_the_payload(store: QdrantStore) -> None:
+    metadata = DocumentMetadata(
+        classification="public", doc_family_id="fam-1", version=2, effective_from="2026-01-01"
+    )
+    store.upsert(
+        [_chunk("doc.md::a::0", "chunk")], [_vector([1.0, 0.0, 0.0, 0.0])], doc_metadata=metadata
+    )
+
+    result = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)[0]
+
+    assert (result.version, result.doc_family_id, result.effective_from, result.status) == (
+        2,
+        "fam-1",
+        "2026-01-01",
+        "current",
+    )
+
+
+def test_search_defaults_lineage_fields_for_a_chunk_with_none(store: QdrantStore) -> None:
+    """A chunk written with no doc_metadata (most tests, the demo scripts) --
+    must round-trip as "a current first version", not raise or come back
+    None where a caller expects an int/str."""
+    store.upsert([_chunk("doc.md::a::0", "chunk")], [_vector([1.0, 0.0, 0.0, 0.0])])
+
+    result = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)[0]
+
+    assert (result.version, result.doc_family_id, result.effective_from, result.status) == (
+        1,
+        None,
+        None,
+        "current",
+    )
+
+
 def test_search_rejects_a_query_vector_from_a_different_model(store: QdrantStore) -> None:
     store.upsert([_chunk("doc.md::a::0", "stored")], [_vector([1.0, 0.0, 0.0, 0.0], "model-a")])
 

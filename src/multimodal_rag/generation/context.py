@@ -76,7 +76,8 @@ def assemble_context(results: list[SearchResult], token_budget: int) -> list[Sea
 
 def format_context_block(index: int, result: SearchResult) -> str:
     location = _format_location(result)
-    return f"⟦{index}⟧ (source: {result.source}{location})\n{_generation_text(result)}"
+    provenance = _format_provenance(result)
+    return f"⟦{index}⟧ (source: {result.source}{location}{provenance})\n{_generation_text(result)}"
 
 
 def _format_location(result: SearchResult) -> str:
@@ -85,3 +86,19 @@ def _format_location(result: SearchResult) -> str:
     if result.slides:
         return f", slide {', '.join(str(s) for s in result.slides)}"
     return ""
+
+
+def _format_provenance(result: SearchResult) -> str:
+    """Version lineage (metadata.py), shown to the model so it can act on
+    the CONFLICT_RESOLUTION_RULE (prompt.py) instead of silently picking
+    one of two disagreeing sources. Silent for a document with none of
+    this tagged -- version 1, current, no effective date -- so an
+    ordinary citation looks exactly as it did before this existed."""
+    parts = []
+    if result.version > 1:
+        parts.append(f"v{result.version}")
+    if result.status != "current":
+        parts.append(result.status)
+    if result.effective_from:
+        parts.append(f"effective {result.effective_from}")
+    return f", {', '.join(parts)}" if parts else ""

@@ -105,6 +105,14 @@ class ScopedRetriever:
                 _security_filter_for(self._principal),
                 None if self._include_superseded else _CURRENT_ONLY,
             ),
+            # Family collapse (retrieval/retriever.py) keeps only the
+            # highest version of a family by default -- correct when the
+            # answer should come from ONE current version, but it would
+            # silently defeat include_superseded if left on: a caller who
+            # deliberately asked to see history would still only get the
+            # newest version back, with every older one collapsed away
+            # before they ever saw it.
+            collapse_families=not self._include_superseded,
         )
         return self._post_check(results)
 

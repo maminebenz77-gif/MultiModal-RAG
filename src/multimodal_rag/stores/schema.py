@@ -36,6 +36,17 @@ class SearchResult(BaseModel):
     model_id: str | None = None
     """None for keyword (BM25) results — no embedding model is involved."""
 
+    version: int = 1
+    doc_family_id: str | None = None
+    effective_from: str | None = None
+    status: str = "current"
+    """Version lineage (see metadata.DocumentMetadata), read straight off the
+    chunk's stored payload -- not re-verified against sqlite the way access
+    control is (ScopedRetriever's post-check). A slightly stale ranking
+    nudge is a quality issue; a slightly stale ACL is a leak, which is why
+    only the second one gets the expensive double-check. Defaults match a
+    document with no lineage tags at all: a first version, current."""
+
     vector: list[float] | None = None
     """Only populated when a caller explicitly asks for it (e.g. MMR's
     diversity computation needs candidate vectors, not just scores) —

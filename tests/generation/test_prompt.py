@@ -46,3 +46,10 @@ def test_user_message_includes_numbered_context_and_question() -> None:
 def test_user_message_with_no_context_still_includes_question() -> None:
     messages = build_messages("What is X?", [])
     assert "Question: What is X?" in messages[1]["content"]
+
+
+def test_system_prompt_includes_the_conflict_resolution_rule() -> None:
+    from multimodal_rag.generation.prompt import CONFLICT_RESOLUTION_RULE
+
+    messages = build_messages("q", [])
+    assert CONFLICT_RESOLUTION_RULE in messages[0]["content"]

@@ -139,6 +139,35 @@ def test_doc_id_is_independent_of_the_display_filename(store: ElasticsearchStore
     assert results[0].doc_id == "sha256-abc123"
 
 
+def test_search_populates_lineage_fields_from_the_source(store: ElasticsearchStore) -> None:
+    metadata = DocumentMetadata(
+        classification="public", doc_family_id="fam-1", version=2, effective_from="2026-01-01"
+    )
+    store.index_chunks([_chunk("doc.md::a::0", "chunk one")], metadata)
+
+    result = store.search("chunk", top_k=1)[0]
+
+    assert (result.version, result.doc_family_id, result.effective_from, result.status) == (
+        2,
+        "fam-1",
+        "2026-01-01",
+        "current",
+    )
+
+
+def test_search_defaults_lineage_fields_for_a_chunk_with_none(store: ElasticsearchStore) -> None:
+    store.index_chunks([_chunk("doc.md::a::0", "chunk one")])
+
+    result = store.search("chunk", top_k=1)[0]
+
+    assert (result.version, result.doc_family_id, result.effective_from, result.status) == (
+        1,
+        None,
+        None,
+        "current",
+    )
+
+
 def test_search_ranks_more_relevant_document_higher(store: ElasticsearchStore) -> None:
     chunks = [
         _chunk("doc.md::a::0", "latency latency latency: the internal gateway was slow"),
