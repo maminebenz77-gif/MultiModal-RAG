@@ -333,6 +333,7 @@ async def test_metrics_describe_only_the_callers_own_activity(
 # test above for it.
 _PROTECTED = {
     ("POST", "/ingest"),
+    ("POST", "/suggest-tags"),
     ("GET", "/documents"),
     ("DELETE", "/documents"),
     ("PATCH", "/documents/{doc_id}"),

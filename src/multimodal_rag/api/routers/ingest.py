@@ -25,8 +25,8 @@ import hashlib
 import json
 import logging
 import tempfile
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import ValidationError
@@ -35,8 +35,9 @@ from starlette.concurrency import run_in_threadpool
 from ...chunking.parent_child import ParentChildChunker
 from ...config import get_settings
 from ...device import resolve_device
-from ...ingestion import parse_document
 from ...identity import Principal
+from ...ingestion import parse_document
+from ...ingestion.tag_suggestion import build_excerpt, suggest_tags
 from ...metadata import DocumentMetadata
 from ...providers.base import EmbeddingProvider
 from ...providers.factory import embedder_from_override
@@ -45,7 +46,13 @@ from ...stores.indexer import HybridIndexer
 from ..db import AccessDeniedError, Database, DocumentNotFoundError
 from ..dependencies import get_db, get_embedder, get_indexer, get_vector_store
 from ..identity import get_principal
-from ..schemas import DocumentSummary, IngestResponse, ProviderOverride, RuntimeOverrides
+from ..schemas import (
+    DocumentSummary,
+    IngestResponse,
+    ProviderOverride,
+    RuntimeOverrides,
+    SuggestTagsResponse,
+)
 
 router = APIRouter()
 
@@ -419,3 +426,53 @@ async def ingest(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+_MAX_ELEMENTS_FOR_EXCERPT = 20
+"""Enough to reach past a title page into real body content for every
+supported format, without parsing (and, for a table, potentially
+LLM-summarizing) a whole large document just to suggest a few tags."""
+
+
+def _suggest_tags_sync(raw_bytes: bytes, filename: str) -> list[str]:
+    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
+        tmp.write(raw_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        # summarize_tables=False -- a table summary is itself an LLM
+        # call; suggesting tags is a nice-to-have that shouldn't double
+        # ingestion's real LLM cost just to get a short text excerpt.
+        elements = parse_document(tmp_path, summarize_tables=False)
+    except Exception:
+        # An unparseable/corrupt file is exactly the kind of thing the
+        # real /ingest call below will surface properly (a real error,
+        # to a caller who's committing to ingest it) -- this endpoint
+        # is a preview with nothing to commit, so it fails soft instead:
+        # no suggestions, not a 4xx/5xx for a file the user hasn't even
+        # decided to ingest yet.
+        return []
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    excerpt = build_excerpt([e.text for e in elements[:_MAX_ELEMENTS_FOR_EXCERPT]])
+    return suggest_tags(excerpt)
+
+
+@router.post("/suggest-tags", response_model=SuggestTagsResponse)
+async def suggest_tags_endpoint(
+    file: UploadFile,
+    principal: Principal = Depends(get_principal),
+) -> SuggestTagsResponse:
+    """Preview-only: parses the file and asks the LLM for candidate tags,
+    but writes nothing anywhere -- no chunking, no embedding, no store or
+    database write. `principal` is required (this endpoint sits behind
+    the same app-wide identity dependency every other route does) but
+    otherwise unused: there's no document identity yet to scope this to,
+    since nothing is being ingested.
+    """
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        return SuggestTagsResponse(tags=[])
+    filename = file.filename or "unnamed"
+    tags = await run_in_threadpool(_suggest_tags_sync, raw_bytes, filename)
+    return SuggestTagsResponse(tags=tags)

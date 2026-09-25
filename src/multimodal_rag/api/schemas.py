@@ -101,6 +101,16 @@ class IngestResponse(BaseModel):
     already-ingested document)."""
 
 
+class SuggestTagsResponse(BaseModel):
+    tags: list[str]
+    """LLM-suggested tags from an excerpt of the file's own parsed text
+    -- always a nice-to-have, never authoritative: an empty list means
+    no suggestion was possible (no LLM configured, an unparseable file,
+    a malformed model response), not an error. The frontend pre-fills
+    the Tags field with these, editable, before the ingest form is ever
+    submitted -- nothing is written to the corpus by this endpoint."""
+
+
 class DocumentSummary(BaseModel):
     doc_id: str
     filename: str

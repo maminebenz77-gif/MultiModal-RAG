@@ -164,6 +164,39 @@ def test_new_conversation_clears_session_history() -> None:
     assert at.session_state["turns"] == []
 
 
+def test_selecting_a_file_fetches_tag_suggestions_without_raising_when_api_is_unreachable() -> (
+    None
+):
+    # No real API is listening (see the module docstring), so
+    # POST /suggest-tags fails -- the fetch has to fail soft (an empty
+    # suggestion, not a crash) exactly like every other API call this
+    # app makes against a closed port.
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    uploader = at.sidebar.file_uploader[0]
+    uploader.set_value(("doc.md", b"some content", "text/markdown"))
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["suggested_tags_text"] == ""
+
+
+def test_clearing_the_file_selection_clears_the_suggested_tags() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+    at.session_state["suggested_tags_text"] = "runbook, q3-2026"
+    at.session_state["suggested_tags_for"] = ("doc.md", 12)
+
+    uploader = at.sidebar.file_uploader[0]
+    uploader.set_value(None)
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["suggested_tags_text"] == ""
+    assert at.session_state["suggested_tags_for"] is None
+
+
 def test_ingest_form_has_author_date_and_tags_inputs() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)

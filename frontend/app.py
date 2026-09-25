@@ -421,10 +421,48 @@ with st.sidebar:
         st.caption("Status: unreachable")
 
     replace_options = _replace_options(api_base_url)
+
+    # Deliberately OUTSIDE the form, same reasoning as the bulk
+    # uploader below: a form only exposes a widget's value to the
+    # script after its own submit button is clicked, which would make
+    # it impossible to fetch tag suggestions (or preview skipped junk,
+    # in the bulk case) before the user commits to that click.
+    uploaded_file = st.file_uploader(
+        "Choose a file", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"], key="ingest_file"
+    )
+
+    # Fetched once per newly-selected file, not on every rerun a widget
+    # inside the form below triggers -- the fingerprint is what makes
+    # "still the same file" cheap to check without re-reading its bytes.
+    if uploaded_file is None:
+        st.session_state.suggested_tags_for = None
+        st.session_state.suggested_tags_text = ""
+    else:
+        file_fingerprint = (uploaded_file.name, uploaded_file.size)
+        if st.session_state.get("suggested_tags_for") != file_fingerprint:
+            try:
+                suggest_response = httpx.post(
+                    f"{api_base_url}/suggest-tags",
+                    files={
+                        "file": (
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            uploaded_file.type,
+                        )
+                    },
+                    timeout=30.0,
+                )
+                suggest_response.raise_for_status()
+                suggested = suggest_response.json()["tags"]
+            except httpx.HTTPError:
+                # A nice-to-have preview failing must never block the
+                # actual ingest form below -- same fail-soft contract
+                # the backend's own suggest_tags() already keeps.
+                suggested = []
+            st.session_state.suggested_tags_text = ", ".join(suggested)
+            st.session_state.suggested_tags_for = file_fingerprint
+
     with st.form("ingest_form", clear_on_submit=True):
-        uploaded_file = st.file_uploader(
-            "Choose a file", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"]
-        )
         replaces_label = st.selectbox(
             "This replaces (optional)",
             options=list(replace_options),
@@ -452,7 +490,10 @@ with st.sidebar:
         )
         tags_input = st.text_input(
             "Tags (optional, comma-separated)",
-            help='Free-form labels for the Filters panel later -- e.g. "runbook, q3-2026".',
+            value=st.session_state.get("suggested_tags_text", ""),
+            help='Free-form labels for the Filters panel later -- e.g. "runbook, q3-2026". '
+            "Pre-filled with AI-suggested tags once a file is chosen above, when available -- "
+            "edit or clear them before submitting; nothing is saved until you click Ingest.",
         )
         ingest_submitted = st.form_submit_button("Ingest")
 
