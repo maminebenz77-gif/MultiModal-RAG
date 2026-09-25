@@ -11,6 +11,10 @@ venv/
 # uv
 .uv-cache/
 .model-cache/
+.model-cache*/
+
+# Local service data
+.local-services/
 
 # Tooling caches
 .mypy_cache/

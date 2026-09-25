@@ -1,7 +1,7 @@
 [project]
 name = "multimodal-rag"
 version = "0.1.0"
-description = "A multimodal technical RAG system, built step by step as a learning project."
+description = "A production-minded multimodal technical RAG system."
 requires-python = ">=3.13"
 dependencies = [
     "elasticsearch>=9.4.1",

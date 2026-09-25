@@ -1,4 +1,4 @@
-"""Streamlit demo UI for the RAG API -- a real chat, not a single
+"""Streamlit UI for the RAG API -- a real chat, not a single
 question/answer form.
 
 Deliberately talks to the API only over HTTP (httpx), never imports
@@ -87,6 +87,7 @@ _JUNK_PREFIXES = ("~$", ".")
 _JUNK_NAMES = {"thumbs.db", "desktop.ini"}
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".xlsx"}
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
+_LIBRA_LOGO_PATH = Path(__file__).resolve().parents[1] / "images" / "icone_LIBRA_AI.png"
 
 
 def _load_provider_catalog() -> dict:
@@ -137,7 +138,7 @@ def _parse_tags(raw: str) -> list[str]:
     return [tag.strip() for tag in raw.split(",") if tag.strip()]
 
 
-st.set_page_config(page_title="Multimodal RAG Demo", layout="wide")
+st.set_page_config(page_title="LIBRA AI", layout="wide")
 
 api_base_url = get_frontend_settings().api_base_url
 provider_defaults = get_frontend_provider_defaults()
@@ -806,8 +807,12 @@ with st.sidebar:
             st.session_state.confirm_wipe = True
             st.rerun()
 
-_title_col, _new_conversation_col = st.columns([5, 1])
-_title_col.title("Multimodal RAG Demo")
+_logo_col, _title_col, _new_conversation_col = st.columns([1, 5, 1])
+with _logo_col:
+    st.image(str(_LIBRA_LOGO_PATH), width=88)
+with _title_col:
+    st.title("LIBRA AI")
+    st.caption("Library Intelligence & Reasoning Agent")
 with _new_conversation_col:
     st.write("")  # vertical nudge so the button lines up with the title text
     if st.button("New conversation"):

@@ -1,6 +1,6 @@
 # Multimodal Technical RAG
 
-A multimodal Retrieval-Augmented Generation (RAG) system for technical documents (text, tables, diagrams, images), built incrementally as a learning project. See [`CLAUDE.md`](./CLAUDE.md) for how we work on this repo, and [`Multimodal_RAG_Build_Plan.md`](./Multimodal_RAG_Build_Plan.md) for the full build plan.
+A multimodal Retrieval-Augmented Generation (RAG) system for technical documents (text, tables, diagrams, images), built as a real production-minded project. See [`CLAUDE.md`](./CLAUDE.md) for how we work on this repo.
 
 ## Architecture, at a high level
 

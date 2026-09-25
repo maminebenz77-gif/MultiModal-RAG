@@ -1,6 +1,6 @@
 # CLAUDE.md — Working Agreement for This Project
 
-This repo is a **learning project**: we're building a multimodal technical RAG system together, step by step, over many sessions. The goal is for the user to deeply understand every piece (for AI Product Manager interview prep), not to get to a finished product fast. **Pace matters more than speed.**
+This repo is a real multimodal technical RAG project, built incrementally over many sessions. The goal is to develop a maintainable, production-minded system while understanding every architectural decision. **Correctness and clarity matter more than speed.**
 
 Every future session in this repo must follow the Teaching Contract below.
 

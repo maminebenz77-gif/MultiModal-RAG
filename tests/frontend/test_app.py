@@ -24,7 +24,8 @@ def test_app_loads_without_exceptions() -> None:
 def test_app_renders_title_and_sidebar() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
-    assert at.title[0].value == "Multimodal RAG Demo"
+    assert at.title[0].value == "LIBRA AI"
+    assert any("Library Intelligence & Reasoning Agent" in c.value for c in at.caption)
     assert any(h.value == "Ingest a document" for h in at.sidebar.header)
 
 
