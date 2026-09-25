@@ -634,6 +634,33 @@ def test_summarize_results_truncates_long_text_for_trace_legibility() -> None:
     assert summary[0]["text_preview"] == long_text[: retriever_module._TEXT_PREVIEW_LENGTH]
 
 
+def test_summarize_results_includes_tags_author_date_and_classification() -> None:
+    # What makes a retrieved chunk's own metadata visible on its
+    # Langfuse retrieval span -- not just score/text, but what it IS
+    # (tags, author, date, confidentiality level).
+    result = SearchResult(
+        chunk_id="a",
+        score=0.5,
+        text="text",
+        source="doc.md",
+        doc_id="doc",
+        element_types=["paragraph"],
+        tags=["runbook"],
+        author="Alice",
+        doc_date="2026-01-01",
+        classification="c2",
+        private=True,
+    )
+
+    summary = retriever_module._summarize_results([result])[0]
+
+    assert summary["tags"] == ["runbook"]
+    assert summary["author"] == "Alice"
+    assert summary["doc_date"] == "2026-01-01"
+    assert summary["classification"] == "c2"
+    assert summary["private"] is True
+
+
 # --------------------------------------------------- recency tilt / collapse
 
 

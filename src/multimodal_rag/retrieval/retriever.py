@@ -43,6 +43,16 @@ def _summarize_results(results: list[SearchResult]) -> list[dict[str, Any]]:
             "pages": r.pages,
             "slides": r.slides,
             "text_preview": r.text[:_TEXT_PREVIEW_LENGTH],
+            # The rest of DocumentMetadata (see stores/schema.py's
+            # SearchResult) -- visible here so a Langfuse trace shows
+            # what a retrieved chunk actually carries (tags, who wrote
+            # it, when, and its confidentiality level), not just its
+            # score and a text preview.
+            "tags": r.tags,
+            "author": r.author,
+            "doc_date": r.doc_date,
+            "classification": r.classification,
+            "private": r.private,
         }
         for r in results
     ]

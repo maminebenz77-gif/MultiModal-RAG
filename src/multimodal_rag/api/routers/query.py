@@ -176,8 +176,13 @@ async def query(
 
     query_id = str(uuid.uuid4())
     start_time = time.perf_counter()
+    metadata_filter_for_trace = (
+        request.metadata_filter.model_dump() if request.metadata_filter is not None else None
+    )
     try:
-        with traced_query(conversation_id, query_id, request.question) as query_span:
+        with traced_query(
+            conversation_id, query_id, request.question, metadata_filter_for_trace
+        ) as query_span:
             if llm_override is not None:
 
                 def _answer_with_override():

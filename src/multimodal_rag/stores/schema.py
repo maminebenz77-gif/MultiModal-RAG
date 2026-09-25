@@ -47,6 +47,22 @@ class SearchResult(BaseModel):
     only the second one gets the expensive double-check. Defaults match a
     document with no lineage tags at all: a first version, current."""
 
+    tags: list[str] = []
+    author: str | None = None
+    doc_date: str | None = None
+    classification: str = "public"
+    private: bool = False
+    """The rest of DocumentMetadata (see metadata.py), read straight off the
+    same stored payload as the lineage fields above -- for observability
+    only (this is what makes a chunk's tags/author/date/classification
+    visible on the retrieval span in Langfuse; see
+    retriever._summarize_results). NEVER the access-control authority:
+    ScopedRetriever's mandatory security filter and sqlite post-check
+    already decide visibility before a result ever reaches here, so
+    `classification`/`private` on a SearchResult are what THIS chunk
+    happens to carry, not a second place to re-derive who may see it.
+    Defaults match an untagged, public, shared document."""
+
     vector: list[float] | None = None
     """Only populated when a caller explicitly asks for it (e.g. MMR's
     diversity computation needs candidate vectors, not just scores) —

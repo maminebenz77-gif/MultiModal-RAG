@@ -6,6 +6,7 @@ doc_ids filter, and query logging -- not "can an LLM answer from
 context" again.
 """
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -196,6 +197,65 @@ async def test_query_metadata_filter_excludes_documents_missing_the_requested_ta
 
     assert response.status_code == 200
     assert response.json()["citations"] == []
+
+
+async def test_query_passes_the_metadata_filter_to_tracing(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Langfuse itself is blanked for the whole suite (see conftest.py),
+    # so this can't assert on a real trace's metadata -- it asserts on
+    # what routers/query.py actually HANDS to traced_query(), which is
+    # the one piece of new wiring that's actually router-owned logic
+    # (model_dump()-ing the request field), not something tracing.py's
+    # own unit tests already cover.
+    from multimodal_rag.api.routers import query as query_module
+
+    captured: dict = {}
+    original_traced_query = query_module.traced_query
+
+    @contextmanager
+    def _spy(conversation_id, query_id, question, metadata_filter=None):
+        captured["metadata_filter"] = metadata_filter
+        with original_traced_query(conversation_id, query_id, question, metadata_filter) as span:
+            yield span
+
+    monkeypatch.setattr(query_module, "traced_query", _spy)
+    await ingest_sample_doc(client)
+
+    response = await client.post(
+        "/query",
+        json={"question": "anything", "metadata_filter": {"tags": ["runbook"]}},
+    )
+
+    assert response.status_code == 200
+    assert captured["metadata_filter"] == {
+        "tags": ["runbook"],
+        "author": None,
+        "date_from": None,
+        "date_to": None,
+    }
+
+
+async def test_query_passes_none_to_tracing_when_no_metadata_filter_is_given(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from multimodal_rag.api.routers import query as query_module
+
+    captured: dict = {}
+    original_traced_query = query_module.traced_query
+
+    @contextmanager
+    def _spy(conversation_id, query_id, question, metadata_filter=None):
+        captured["metadata_filter"] = metadata_filter
+        with original_traced_query(conversation_id, query_id, question, metadata_filter) as span:
+            yield span
+
+    monkeypatch.setattr(query_module, "traced_query", _spy)
+
+    response = await client.post("/query", json={"question": "anything"})
+
+    assert response.status_code == 200
+    assert captured["metadata_filter"] is None
 
 
 async def test_query_defaults_to_hybrid_rrf_retrieval_method(client: httpx.AsyncClient) -> None:

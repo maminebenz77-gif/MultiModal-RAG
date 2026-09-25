@@ -277,6 +277,47 @@ def test_search_populates_lineage_fields_from_the_payload(store: QdrantStore) ->
     )
 
 
+def test_search_populates_tags_author_date_and_privacy_from_the_payload(
+    store: QdrantStore,
+) -> None:
+    # For observability (see retriever._summarize_results -- what makes a
+    # chunk's tags/author/date/classification visible on a Langfuse
+    # retrieval span), not access control -- ScopedRetriever's own filter
+    # and post-check already decided visibility before this ever matters.
+    metadata = DocumentMetadata(
+        classification="c2",
+        private=True,
+        author="Alice",
+        doc_date="2026-01-01",
+        tags=["runbook", "q1"],
+    )
+    store.upsert(
+        [_chunk("doc.md::a::0", "chunk")], [_vector([1.0, 0.0, 0.0, 0.0])], doc_metadata=metadata
+    )
+
+    result = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)[0]
+
+    assert result.tags == ["runbook", "q1"]
+    assert result.author == "Alice"
+    assert result.doc_date == "2026-01-01"
+    assert result.classification == "c2"
+    assert result.private is True
+
+
+def test_search_defaults_tags_author_date_and_privacy_for_a_chunk_with_none(
+    store: QdrantStore,
+) -> None:
+    store.upsert([_chunk("doc.md::a::0", "chunk")], [_vector([1.0, 0.0, 0.0, 0.0])])
+
+    result = store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)[0]
+
+    assert result.tags == []
+    assert result.author is None
+    assert result.doc_date is None
+    assert result.classification == "public"
+    assert result.private is False
+
+
 def test_search_defaults_lineage_fields_for_a_chunk_with_none(store: QdrantStore) -> None:
     """A chunk written with no doc_metadata (most tests, the demo scripts) --
     must round-trip as "a current first version", not raise or come back

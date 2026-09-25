@@ -234,6 +234,11 @@ class ElasticsearchStore(KeywordStore):
                 doc_family_id=hit["_source"].get("doc_family_id"),
                 effective_from=hit["_source"].get("effective_from"),
                 status=hit["_source"].get("status", "current"),
+                tags=hit["_source"].get("tags", []),
+                author=hit["_source"].get("author"),
+                doc_date=hit["_source"].get("doc_date"),
+                classification=hit["_source"].get("classification", "public"),
+                private=hit["_source"].get("private", False),
             )
             for hit in response["hits"]["hits"]
         ]

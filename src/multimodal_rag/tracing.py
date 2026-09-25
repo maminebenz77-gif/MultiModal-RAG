@@ -182,7 +182,12 @@ def get_langfuse_client() -> Langfuse | None:
 
 
 @contextmanager
-def traced_query(conversation_id: str, query_id: str, question: str) -> Iterator[Any]:
+def traced_query(
+    conversation_id: str,
+    query_id: str,
+    question: str,
+    metadata_filter: dict[str, Any] | None = None,
+) -> Iterator[Any]:
     """Wraps one /query call as its own trace, grouped into a session per
     conversation -- every turn of a conversation becomes its own trace,
     all visible together under one session in the Langfuse UI. Yields
@@ -190,6 +195,13 @@ def traced_query(conversation_id: str, query_id: str, question: str) -> Iterator
     answer once it's known, via update_span_output(span, answer); this
     span's own `input` is set eagerly to `question`, since that's
     already known when the query starts.
+
+    `metadata_filter`, if given, is the caller's tags/author/date-range
+    "Filters" panel selection for this turn (see
+    api.schemas.MetadataFilterRequest) -- attached to the trace's own
+    metadata so it's visible at a glance in the Langfuse UI which filter
+    (if any) narrowed this specific question's retrieval, without having
+    to cross-reference the request that produced the trace.
 
     A no-op (yields None) if tracing isn't configured OR if opening the
     trace fails for any reason -- either way, the wrapped query still
@@ -206,7 +218,10 @@ def traced_query(conversation_id: str, query_id: str, question: str) -> Iterator
         return
 
     span_cm = client.start_as_current_observation(
-        name="query", as_type="span", input=question, metadata={"query_id": query_id}
+        name="query",
+        as_type="span",
+        input=question,
+        metadata={"query_id": query_id, "metadata_filter": metadata_filter},
     )
     try:
         span = span_cm.__enter__()

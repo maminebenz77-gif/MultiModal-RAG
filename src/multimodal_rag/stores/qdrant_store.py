@@ -397,6 +397,11 @@ class QdrantStore(VectorStore):
                 doc_family_id=point.payload.get("doc_family_id"),
                 effective_from=point.payload.get("effective_from"),
                 status=point.payload.get("status", "current"),
+                tags=point.payload.get("tags", []),
+                author=point.payload.get("author"),
+                doc_date=point.payload.get("doc_date"),
+                classification=point.payload.get("classification", "public"),
+                private=point.payload.get("private", False),
                 vector=point.vector if isinstance(point.vector, list) else None,
             )
             for point in response.points

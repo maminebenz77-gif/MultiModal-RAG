@@ -276,7 +276,32 @@ def test_traced_query_propagates_session_id_and_opens_a_span_with_the_question_a
 
     mock_propagate.assert_called_once_with(session_id="conv-1", trace_name="query")
     fake_client.start_as_current_observation.assert_called_once_with(
-        name="query", as_type="span", input="a question", metadata={"query_id": "query-1"}
+        name="query",
+        as_type="span",
+        input="a question",
+        metadata={"query_id": "query-1", "metadata_filter": None},
+    )
+
+
+def test_traced_query_attaches_the_metadata_filter_when_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # What makes the frontend's "Filters" panel selection visible on the
+    # trace itself, at a glance, rather than only inferable from the
+    # request that produced it.
+    fake_client = MagicMock()
+    fake_client.start_as_current_observation.return_value.__enter__.return_value = MagicMock()
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+    metadata_filter = {"tags": ["runbook"], "author": None, "date_from": None, "date_to": None}
+
+    with tracing.traced_query("conv-1", "query-1", "a question", metadata_filter):
+        pass
+
+    fake_client.start_as_current_observation.assert_called_once_with(
+        name="query",
+        as_type="span",
+        input="a question",
+        metadata={"query_id": "query-1", "metadata_filter": metadata_filter},
     )
 
 

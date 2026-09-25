@@ -444,6 +444,12 @@ with st.sidebar:
         author_input = st.text_input(
             "Author (optional)", help="Who actually wrote this document, for the Filters panel."
         )
+        doc_date_input = st.date_input(
+            "Document date (optional)",
+            value=None,
+            help="When this document's CONTENT was written or published -- what the "
+            "Filters panel's date range narrows on. Leave blank if unknown.",
+        )
         tags_input = st.text_input(
             "Tags (optional, comma-separated)",
             help='Free-form labels for the Filters panel later -- e.g. "runbook, q3-2026".',
@@ -465,6 +471,7 @@ with st.sidebar:
                         "classification": _CLASSIFICATION_OPTIONS[classification_label],
                         "private": is_private,
                         "author": author_input.strip() or None,
+                        "doc_date": doc_date_input.isoformat() if doc_date_input else None,
                         "tags": _parse_tags(tags_input),
                     }
                 )
@@ -546,6 +553,12 @@ with st.sidebar:
     bulk_author_input = st.text_input(
         "Author for every file in this batch (optional)", key="bulk_author"
     )
+    bulk_doc_date_input = st.date_input(
+        "Document date for every file in this batch (optional)",
+        value=None,
+        key="bulk_doc_date",
+        help="Ingest files one at a time above if they need different dates.",
+    )
     bulk_tags_input = st.text_input(
         "Tags for every file in this batch (optional, comma-separated)",
         key="bulk_tags",
@@ -565,6 +578,7 @@ with st.sidebar:
                 "classification": _CLASSIFICATION_OPTIONS[bulk_classification_label],
                 "private": bulk_is_private,
                 "author": bulk_author_input.strip() or None,
+                "doc_date": bulk_doc_date_input.isoformat() if bulk_doc_date_input else None,
                 "tags": _parse_tags(bulk_tags_input),
             }
         )

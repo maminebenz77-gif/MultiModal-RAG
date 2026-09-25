@@ -164,22 +164,26 @@ def test_new_conversation_clears_session_history() -> None:
     assert at.session_state["turns"] == []
 
 
-def test_ingest_form_has_author_and_tags_inputs() -> None:
+def test_ingest_form_has_author_date_and_tags_inputs() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    labels = [t.label for t in at.sidebar.text_input]
-    assert "Author (optional)" in labels
-    assert "Tags (optional, comma-separated)" in labels
+    text_labels = [t.label for t in at.sidebar.text_input]
+    assert "Author (optional)" in text_labels
+    assert "Tags (optional, comma-separated)" in text_labels
+    date_labels = [d.label for d in at.sidebar.date_input]
+    assert "Document date (optional)" in date_labels
 
 
-def test_bulk_ingest_form_has_author_and_tags_inputs() -> None:
+def test_bulk_ingest_form_has_author_date_and_tags_inputs() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    labels = [t.label for t in at.sidebar.text_input]
-    assert "Author for every file in this batch (optional)" in labels
-    assert "Tags for every file in this batch (optional, comma-separated)" in labels
+    text_labels = [t.label for t in at.sidebar.text_input]
+    assert "Author for every file in this batch (optional)" in text_labels
+    assert "Tags for every file in this batch (optional, comma-separated)" in text_labels
+    date_labels = [d.label for d in at.sidebar.date_input]
+    assert "Document date for every file in this batch (optional)" in date_labels
 
 
 def test_filters_button_opens_without_exception_on_an_empty_corpus() -> None:
