@@ -267,6 +267,46 @@ def test_build_expertise_agent_indexes_each_document_with_its_own_metadata(
     assert by_source["b.md"].author is None
 
 
+def test_build_expertise_agent_discovers_documents_in_subfolders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # documents/ may group files into real subfolders -- e.g. a
+    # "runbooks/" folder meant to be bulk-ingested via the frontend's
+    # native folder picker in a live demo. iterdir() only lists
+    # immediate children, so anything nested was silently never
+    # discovered at all; this is the regression for that.
+    expertise_dir = tmp_path / "legal"
+    documents_dir = expertise_dir / "documents"
+    (documents_dir / "runbooks").mkdir(parents=True)
+    (documents_dir / "top-level.md").write_text("top")
+    (documents_dir / "runbooks" / "nested.md").write_text("nested")
+
+    monkeypatch.setattr(ree, "_ingest_document", lambda path: [SimpleNamespace(text=path.name)])
+    monkeypatch.setattr(
+        ree, "get_embedder", lambda: MagicMock(embed=lambda texts: [MagicMock() for _ in texts])
+    )
+    monkeypatch.setattr(ree, "get_vector_store", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(ree, "get_keyword_store", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(ree, "Retriever", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(ree, "AgentChain", lambda *a, **k: MagicMock())
+
+    index_calls: list[tuple[list[Any], Any]] = []
+
+    class _SpyIndexer:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def index(self, chunks: list[Any], vectors: list[Any], doc_metadata: Any) -> None:
+            index_calls.append((chunks, doc_metadata))
+
+    monkeypatch.setattr(ree, "HybridIndexer", _SpyIndexer)
+
+    ree.build_expertise_agent(expertise_dir)
+
+    indexed_names = {chunks[0].text for chunks, _ in index_calls}
+    assert indexed_names == {"top-level.md", "nested.md"}
+
+
 def test_print_results_shows_n_a_for_refusal_accuracy_when_no_refusal_items(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -165,8 +165,15 @@ def build_expertise_agent(expertise_dir: Path) -> AgentChain:
     name = expertise_dir.name
     documents_dir = expertise_dir / "documents"
     doc_metadata_by_filename = _load_document_metadata(expertise_dir)
+    # rglob, not iterdir -- documents/ may itself group files into real
+    # subfolders (e.g. a "runbooks/" folder meant to be bulk-ingested via
+    # the frontend's folder picker in a live demo); iterdir() only lists
+    # immediate children, so anything nested was silently never ingested
+    # at all. _load_document_metadata keys on bare filename, not the
+    # relative path, so filenames still need to be unique within one
+    # expertise folder regardless of which subfolder they live in.
     paths = sorted(
-        p for p in documents_dir.iterdir() if p.is_file() and not p.name.startswith(".")
+        p for p in documents_dir.rglob("*") if p.is_file() and not p.name.startswith(".")
     )
     chunks_by_path = {path: _ingest_document(path) for path in paths}
     all_chunks = [chunk for chunks in chunks_by_path.values() for chunk in chunks]

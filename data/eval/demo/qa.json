@@ -1,0 +1,33 @@
+[
+  {
+    "id": "deploy-approval-current-count",
+    "question": "How many approvers does a production deploy need at Solstice Systems?",
+    "expert_answer": "Two independent approvers, neither of whom is the author of the change. This was raised from one approver after a January 2026 incident where a single reviewer missed a database migration; the one-approver version is superseded and no longer in effect."
+  },
+  {
+    "id": "log-retention-current-policy",
+    "question": "How long does Solstice Systems retain customer-facing logs for?",
+    "expert_answer": "90 days, effective June 1, 2026 -- extended from the previous 30-day window to satisfy an updated SOC 2 Type II audit requirement. The 30-day figure is the prior, now-outdated policy."
+  },
+  {
+    "id": "restart-command-depends-on-service",
+    "question": "What command restarts the service, and when should I run it?",
+    "expert_answer": "It depends which outage: `systemctl restart postgres-pooler` after promoting a standby during a primary database failover, or `systemctl restart nginx-edge` on an upstream that keeps failing its health check after being drained during an edge load balancer outage. There is no single 'the service' -- the correct answer depends on which runbook applies."
+  },
+  {
+    "id": "database-choice-rationale",
+    "question": "What primary datastore did Solstice Systems choose for the core application?",
+    "expert_answer": "Postgres, run as a single-primary/standby pair -- synchronous replication for billing tables (to avoid losing a committed billing write on failover) and asynchronous replication for everything else, chosen for strong consistency guarantees on financial-adjacent data."
+  },
+  {
+    "id": "oncall-escalation-path",
+    "question": "Who gets paged if the primary on-call doesn't acknowledge an incident within 5 minutes?",
+    "expert_answer": "The secondary on-call for the affected service. If the incident is still unresolved 15 minutes after that, it escalates directly to the on-call engineering lead, not to a third individual contributor."
+  },
+  {
+    "id": "unrecorded-revenue",
+    "question": "What was Solstice Systems' quarterly revenue?",
+    "expert_answer": "Not covered by any of these documents -- they're engineering runbooks, ADRs, and internal policies, none of which record financial figures.",
+    "expect_refusal": true
+  }
+]

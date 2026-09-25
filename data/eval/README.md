@@ -14,7 +14,9 @@ No code changes needed — just add files:
 
 ```
 data/eval/<expertise-name>/
-  documents/               # real source documents (PDF, DOCX, PPTX, Markdown, CSV, or Excel)
+  documents/               # real source documents (PDF, DOCX, PPTX, Markdown, CSV, or Excel) --
+                            # may itself contain real subfolders (e.g. documents/runbooks/),
+                            # discovered recursively, not just at the top level
   documents_metadata.json  # optional: filename -> DocumentMetadata fields
   qa.json                  # [{"id": "...", "question": "...", "expert_answer": "...",
                             #   "expect_refusal": false}, ...]
@@ -32,6 +34,14 @@ data/eval/<expertise-name>/
   unrelated, independently dated documents that simply disagree -- no
   `doc_family_id` at all, so nothing hides either one; the correct answer
   depends on the agent reading both dates itself).
+
+- `demo/` -- also a live-presentation script, not just a regression set. Its
+  `SCENARIO.md` is a step-by-step walkthrough (bulk folder ingest with tags, version
+  lineage, author filtering, and an undeclared-conflict "hard case," each with the exact
+  live Filters-panel interaction to run) for presenting every metadata/access-control/
+  filtering feature to an audience -- the same corpus and core questions this file's own
+  convention already runs automatically, so the live demo can never silently drift from
+  what the automated eval actually verifies.
 
 - `id` — a short, stable identifier for the question (for your own reference only).
 - `question` — exactly what you'd ask the agent.

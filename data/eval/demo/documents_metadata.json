@@ -1,0 +1,84 @@
+{
+  "database-failover-runbook.md": {
+    "classification": "c1",
+    "author": "Priya Shah",
+    "doc_date": "2025-11-02",
+    "data_type": "runbook",
+    "tags": ["runbook", "database"]
+  },
+  "network-outage-runbook.md": {
+    "classification": "c1",
+    "author": "Marcus Webb",
+    "doc_date": "2025-12-10",
+    "data_type": "runbook",
+    "tags": ["runbook", "networking"]
+  },
+  "deploy-rollback-runbook.md": {
+    "classification": "c1",
+    "author": "Priya Shah",
+    "doc_date": "2026-01-15",
+    "data_type": "runbook",
+    "tags": ["runbook", "deployment"]
+  },
+  "oncall-escalation-runbook.md": {
+    "classification": "c1",
+    "private": true,
+    "author": "Dana Fitzgerald",
+    "doc_date": "2026-02-20",
+    "data_type": "runbook",
+    "tags": ["runbook", "oncall"]
+  },
+  "deploy-approval-policy-v1.md": {
+    "classification": "c2",
+    "author": "Dana Fitzgerald",
+    "doc_date": "2025-08-01",
+    "data_type": "policy",
+    "tags": ["policy", "deploys"],
+    "doc_family_id": "deploy-approval-policy",
+    "version": 1,
+    "status": "superseded",
+    "effective_from": "2025-08-01",
+    "effective_to": "2026-01-10"
+  },
+  "deploy-approval-policy-v2.md": {
+    "classification": "c2",
+    "author": "Dana Fitzgerald",
+    "doc_date": "2026-01-10",
+    "data_type": "policy",
+    "tags": ["policy", "deploys"],
+    "doc_family_id": "deploy-approval-policy",
+    "version": 2,
+    "status": "current",
+    "effective_from": "2026-01-10"
+  },
+  "adr-002-database-choice.md": {
+    "classification": "c1",
+    "author": "Priya Shah",
+    "doc_date": "2025-09-01",
+    "data_type": "adr",
+    "tags": ["adr", "architecture"]
+  },
+  "adr-005-caching-layer.md": {
+    "classification": "c1",
+    "author": "Marcus Webb",
+    "doc_date": "2025-10-15",
+    "data_type": "adr",
+    "tags": ["adr", "architecture"]
+  },
+  "log-retention-policy-2025.md": {
+    "classification": "c2",
+    "author": "Dana Fitzgerald",
+    "doc_date": "2025-03-01",
+    "data_type": "policy",
+    "tags": ["policy", "compliance"],
+    "effective_from": "2025-03-01"
+  },
+  "log-retention-policy-2026-update.md": {
+    "classification": "c2",
+    "author": "Dana Fitzgerald",
+    "doc_date": "2026-06-01",
+    "data_type": "policy",
+    "tags": ["policy", "compliance"],
+    "effective_from": "2026-06-01"
+  }
+}
