@@ -89,10 +89,12 @@ _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".x
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
 _LIBRA_LOGO_PATH = Path(__file__).resolve().parents[1] / "images" / "icone_LIBRA_AI.png"
 _USER_AVATAR = "🧑"
+# The app's own mark, not a generic robot emoji -- reused from the header
+# logo (below) so the assistant is visually the product, not a stock
+# chatbot. NOT a docstring (this isn't the first statement of a def/class)
+# -- Streamlit's "magic" renders any bare top-level string as st.write(),
+# so a triple-quoted comment here would show up on the page itself.
 _ASSISTANT_AVATAR = str(_LIBRA_LOGO_PATH)
-"""The app's own mark, not a generic robot emoji -- reused from the
-header logo (below) so the assistant is visually the product, not a
-stock chatbot."""
 
 
 def _load_provider_catalog() -> dict:
@@ -812,14 +814,15 @@ with st.sidebar:
             st.session_state.confirm_wipe = True
             st.rerun()
 
-_logo_col, _title_col, _new_conversation_col = st.columns([1, 5, 1])
+_logo_col, _title_col, _new_conversation_col = st.columns(
+    [1, 5, 1], vertical_alignment="center"
+)
 with _logo_col:
     st.image(str(_LIBRA_LOGO_PATH), width=88)
 with _title_col:
     st.title("LIBRA AI")
     st.caption("Library Intelligence & Reasoning Agent")
 with _new_conversation_col:
-    st.write("")  # vertical nudge so the button lines up with the title text
     if st.button("New conversation"):
         st.session_state.conversation_id = None
         st.session_state.turns = []
@@ -902,7 +905,7 @@ def _doc_date_bounds(documents: list) -> tuple[date, date] | None:
     return (min(dates), max(dates)) if dates else None
 
 
-@st.dialog("🔍 Filters")
+@st.dialog("🔍 Narrow search")
 def _filters_dialog(documents: list) -> None:
     tag_options = _distinct_tags(documents)
     author_options = _distinct_authors(documents)
@@ -982,10 +985,21 @@ if st.session_state.filter_date_from or st.session_state.filter_date_to:
     )
 
 _filter_button_col, _filter_caption_col = st.columns([1, 5])
-if _filter_button_col.button("🔍 Filters"):
+if _filter_button_col.button(
+    "🔍 Narrow search",
+    help=(
+        "Restrict which documents get searched, by tags/author/date. Stays applied to "
+        "every question in this conversation until you change it here -- not something "
+        "you need to reset per question."
+    ),
+):
     _filters_dialog(documents)
 if _active_filter_parts:
-    _filter_caption_col.caption("Filtering by " + " · ".join(_active_filter_parts))
+    _filter_caption_col.caption(
+        "Narrowed to " + " · ".join(_active_filter_parts) + " (applies until changed)"
+    )
+else:
+    _filter_caption_col.caption("Searching the whole corpus (no narrowing applied)")
 
 prompt = st.chat_input("Ask a question")
 if prompt and prompt.strip():

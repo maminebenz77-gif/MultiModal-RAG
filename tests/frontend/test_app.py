@@ -244,7 +244,7 @@ def test_filters_button_opens_without_exception_on_an_empty_corpus() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    next(b for b in at.main.button if b.label == "🔍 Filters").click()
+    next(b for b in at.main.button if b.label == "🔍 Narrow search").click()
     at.run(timeout=30)
 
     assert not at.exception
@@ -257,7 +257,7 @@ def test_active_filters_caption_reflects_session_state() -> None:
     at.run(timeout=30)
 
     assert not at.exception
-    assert any("Filtering by tags: runbook" in c.value for c in at.main.caption)
+    assert any("Narrowed to tags: runbook" in c.value for c in at.main.caption)
 
 
 def test_resuming_from_an_unknown_conversation_id_in_the_url_starts_fresh() -> None:
