@@ -151,6 +151,22 @@ def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
     assert at.session_state["turns"] == []
 
 
+def test_asking_a_real_question_fails_soft_when_the_api_is_unreachable() -> None:
+    # No real API is listening (see the module docstring), so opening the
+    # POST /query/stream connection raises httpx.ConnectError immediately
+    # (before a single NDJSON line exists to read) -- same fail-soft
+    # contract as every other API call this app makes against a closed
+    # port, just caught at connection time instead of after a response.
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    at.chat_input[0].set_value("What is this?").run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["turns"] == []
+    assert any("Query failed" in e.value for e in at.error)
+
+
 def test_new_conversation_clears_session_history() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
