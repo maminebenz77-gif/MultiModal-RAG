@@ -88,6 +88,13 @@ _JUNK_NAMES = {"thumbs.db", "desktop.ini"}
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".xlsx"}
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
 _LIBRA_LOGO_PATH = Path(__file__).resolve().parents[1] / "images" / "icone_LIBRA_AI.png"
+_USER_AVATAR = "🧑"
+# The app's own mark, not a generic robot emoji -- reused from the header
+# logo (below) so the assistant is visually the product, not a stock
+# chatbot. NOT a docstring (this isn't the first statement of a def/class)
+# -- Streamlit's "magic" renders any bare top-level string as st.write(),
+# so a triple-quoted comment here would show up on the page itself.
+_ASSISTANT_AVATAR = str(_LIBRA_LOGO_PATH)
 
 
 def _load_provider_catalog() -> dict:
@@ -807,14 +814,15 @@ with st.sidebar:
             st.session_state.confirm_wipe = True
             st.rerun()
 
-_logo_col, _title_col, _new_conversation_col = st.columns([1, 5, 1])
+_logo_col, _title_col, _new_conversation_col = st.columns(
+    [1, 5, 1], vertical_alignment="center"
+)
 with _logo_col:
     st.image(str(_LIBRA_LOGO_PATH), width=88)
 with _title_col:
     st.title("LIBRA AI")
     st.caption("Library Intelligence & Reasoning Agent")
 with _new_conversation_col:
-    st.write("")  # vertical nudge so the button lines up with the title text
     if st.button("New conversation"):
         st.session_state.conversation_id = None
         st.session_state.turns = []
@@ -822,9 +830,9 @@ with _new_conversation_col:
         st.rerun()
 
 for turn in st.session_state.turns:
-    with st.chat_message("user", avatar="🔵"):
+    with st.chat_message("user", avatar=_USER_AVATAR):
         st.write(turn["question"])
-    with st.chat_message("assistant", avatar="🤖"):
+    with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
         if turn["needs_clarification"]:
             st.info(turn["answer"])
         elif turn["refused"]:
@@ -897,7 +905,7 @@ def _doc_date_bounds(documents: list) -> tuple[date, date] | None:
     return (min(dates), max(dates)) if dates else None
 
 
-@st.dialog("🔍 Filters")
+@st.dialog("🔍 Narrow search")
 def _filters_dialog(documents: list) -> None:
     tag_options = _distinct_tags(documents)
     author_options = _distinct_authors(documents)
@@ -977,10 +985,21 @@ if st.session_state.filter_date_from or st.session_state.filter_date_to:
     )
 
 _filter_button_col, _filter_caption_col = st.columns([1, 5])
-if _filter_button_col.button("🔍 Filters"):
+if _filter_button_col.button(
+    "🔍 Narrow search",
+    help=(
+        "Restrict which documents get searched, by tags/author/date. Stays applied to "
+        "every question in this conversation until you change it here -- not something "
+        "you need to reset per question."
+    ),
+):
     _filters_dialog(documents)
 if _active_filter_parts:
-    _filter_caption_col.caption("Filtering by " + " · ".join(_active_filter_parts))
+    _filter_caption_col.caption(
+        "Narrowed to " + " · ".join(_active_filter_parts) + " (applies until changed)"
+    )
+else:
+    _filter_caption_col.caption("Searching the whole corpus (no narrowing applied)")
 
 prompt = st.chat_input("Ask a question")
 if prompt and prompt.strip():
@@ -1000,22 +1019,69 @@ if prompt and prompt.strip():
     }
     if apply_runtime_overrides:
         query_payload["runtime_overrides"] = runtime_overrides
-    try:
-        response = httpx.post(
-            f"{api_base_url}/query",
-            json=query_payload,
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        body = response.json()
-        st.session_state.conversation_id = body["conversation_id"]
-        st.query_params["c"] = body["conversation_id"]
-        st.session_state.turns.append({**body, "question": prompt})
+
+    with st.chat_message("user", avatar=_USER_AVATAR):
+        st.write(prompt)
+
+    with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
+        answer_placeholder = st.empty()
+        search_status = None
+        accumulated_answer = ""
+        done_body: dict | None = None
+        try:
+            with httpx.stream(
+                "POST", f"{api_base_url}/query/stream", json=query_payload, timeout=120.0
+            ) as response:
+                if response.status_code >= 400:
+                    # The body has to be read explicitly here -- a streamed
+                    # response's content isn't buffered automatically the
+                    # way a plain httpx.post()'s is, and _http_error_detail
+                    # needs it to read the JSON {"detail": ...} body FastAPI
+                    # sends for an error raised before any streaming starts
+                    # (e.g. an unknown conversation_id -- see
+                    # routers/query.py's _setup_query()).
+                    response.read()
+                    response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                    event = json.loads(line)
+                    event_type = event["type"]
+                    if event_type == "tool_call":
+                        if search_status is None:
+                            search_status = st.status(
+                                "Searching the knowledge base...", expanded=True
+                            )
+                        search_status.write(
+                            f"🔍 “{event['query']}” — {event['result_count']} result(s)"
+                        )
+                    elif event_type == "token":
+                        accumulated_answer += event["text"]
+                        answer_placeholder.markdown(accumulated_answer)
+                    elif event_type == "done":
+                        done_body = event
+                    elif event_type == "error":
+                        st.error(f"Query failed: {event['detail']}")
+            if search_status is not None:
+                search_status.update(
+                    label="Searched the knowledge base", state="complete", expanded=False
+                )
+        except httpx.HTTPError as exc:
+            st.error(f"Query failed: {_http_error_detail(exc)}")
+            done_body = None
+
+    if done_body is not None:
+        done_body.pop("type")
+        st.session_state.conversation_id = done_body["conversation_id"]
+        st.query_params["c"] = done_body["conversation_id"]
+        st.session_state.turns.append({**done_body, "question": prompt})
         # Same reason as the feedback rerun above: the backend recorded
         # this query (and its refusal/method) before this response came
         # back, but the Metrics panel already rendered earlier in this
         # same script run, before the query even started -- only a fresh
-        # rerun picks up the updated count.
+        # rerun picks up the updated count. It also re-renders this turn
+        # from st.session_state.turns, so a refusal/clarification gets its
+        # proper st.warning/st.info styling -- the live view above always
+        # renders plain text, since refused/needs_clarification isn't known
+        # until the "done" event, by which point the text already streamed.
         st.rerun()
-    except httpx.HTTPError as exc:
-        st.error(f"Query failed: {_http_error_detail(exc)}")

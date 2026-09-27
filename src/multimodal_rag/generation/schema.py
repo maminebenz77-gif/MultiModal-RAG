@@ -55,3 +55,38 @@ class RagAnswer(BaseModel):
     ones actually cited -- lets a caller (e.g. the frontend's "retrieved
     chunks" panel) see what a retrieval method returned even when the
     model didn't end up citing all of it."""
+
+
+class AgentToken(BaseModel):
+    """One fragment of the agent's generated text, as it streams in --
+    see generation.agent.AgentChain.answer_stream(). `round_index`
+    matches the numbering AgentToolCall/on_tool_call already use, so a
+    caller can tell whether a given fragment belongs to the eventual
+    answer or to a round that turned out to be a tool call instead (its
+    tokens, if any, are narration the model produced before deciding to
+    search -- see answer_stream()'s docstring)."""
+
+    round_index: int
+    text: str
+
+
+class AgentToolCall(BaseModel):
+    """Fired the moment a search the agent triggered has executed -- the
+    streaming counterpart to AgentChain.answer()'s on_tool_call callback,
+    carrying the exact same information. `results` is the evidence just
+    fed back into the model for this call."""
+
+    round_index: int
+    query: str
+    results: list[SearchResult]
+
+
+class AgentDone(BaseModel):
+    """Terminal event of AgentChain.answer_stream() -- always exactly
+    one, always last, carrying the same RagAnswer answer() itself
+    returns for an identical call."""
+
+    result: RagAnswer
+
+
+AgentStreamEvent = AgentToken | AgentToolCall | AgentDone

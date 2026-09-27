@@ -2,13 +2,14 @@
 
 import asyncio
 import json
+from collections.abc import Iterator
 from typing import Any
 
 import litellm
 
 from ..tracing import record_generation_result, traced_generation
 from .base import LLMProvider
-from .schema import ToolCall, ToolResponse
+from .schema import TokenChunk, ToolCall, ToolCallsChunk, ToolResponse
 
 
 def _ensure_current_event_loop() -> asyncio.AbstractEventLoop | None:
@@ -97,6 +98,120 @@ class LiteLLMProvider(LLMProvider):
                 owned_loop.close()
                 asyncio.set_event_loop(None)
         return result
+
+    def generate_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        owned_loop = _ensure_current_event_loop()
+        try:
+            with traced_generation("generate_stream", self._model, messages) as generation:
+                raw_chunks: list[Any] = []
+                text_parts: list[str] = []
+                for chunk in litellm.completion(
+                    model=self._model,
+                    messages=messages,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    stream=True,
+                ):
+                    if generation is not None:
+                        raw_chunks.append(chunk)
+                    text = chunk.choices[0].delta.content
+                    if text:
+                        text_parts.append(text)
+                        yield text
+                if generation is not None:
+                    record_generation_result(
+                        generation,
+                        self._rebuild_full_response(raw_chunks, messages),
+                        "".join(text_parts),
+                    )
+        finally:
+            if owned_loop is not None:
+                owned_loop.close()
+                asyncio.set_event_loop(None)
+
+    def generate_with_tools_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> Iterator[TokenChunk | ToolCallsChunk]:
+        owned_loop = _ensure_current_event_loop()
+        try:
+            with traced_generation(
+                "generate_with_tools_stream", self._model, messages
+            ) as generation:
+                kwargs = dict(
+                    model=self._model,
+                    messages=messages,
+                    tools=tools,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    stream=True,
+                )
+                if tool_choice is not None:
+                    kwargs["tool_choice"] = tool_choice
+
+                raw_chunks: list[Any] = []
+                text_parts: list[str] = []
+                # OpenAI-style streaming fragments a tool call's arguments
+                # across many chunks, keyed by its position in the
+                # response -- id/name only arrive on that call's first
+                # fragment, so each is recorded once and never overwritten
+                # by a later, empty fragment.
+                pending_calls: dict[int, dict[str, str]] = {}
+                for chunk in litellm.completion(**kwargs):
+                    if generation is not None:
+                        raw_chunks.append(chunk)
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        text_parts.append(delta.content)
+                        yield TokenChunk(text=delta.content)
+                    for call_delta in delta.tool_calls or []:
+                        entry = pending_calls.setdefault(
+                            call_delta.index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        if call_delta.id:
+                            entry["id"] = call_delta.id
+                        if call_delta.function and call_delta.function.name:
+                            entry["name"] = call_delta.function.name
+                        if call_delta.function and call_delta.function.arguments:
+                            entry["arguments"] += call_delta.function.arguments
+
+                tool_calls = [
+                    ToolCall(
+                        id=entry["id"],
+                        name=entry["name"],
+                        arguments=json.loads(entry["arguments"]) if entry["arguments"] else {},
+                    )
+                    for _, entry in sorted(pending_calls.items())
+                ]
+                if tool_calls:
+                    yield ToolCallsChunk(tool_calls=tool_calls)
+
+                if generation is not None:
+                    result = ToolResponse(content="".join(text_parts) or None, tool_calls=tool_calls)
+                    record_generation_result(
+                        generation,
+                        self._rebuild_full_response(raw_chunks, messages),
+                        result.model_dump(mode="json"),
+                    )
+        finally:
+            if owned_loop is not None:
+                owned_loop.close()
+                asyncio.set_event_loop(None)
+
+    @staticmethod
+    def _rebuild_full_response(raw_chunks: list[Any], messages: list[dict[str, Any]]) -> Any:
+        """Reassembles the full response object (incl. usage) from raw
+        stream chunks, purely for Langfuse's usage/cost logging --
+        record_generation_result() already tolerates None (no usage
+        attached), so a malformed/incomplete chunk list degrades tracing
+        quality only, never breaks the request that already streamed
+        successfully to its caller."""
+        try:
+            return litellm.stream_chunk_builder(raw_chunks, messages=messages)
+        except Exception:
+            return None
 
     @staticmethod
     def _normalize_model(model: str, base_url: str | None) -> str:
