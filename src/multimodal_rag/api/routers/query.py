@@ -3,7 +3,8 @@ POST /query/stream: the same agent turn, surfaced as newline-delimited
 JSON (NDJSON) events as they happen instead of one blocking response --
 see _stream_response's docstring for the event shapes and the one real
 trade-off streaming makes (no HTTP error status once the stream has
-started).
+started), and _bridge_sync_stream's docstring for why it isn't handed to
+StreamingResponse directly.
 
 retrieval_method/top_k are per-request here even though AgentChain
 normally fixes them at construction time (see the demo) -- constructing
@@ -13,9 +14,11 @@ method/top_k against the one shared Retriever singleton.
 """
 
 import json
+import queue
+import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 
@@ -429,6 +432,82 @@ def _stream_response(
     yield _ndjson({"type": "done", **response.model_dump(mode="json")})
 
 
+_STREAM_DONE = object()
+"""Sentinel telling _bridge_sync_stream's consumer loop the producer
+thread has finished -- a plain None can't be used since it's also a
+value queue.Queue can legitimately hold."""
+
+
+def _drain_into_queue(
+    request: QueryRequest,
+    db: Database,
+    principal: Principal,
+    setup: _QuerySetup,
+    out_queue: "queue.Queue[str | BaseException | object]",
+) -> None:
+    """Runs _stream_response() to completion on the thread this function
+    is given -- see _bridge_sync_stream's docstring for why. A `finally`
+    guarantees the sentinel always lands even if the generator raises
+    something _stream_response's own try/except didn't already turn into
+    an {"type": "error", ...} line -- otherwise the consumer below would
+    block on out_queue.get() forever."""
+    try:
+        for line in _stream_response(request, db, principal, setup):
+            out_queue.put(line)
+    except BaseException as exc:  # noqa: BLE001 -- relayed to the consumer, not swallowed
+        out_queue.put(exc)
+    finally:
+        out_queue.put(_STREAM_DONE)
+
+
+async def _bridge_sync_stream(
+    request: QueryRequest, db: Database, principal: Principal, setup: _QuerySetup
+) -> AsyncIterator[str]:
+    """Runs _stream_response() on ONE dedicated background thread instead
+    of handing it to StreamingResponse directly, and relays its output
+    through a queue.Queue.
+
+    The difference matters: StreamingResponse, given a plain *sync*
+    generator, iterates it via Starlette's iterate_in_threadpool() --
+    which dispatches EACH individual next() call separately to a worker
+    thread from its pool, not necessarily the same one twice in a row.
+    _stream_response() holds traced_query()/traced_generation()
+    (tracing.py) open across many `yield` points (once per tool call,
+    once per token) -- OpenTelemetry's context attach/detach uses a
+    Token that MUST be detached on the exact same thread (technically
+    the same contextvars.Context) it was attached on. Split across pool
+    threads, every detach silently failed ("Failed to detach context...
+    Token was created in a different Context", caught and logged by
+    tracing.py's _safe_exit, never raised into the request) -- harmless
+    to the response itself, but it meant a streaming query's Langfuse
+    trace closed incorrectly, if it reported at all. Confirmed live
+    against a real Langfuse Cloud project: every /query/stream call
+    logged that failure twice (one traced_generation span per round);
+    /query never has this problem because run_in_threadpool() already
+    runs its single blocking agent.answer() call start-to-finish on one
+    assigned thread.
+
+    Running the whole generator on one thread here gives /query/stream
+    that identical guarantee: every attach/detach pair happens on the
+    thread that entered it, because nothing about the generator's own
+    execution is ever paused and resumed on a different one. The queue
+    hand-off itself never touches OpenTelemetry, so it's exempt from the
+    problem it exists to route around.
+    """
+    q: "queue.Queue[str | BaseException | object]" = queue.Queue()
+    thread = threading.Thread(
+        target=_drain_into_queue, args=(request, db, principal, setup, q), daemon=True
+    )
+    thread.start()
+    while True:
+        item = await run_in_threadpool(q.get)
+        if item is _STREAM_DONE:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 @router.post("/query/stream")
 async def query_stream(
     request: QueryRequest,
@@ -438,5 +517,5 @@ async def query_stream(
 ) -> StreamingResponse:
     setup = await _setup_query(request, retriever, db, principal)
     return StreamingResponse(
-        _stream_response(request, db, principal, setup), media_type="application/x-ndjson"
+        _bridge_sync_stream(request, db, principal, setup), media_type="application/x-ndjson"
     )

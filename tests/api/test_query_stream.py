@@ -8,10 +8,12 @@ covers directly.
 """
 
 import json
+import threading
 
 import httpx
 import pytest
 
+import multimodal_rag.api.routers.query as query_module
 from multimodal_rag.providers.base import LLMProvider
 from multimodal_rag.providers.schema import TokenChunk, ToolCall, ToolCallsChunk, ToolResponse
 
@@ -173,6 +175,74 @@ async def test_query_stream_with_unknown_conversation_id_returns_404_before_stre
         "/query/stream", json={"question": "anything", "conversation_id": "nonexistent"}
     )
     assert response.status_code == 404
+
+
+async def test_bridge_sync_stream_runs_the_generator_on_a_single_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real bug: handing a plain sync generator
+    straight to StreamingResponse makes Starlette dispatch EACH next()
+    call separately (iterate_in_threadpool), potentially on a different
+    worker thread every time -- timing/load-dependent, so not reliably
+    reproducible through a single isolated HTTP request in a test (a
+    from-the-endpoint version of this test passed even against the
+    un-fixed code, since a quiet test run's thread pool happened to reuse
+    one idle thread throughout). It WAS 100% reproducible against a real
+    running server under real traffic: traced_query()/traced_generation()
+    (tracing.py) hold an OpenTelemetry span open across many yields, and
+    context attach/detach must happen on the exact thread it was entered
+    on -- split across pool threads, every detach failed ("Token was
+    created in a different Context"), confirmed live against a real
+    Langfuse Cloud project.
+
+    This tests the actual fix directly and deterministically instead:
+    _bridge_sync_stream() must run whatever generator function it's
+    given to completion on one dedicated background thread, full stop --
+    a property of _bridge_sync_stream itself, independent of pool timing
+    or how many requests happen to be in flight.
+    """
+    thread_ids: list[int] = []
+
+    def _fake_stream_response(request, db, principal, setup):
+        for i in range(25):
+            thread_ids.append(threading.get_ident())
+            yield f"line-{i}"
+
+    monkeypatch.setattr(query_module, "_stream_response", _fake_stream_response)
+
+    items = [
+        item async for item in query_module._bridge_sync_stream(None, None, None, None)  # type: ignore[arg-type]
+    ]
+
+    assert items == [f"line-{i}" for i in range(25)]
+    assert len(set(thread_ids)) == 1, (
+        f"the wrapped generator ran on {len(set(thread_ids))} different threads across its "
+        "yields -- exactly the condition that breaks OpenTelemetry context attach/detach"
+    )
+
+
+async def test_query_stream_endpoint_actually_uses_the_threading_bridge(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes the gap the test above leaves open: that _bridge_sync_stream
+    is correct in isolation doesn't guarantee query_stream() still calls
+    it -- someone could revert to wiring _stream_response directly into
+    StreamingResponse (the original bug) without breaking that test at
+    all. This pins down that the real endpoint still routes through it."""
+    calls = []
+    real_bridge = query_module._bridge_sync_stream
+
+    def _spy_bridge(*args, **kwargs):
+        calls.append(args)
+        return real_bridge(*args, **kwargs)
+
+    monkeypatch.setattr(query_module, "_bridge_sync_stream", _spy_bridge)
+
+    status_code, events = await _collect_ndjson_events(client, {"question": "anything"})
+
+    assert status_code == 200
+    assert events[-1]["type"] == "done"
+    assert len(calls) == 1
 
 
 async def test_query_stream_emits_an_error_event_when_llm_provider_fails(
