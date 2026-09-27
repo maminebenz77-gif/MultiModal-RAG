@@ -8,9 +8,10 @@ config, with zero changes to retrieval/generation/etc.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
-from .schema import EmbeddingVector, ToolResponse
+from .schema import EmbeddingVector, TokenChunk, ToolCallsChunk, ToolResponse
 
 
 class LLMProvider(ABC):
@@ -34,6 +35,31 @@ class LLMProvider(ABC):
         making it optional means adding it doesn't break InternalServerLLM
         or any existing test double that only implements generate()."""
         raise NotImplementedError(f"{type(self).__name__} does not support tool calling")
+
+    def generate_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Streaming counterpart to generate() -- yields the reply as text
+        fragments in arrival order instead of returning it all at once.
+
+        Concrete with a NotImplementedError default, same rationale as
+        generate_with_tools(): optional, so adding it doesn't break any
+        existing provider or test double that only implements generate()."""
+        raise NotImplementedError(f"{type(self).__name__} does not support streaming")
+
+    def generate_with_tools_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> Iterator[TokenChunk | ToolCallsChunk]:
+        """Streaming counterpart to generate_with_tools() -- yields a
+        TokenChunk per fragment of visible text as it's generated, and, if
+        the model calls the tool, exactly one ToolCallsChunk once its
+        arguments are fully reassembled (see ToolCallsChunk -- never
+        interleaved fragment-by-fragment the way TokenChunk is).
+
+        Concrete with a NotImplementedError default, same rationale as
+        generate_with_tools()."""
+        raise NotImplementedError(f"{type(self).__name__} does not support streaming tool calls")
 
 
 class EmbeddingProvider(ABC):

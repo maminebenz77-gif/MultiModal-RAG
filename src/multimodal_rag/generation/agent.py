@@ -15,11 +15,12 @@ passage) keeps its original marker rather than being renumbered.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
+from ..providers.base import LLMProvider
 from ..providers.factory import get_llm
-from ..providers.schema import ToolCall, ToolResponse
+from ..providers.schema import ToolCall, ToolCallsChunk, ToolResponse
 from ..retrieval.schema import RetrievalMethod
 from ..stores.filters import SearchFilter
 from ..stores.schema import SearchResult
@@ -27,7 +28,7 @@ from .chain import RetrieverLike
 from .context import assemble_context, format_context_block
 from .parse import parse_answer
 from .prompt import CONFLICT_RESOLUTION_RULE, REFUSAL_TEXT
-from .schema import RagAnswer
+from .schema import AgentDone, AgentToken, AgentToolCall, RagAnswer
 
 _DEFAULT_TOKEN_BUDGET = 2000
 _MAX_TOOL_ROUNDS = 4
@@ -220,7 +221,70 @@ class AgentChain:
         security filter). `on_tool_call`, if given, is invoked with
         (round_index, query, results) right after each search executes --
         for observability (the demo's trace printing, or server-side
-        logging later), never for control flow."""
+        logging later), never for control flow.
+
+        Blocks until the whole turn is done. See answer_stream() for the
+        same behavior surfaced as it happens instead."""
+        for event in self._run_rounds(message, history, doc_ids, search_filter, stream=False):
+            if isinstance(event, AgentToolCall):
+                if on_tool_call is not None:
+                    on_tool_call(event.round_index, event.query, event.results)
+            else:
+                assert isinstance(event, AgentDone)  # stream=False never yields AgentToken
+                return event.result
+        raise AssertionError("_run_rounds ended without yielding AgentDone")
+
+    def answer_stream(
+        self,
+        message: str,
+        history: list[tuple[str, str]] | None = None,
+        doc_ids: list[str] | None = None,
+        search_filter: SearchFilter | None = None,
+    ) -> Iterator[AgentToken | AgentToolCall | AgentDone]:
+        """Streaming counterpart to answer(): identical arguments, the
+        exact same round loop and refusal/reformulation/clarification/
+        max-round handling (see _run_rounds, which both methods run), but
+        yields progress as it happens instead of blocking until the whole
+        turn is done -- an AgentToken per fragment of generated text, an
+        AgentToolCall each time a search executes, and exactly one
+        AgentDone, always last, carrying the same RagAnswer answer()
+        would return for an identical call.
+
+        A round's AgentTokens are its raw generated text, streamed before
+        that round's outcome is known -- if the round turns out to also
+        carry a tool call, those tokens were narration the model produced
+        before deciding to search (rare in practice, since the system
+        prompt above doesn't invite it), not part of the final answer;
+        exactly the same content answer()'s non-streaming path already
+        receives and discards in that case (see ToolResponse.content).
+        Callers that only want the answer's own tokens can simply reset
+        whatever they're accumulating each time an AgentToolCall arrives.
+
+        Requires the active LLMProvider to implement
+        generate_with_tools_stream()/generate_stream() (see
+        providers/base.py) -- raises NotImplementedError on first
+        iteration if not."""
+        yield from self._run_rounds(message, history, doc_ids, search_filter, stream=True)
+
+    def _run_rounds(
+        self,
+        message: str,
+        history: list[tuple[str, str]] | None,
+        doc_ids: list[str] | None,
+        search_filter: SearchFilter | None,
+        stream: bool,
+    ) -> Iterator[AgentToken | AgentToolCall | AgentDone]:
+        """The single round loop answer() and answer_stream() both run --
+        factored out so the two can never drift out of sync with each
+        other's refusal/reformulation/clarification/max-round handling.
+        answer() drains this fully and returns only the final AgentDone's
+        result; answer_stream() yields every event straight through.
+        `stream` picks generate_with_tools()/generate() (answer()'s
+        non-streaming provider calls, unchanged from before this loop was
+        factored out) vs. generate_with_tools_stream()/generate_stream()
+        (answer_stream()'s provider calls, via _stream_round/
+        _stream_plain below -- what actually produces AgentToken
+        events)."""
         messages = self._build_initial_messages(message, history or [])
         context: list[SearchResult] = []
         seen_chunk_ids: dict[str, int] = {}
@@ -230,12 +294,13 @@ class AgentChain:
 
         for round_index in range(1, self._max_tool_rounds + 1):
             llm = get_llm()
-            if force_search_next_round:
-                response = llm.generate_with_tools(
-                    messages, tools=[_SEARCH_TOOL], tool_choice="required"
-                )
+            tool_choice = "required" if force_search_next_round else None
+            if stream:
+                response = yield from self._stream_round(llm, messages, tool_choice, round_index)
             else:
-                response = llm.generate_with_tools(messages, tools=[_SEARCH_TOOL])
+                response = llm.generate_with_tools(
+                    messages, tools=[_SEARCH_TOOL], tool_choice=tool_choice
+                )
             force_search_next_round = False
 
             if not response.tool_calls:
@@ -246,7 +311,8 @@ class AgentChain:
                 # recognize the refusal even with a reason attached, not just a bare match.
                 is_refusal = raw_content.strip().lower().startswith(REFUSAL_TEXT.lower())
                 if not is_refusal:
-                    return self._finalize(raw_content, context)
+                    yield AgentDone(result=self._finalize(raw_content, context))
+                    return
 
                 if searches_performed == 0:
                     # No evidence exists yet, so an evidence-based refusal is
@@ -284,7 +350,8 @@ class AgentChain:
                     forced_reformulation_used = True
                     continue
                 else:
-                    return self._finalize(raw_content, context)
+                    yield AgentDone(result=self._finalize(raw_content, context))
+                    return
 
             messages.append(self._assistant_tool_call_message(response))
             for call in response.tool_calls:
@@ -300,8 +367,9 @@ class AgentChain:
                 )
                 results = assemble_context(results, self._token_budget)
                 blocks = self._record_results(context, seen_chunk_ids, results)
-                if on_tool_call is not None:
-                    on_tool_call(round_index, call.arguments["query"], results)
+                yield AgentToolCall(
+                    round_index=round_index, query=call.arguments["query"], results=results
+                )
                 content = self._format_blocks(blocks, round_index, self._max_tool_rounds)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
@@ -317,8 +385,54 @@ class AgentChain:
                 ),
             }
         )
-        final_text = get_llm().generate(messages)
-        return self._finalize(final_text, context)
+        if stream:
+            final_text = yield from self._stream_plain(
+                get_llm(), messages, self._max_tool_rounds + 1
+            )
+        else:
+            final_text = get_llm().generate(messages)
+        yield AgentDone(result=self._finalize(final_text, context))
+
+    @staticmethod
+    def _stream_round(
+        llm: LLMProvider,
+        messages: list[dict[str, Any]],
+        tool_choice: str | None,
+        round_index: int,
+    ) -> Iterator[AgentToken]:
+        """Runs one generate_with_tools_stream() call, forwarding each
+        text fragment as an AgentToken tagged with this round's index.
+        Returns (via StopIteration, consumed by the caller's `yield
+        from`) the reassembled ToolResponse, so _run_rounds can go on
+        treating it exactly like generate_with_tools()'s return value."""
+        content_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        stream = llm.generate_with_tools_stream(
+            messages, tools=[_SEARCH_TOOL], tool_choice=tool_choice
+        )
+        for chunk in stream:
+            if isinstance(chunk, ToolCallsChunk):
+                tool_calls = chunk.tool_calls
+            else:
+                content_parts.append(chunk.text)
+                yield AgentToken(round_index=round_index, text=chunk.text)
+        content = "".join(content_parts) if content_parts else None
+        return ToolResponse(content=content, tool_calls=tool_calls)
+
+    @staticmethod
+    def _stream_plain(
+        llm: LLMProvider, messages: list[dict[str, Any]], round_index: int
+    ) -> Iterator[AgentToken]:
+        """Same idea as _stream_round, for the plain generate_stream()
+        call used once every tool round has been exhausted (see
+        _run_rounds) -- returns the fully joined text instead of a
+        ToolResponse, matching what generate() itself returns in the
+        non-streaming path."""
+        parts: list[str] = []
+        for text in llm.generate_stream(messages):
+            parts.append(text)
+            yield AgentToken(round_index=round_index, text=text)
+        return "".join(parts)
 
     def _build_initial_messages(
         self, message: str, history: list[tuple[str, str]]

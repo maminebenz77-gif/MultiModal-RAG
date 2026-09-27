@@ -296,6 +296,28 @@ async def test_you_cannot_append_a_turn_to_someone_elses_conversation(
     assert len(messages) == 1
 
 
+async def test_you_cannot_append_a_turn_to_someone_elses_conversation_via_query_stream(
+    client: httpx.AsyncClient,
+) -> None:
+    """/query/stream shares _setup_query() with /query (routers/query.py)
+    rather than reimplementing conversation ownership -- this confirms
+    that sharing is real, not just theoretical, by hitting the actual
+    route. The 404 happens before any streaming begins (still inside the
+    awaited _setup_query() call), so it's a real HTTP 404 here too, not
+    an in-stream error event."""
+    conversation_id = (await _ask_as(client, _ALICE))["conversation_id"]
+
+    _as(client, _BOB)
+    response = await client.post(
+        "/query/stream", json={"question": _QUESTION, "conversation_id": conversation_id}
+    )
+
+    assert response.status_code == 404
+    _as(client, _ALICE)
+    messages = (await client.get(f"/conversations/{conversation_id}")).json()["messages"]
+    assert len(messages) == 1
+
+
 async def test_feedback_on_someone_elses_query_is_a_404(client: httpx.AsyncClient) -> None:
     query_id = (await _ask_as(client, _ALICE))["query_id"]
 
@@ -339,6 +361,7 @@ _PROTECTED = {
     ("PATCH", "/documents/{doc_id}"),
     ("DELETE", "/documents/{doc_id}"),
     ("POST", "/query"),
+    ("POST", "/query/stream"),
     ("GET", "/conversations"),
     ("GET", "/conversations/{conversation_id}"),
     ("DELETE", "/conversations/{conversation_id}"),

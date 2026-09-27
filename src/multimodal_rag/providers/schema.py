@@ -40,6 +40,25 @@ class ToolResponse(BaseModel):
     tool_calls: list[ToolCall] = []
 
 
+class TokenChunk(BaseModel):
+    """One fragment of streamed text from generate_stream()/
+    generate_with_tools_stream() -- callers append `text` in arrival
+    order to reconstruct the full string. Never reordered or buffered
+    here; that's the caller's business if it needs it."""
+
+    text: str
+
+
+class ToolCallsChunk(BaseModel):
+    """Terminal chunk of a generate_with_tools_stream() call, yielded
+    once the model has finished emitting a tool call. OpenAI-style
+    providers stream a call's arguments as fragments keyed by index, so
+    this is only produced after they're fully reassembled and parsed --
+    never partially, the way TokenChunk is."""
+
+    tool_calls: list[ToolCall]
+
+
 def assert_single_model(vectors: list[EmbeddingVector]) -> None:
     """Raise if `vectors` mixes more than one model_id.
 

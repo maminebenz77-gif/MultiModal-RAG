@@ -1,4 +1,9 @@
 """POST /query: agentic retrieve -> generate -> answer with citations.
+POST /query/stream: the same agent turn, surfaced as newline-delimited
+JSON (NDJSON) events as they happen instead of one blocking response --
+see _stream_response's docstring for the event shapes and the one real
+trade-off streaming makes (no HTTP error status once the stream has
+started).
 
 retrieval_method/top_k are per-request here even though AgentChain
 normally fixes them at construction time (see the demo) -- constructing
@@ -7,17 +12,22 @@ one per request is the simplest way to let each call choose its own
 method/top_k against the one shared Retriever singleton.
 """
 
+import json
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...chunking.schema import ChunkElement
 from ...config import get_settings
 from ...device import resolve_device
 from ...generation.agent import AgentChain
+from ...generation.schema import AgentDone, AgentToken, AgentToolCall, RagAnswer
 from ...generation.title import generate_title
 from ...identity import Principal
 from ...providers.base import LLMProvider
@@ -72,6 +82,46 @@ def _to_chunk_element_out(e: ChunkElement) -> ChunkElementOut:
     )
 
 
+def _to_query_response(
+    query_id: str, conversation_id: str, request: QueryRequest, result: RagAnswer
+) -> QueryResponse:
+    return QueryResponse(
+        query_id=query_id,
+        conversation_id=conversation_id,
+        question=request.question,
+        answer=result.answer,
+        citations=[
+            CitationOut(
+                marker=c.marker,
+                chunk_id=c.chunk_id,
+                source=c.source,
+                doc_id=c.doc_id,
+                pages=c.pages,
+                slides=c.slides,
+                text=c.text,
+                elements=[_to_chunk_element_out(e) for e in c.elements],
+            )
+            for c in result.citations
+        ],
+        refused=result.refused,
+        needs_clarification=result.needs_clarification,
+        retrieval_method=request.retrieval_method,
+        retrieved_chunks=[
+            RetrievedChunkOut(
+                chunk_id=c.chunk_id,
+                score=c.score,
+                text=c.text,
+                source=c.source,
+                doc_id=c.doc_id,
+                pages=c.pages,
+                slides=c.slides,
+                elements=[_to_chunk_element_out(e) for e in c.elements],
+            )
+            for c in result.retrieved_chunks
+        ],
+    )
+
+
 def _build_retriever_for_request(
     request: QueryRequest,
     default_retriever: Retriever,
@@ -100,23 +150,33 @@ def _build_retriever_for_request(
     )
 
 
-@router.post("/query", response_model=QueryResponse)
-async def query(
-    request: QueryRequest,
-    retriever: Retriever = Depends(get_retriever),
-    db: Database = Depends(get_db),
-    principal: Principal = Depends(get_principal),
-) -> QueryResponse:
+@dataclass
+class _QuerySetup:
+    """Everything both /query and /query/stream need before they can
+    actually run the agent turn -- built once, by _setup_query(), so the
+    two endpoints can't drift apart on how a runtime-override embedder,
+    a new-vs-existing conversation, or the metadata filter get resolved."""
+
+    agent: AgentChain
+    llm_override: LLMProvider | None
+    search_filter: object | None
+    history: list[tuple[str, str]]
+    conversation_id: str
+    is_new_conversation: bool
+    query_id: str
+    metadata_filter_for_trace: dict | None
+
+
+async def _setup_query(
+    request: QueryRequest, retriever: Retriever, db: Database, principal: Principal
+) -> _QuerySetup:
     settings = get_settings()
     allow_external = settings.allow_external
     device = resolve_device(settings.device)
 
     try:
         retriever_for_request = _build_retriever_for_request(
-            request,
-            retriever,
-            device=device,
-            allow_external=allow_external,
+            request, retriever, device=device, allow_external=allow_external
         )
     except (ValueError, NotImplementedError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -173,28 +233,96 @@ async def query(
     search_filter = (
         request.metadata_filter.to_search_filter() if request.metadata_filter is not None else None
     )
-
-    query_id = str(uuid.uuid4())
-    start_time = time.perf_counter()
     metadata_filter_for_trace = (
         request.metadata_filter.model_dump() if request.metadata_filter is not None else None
     )
+
+    return _QuerySetup(
+        agent=agent,
+        llm_override=llm_override,
+        search_filter=search_filter,
+        history=history,
+        conversation_id=conversation_id,
+        is_new_conversation=is_new_conversation,
+        query_id=str(uuid.uuid4()),
+        metadata_filter_for_trace=metadata_filter_for_trace,
+    )
+
+
+def _record_query_and_maybe_title(
+    db: Database,
+    principal: Principal,
+    request: QueryRequest,
+    setup: _QuerySetup,
+    result: RagAnswer,
+    latency_ms: float,
+) -> None:
+    """The bookkeeping that follows a successful agent turn, shared
+    verbatim by /query (via a threadpool -- see its caller) and
+    /query/stream (called directly -- its generator already runs off the
+    event loop thread, courtesy of StreamingResponse)."""
+    db.record_query(
+        principal,
+        setup.query_id,
+        request.question,
+        result.answer,
+        result.refused,
+        request.retrieval_method.value,
+        conversation_id=setup.conversation_id,
+        needs_clarification=result.needs_clarification,
+        citations=result.citations,
+        latency_ms=latency_ms,
+    )
+
+    if not setup.is_new_conversation:
+        return
+    # Nice-to-have, not core to the response -- generate_title() is
+    # fail-soft (returns None rather than raising) and a missing title
+    # just leaves the picker showing the raw first question. Reuses this
+    # request's LLM override, if any, so the title comes from the same
+    # model the answer did rather than silently falling back to the .env
+    # default.
+    llm_context: AbstractContextManager = (
+        _temporary_llm_provider(setup.llm_override)
+        if setup.llm_override is not None
+        else nullcontext()
+    )
+    with llm_context:
+        title = generate_title(request.question, result.answer)
+    if title:
+        db.set_conversation_title(principal, setup.conversation_id, title)
+
+
+@router.post("/query", response_model=QueryResponse)
+async def query(
+    request: QueryRequest,
+    retriever: Retriever = Depends(get_retriever),
+    db: Database = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+) -> QueryResponse:
+    setup = await _setup_query(request, retriever, db, principal)
+
+    start_time = time.perf_counter()
     try:
         with traced_query(
-            conversation_id, query_id, request.question, metadata_filter_for_trace
+            setup.conversation_id, setup.query_id, request.question, setup.metadata_filter_for_trace
         ) as query_span:
-            if llm_override is not None:
+            if setup.llm_override is not None:
 
                 def _answer_with_override():
-                    with _temporary_llm_provider(llm_override):
-                        return agent.answer(
-                            request.question, history, request.doc_ids, search_filter
+                    with _temporary_llm_provider(setup.llm_override):
+                        return setup.agent.answer(
+                            request.question, setup.history, request.doc_ids, setup.search_filter
                         )
 
                 result = await run_in_threadpool(_answer_with_override)
             else:
                 result = await run_in_threadpool(
-                    agent.answer, request.question, history, request.doc_ids, search_filter
+                    setup.agent.answer,
+                    request.question,
+                    setup.history,
+                    request.doc_ids,
+                    setup.search_filter,
                 )
             update_span_output(query_span, result.answer)
     except ValueError as exc:
@@ -213,72 +341,102 @@ async def query(
     # through, not just its last completion call.
 
     await run_in_threadpool(
-        db.record_query,
-        principal,
-        query_id,
-        request.question,
-        result.answer,
-        result.refused,
-        request.retrieval_method.value,
-        conversation_id=conversation_id,
-        needs_clarification=result.needs_clarification,
-        citations=result.citations,
-        latency_ms=latency_ms,
+        _record_query_and_maybe_title, db, principal, request, setup, result, latency_ms
     )
 
-    if is_new_conversation:
-        # Nice-to-have, not core to the response -- generate_title() is
-        # fail-soft (returns None rather than raising) and a missing
-        # title just leaves the picker showing the raw first question.
-        # Reuses this request's LLM override, if any, so the title comes
-        # from the same model the answer did rather than silently
-        # falling back to the .env default.
-        if llm_override is not None:
+    return _to_query_response(setup.query_id, setup.conversation_id, request, result)
 
-            def _generate_title_with_override() -> str | None:
-                with _temporary_llm_provider(llm_override):
-                    return generate_title(request.question, result.answer)
 
-            title = await run_in_threadpool(_generate_title_with_override)
-        else:
-            title = await run_in_threadpool(generate_title, request.question, result.answer)
-        if title:
-            await run_in_threadpool(
-                db.set_conversation_title, principal, conversation_id, title
-            )
+def _ndjson(payload: dict) -> str:
+    return json.dumps(payload) + "\n"
 
-    return QueryResponse(
-        query_id=query_id,
-        conversation_id=conversation_id,
-        question=request.question,
-        answer=result.answer,
-        citations=[
-            CitationOut(
-                marker=c.marker,
-                chunk_id=c.chunk_id,
-                source=c.source,
-                doc_id=c.doc_id,
-                pages=c.pages,
-                slides=c.slides,
-                text=c.text,
-                elements=[_to_chunk_element_out(e) for e in c.elements],
-            )
-            for c in result.citations
-        ],
-        refused=result.refused,
-        needs_clarification=result.needs_clarification,
-        retrieval_method=request.retrieval_method,
-        retrieved_chunks=[
-            RetrievedChunkOut(
-                chunk_id=c.chunk_id,
-                score=c.score,
-                text=c.text,
-                source=c.source,
-                doc_id=c.doc_id,
-                pages=c.pages,
-                slides=c.slides,
-                elements=[_to_chunk_element_out(e) for e in c.elements],
-            )
-            for c in result.retrieved_chunks
-        ],
+
+def _stream_response(
+    request: QueryRequest, db: Database, principal: Principal, setup: _QuerySetup
+) -> Iterator[str]:
+    """The /query/stream generator: one NDJSON object per line --
+    {"type": "tool_call", "round": int, "query": str, "result_count": int}
+    each time a search executes, {"type": "token", "round": int, "text":
+    str} for each fragment of generated text, and exactly one final
+    {"type": "done", ...} carrying the same fields /query's JSON body
+    would (query_id, answer, citations, retrieved_chunks, ...) -- or, if
+    the turn fails partway through, {"type": "error", "detail": str}.
+
+    Runs as a plain sync generator: Starlette's StreamingResponse already
+    iterates a sync generator off the event loop thread (the same
+    guarantee run_in_threadpool gives /query above), so the blocking
+    agent/DB calls in here are safe without wrapping each one
+    individually.
+
+    The one real trade-off of streaming: by the time anything below can
+    fail, the 200 response and its headers are already sent, so unlike
+    /query, a failure here can never become an HTTP 4xx/5xx -- it can
+    only become an in-stream {"type": "error", ...} line for the caller
+    to check for. There's no way around that once the first byte of a
+    streamed body is on the wire.
+    """
+    start_time = time.perf_counter()
+    llm_context: AbstractContextManager = (
+        _temporary_llm_provider(setup.llm_override)
+        if setup.llm_override is not None
+        else nullcontext()
+    )
+    try:
+        with (
+            traced_query(
+                setup.conversation_id,
+                setup.query_id,
+                request.question,
+                setup.metadata_filter_for_trace,
+            ) as query_span,
+            llm_context,
+        ):
+            result: RagAnswer | None = None
+            for event in setup.agent.answer_stream(
+                request.question, setup.history, request.doc_ids, setup.search_filter
+            ):
+                if isinstance(event, AgentToolCall):
+                    yield _ndjson(
+                        {
+                            "type": "tool_call",
+                            "round": event.round_index,
+                            "query": event.query,
+                            "result_count": len(event.results),
+                        }
+                    )
+                elif isinstance(event, AgentToken):
+                    yield _ndjson(
+                        {"type": "token", "round": event.round_index, "text": event.text}
+                    )
+                else:
+                    assert isinstance(event, AgentDone)
+                    result = event.result
+            assert result is not None, "answer_stream() ended without yielding AgentDone"
+            update_span_output(query_span, result.answer)
+    except Exception as exc:
+        # Mirrors /query's ValueError-> 400 / Exception -> 503 split in
+        # spirit (a config gap like rerank=True with no Reranker
+        # configured vs. a genuine model/provider/network failure), but
+        # as a single event type -- see the trade-off in this function's
+        # docstring for why a real status code isn't available here.
+        yield _ndjson({"type": "error", "detail": f"Query generation failed: {exc}"})
+        return
+
+    latency_ms = (time.perf_counter() - start_time) * 1000
+    _record_query_and_maybe_title(db, principal, request, setup, result, latency_ms)
+
+    response = _to_query_response(setup.query_id, setup.conversation_id, request, result)
+    yield _ndjson({"type": "done", **response.model_dump(mode="json")})
+
+
+@router.post("/query/stream")
+async def query_stream(
+    request: QueryRequest,
+    retriever: Retriever = Depends(get_retriever),
+    db: Database = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+) -> StreamingResponse:
+    setup = await _setup_query(request, retriever, db, principal)
+    return StreamingResponse(
+        _stream_response(request, db, principal, setup), media_type="application/x-ndjson"
     )

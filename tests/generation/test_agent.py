@@ -2,8 +2,9 @@ import pytest
 
 from multimodal_rag.generation.agent import AgentChain, _build_system_prompt
 from multimodal_rag.generation.prompt import CONFLICT_RESOLUTION_RULE
+from multimodal_rag.generation.schema import AgentDone, AgentToken, AgentToolCall
 from multimodal_rag.providers.base import LLMProvider
-from multimodal_rag.providers.schema import ToolCall, ToolResponse
+from multimodal_rag.providers.schema import TokenChunk, ToolCall, ToolCallsChunk, ToolResponse
 from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.schema import SearchResult
@@ -32,6 +33,44 @@ class FakeLLM(LLMProvider):
         self.last_messages = messages
         self.tool_choices.append(tool_choice)
         return self._responses.pop(0)
+
+
+class FakeStreamingLLM(LLMProvider):
+    """`rounds` is popped one-per-round from generate_with_tools_stream()
+    as a (tokens, tool_calls) pair -- tokens stream first, then the tool
+    call (if any) arrives as the terminal ToolCallsChunk, mirroring how a
+    real OpenAI-compatible stream behaves. `final_tokens`, if set, is
+    what generate_stream() yields for the "max_tool_rounds exhausted"
+    forced-final path."""
+
+    def __init__(
+        self,
+        rounds: list[tuple[list[str], list[ToolCall]]],
+        final_tokens: list[str] | None = None,
+    ) -> None:
+        self._rounds = list(rounds)
+        self._final_tokens = final_tokens
+        self.tool_choices: list[str | dict | None] = []
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        raise AssertionError("answer_stream() should never call the non-streaming generate()")
+
+    def generate_with_tools(self, messages, tools, tool_choice=None) -> ToolResponse:
+        raise AssertionError(
+            "answer_stream() should never call the non-streaming generate_with_tools()"
+        )
+
+    def generate_stream(self, messages: list[dict[str, str]]):
+        assert self._final_tokens is not None, "generate_stream() called without final_tokens set"
+        yield from self._final_tokens
+
+    def generate_with_tools_stream(self, messages, tools, tool_choice=None):
+        self.tool_choices.append(tool_choice)
+        tokens, tool_calls = self._rounds.pop(0)
+        for text in tokens:
+            yield TokenChunk(text=text)
+        if tool_calls:
+            yield ToolCallsChunk(tool_calls=tool_calls)
 
 
 class FakeRetriever:
@@ -400,3 +439,129 @@ def test_agent_system_prompt_includes_the_same_conflict_resolution_rule_as_the_c
     rules they share."""
     prompt = _build_system_prompt(RetrievalMethod.HYBRID_RRF, max_tool_rounds=4)
     assert CONFLICT_RESOLUTION_RULE in prompt
+
+
+def test_answer_stream_yields_tool_call_then_tokens_then_a_terminal_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeStreamingLLM(
+        [
+            ([], [_tool_call("call_1", "latency")]),
+            (["The latency was 220ms ", "⟦1⟧."], []),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"latency": [_result("a", "220ms latency")]})
+    events = list(AgentChain(retriever).answer_stream("What was the latency?"))
+
+    assert isinstance(events[-1], AgentDone)  # AgentDone is always last
+    tool_calls = [e for e in events if isinstance(e, AgentToolCall)]
+    tokens = [e for e in events if isinstance(e, AgentToken)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].round_index == 1
+    assert tool_calls[0].query == "latency"
+    assert [c.chunk_id for c in tool_calls[0].results] == ["a"]
+    assert "".join(t.text for t in tokens) == "The latency was 220ms ⟦1⟧."
+    assert all(t.round_index == 2 for t in tokens)
+
+    done = events[-1]
+    assert done.result.answer == "The latency was 220ms ⟦1⟧."
+    assert [c.chunk_id for c in done.result.citations] == ["a"]
+
+
+def test_answer_stream_matches_answer_for_an_equivalent_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """answer() and answer_stream() run the exact same round loop (see
+    _run_rounds) -- this pins down that an equivalent script through
+    either entry point produces the identical final RagAnswer, not just
+    superficially similar output."""
+    question = "What was the latency?"
+
+    blocking_llm = FakeLLM(
+        [
+            ToolResponse(content=None, tool_calls=[_tool_call("call_1", "latency")]),
+            ToolResponse(content="The latency was 220ms ⟦1⟧.", tool_calls=[]),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: blocking_llm)
+    blocking_result = AgentChain(
+        FakeRetriever({"latency": [_result("a", "220ms latency")]})
+    ).answer(question)
+
+    streaming_llm = FakeStreamingLLM(
+        [
+            ([], [_tool_call("call_1", "latency")]),
+            (["The latency was 220ms ⟦1⟧."], []),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: streaming_llm)
+    stream_events = list(
+        AgentChain(FakeRetriever({"latency": [_result("a", "220ms latency")]})).answer_stream(
+            question
+        )
+    )
+    streamed_result = next(e for e in stream_events if isinstance(e, AgentDone)).result
+
+    assert streamed_result == blocking_result
+
+
+def test_answer_stream_forced_final_after_rounds_exhausted_streams_via_generate_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeStreamingLLM(
+        [([], [_tool_call(f"call_{i}", "q")]) for i in range(2)],
+        final_tokens=["Best answer with what I have ", "⟦1⟧."],
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"q": [_result("a", "text")]})
+    agent = AgentChain(retriever, max_tool_rounds=2)
+
+    events = list(agent.answer_stream("a question the model keeps searching for"))
+
+    done = next(e for e in events if isinstance(e, AgentDone))
+    assert done.result.answer == "Best answer with what I have ⟦1⟧."
+    forced_round_tokens = [e for e in events if isinstance(e, AgentToken)]
+    assert "".join(t.text for t in forced_round_tokens) == "Best answer with what I have ⟦1⟧."
+    # max_tool_rounds=2, so the forced-final round is round 3 -- distinct
+    # from the two real tool rounds' own indices (1 and 2).
+    assert {t.round_index for t in forced_round_tokens} == {3}
+
+
+def test_answer_stream_narration_before_a_tool_call_is_streamed_but_excluded_from_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A round can carry both content and a tool call (see ToolResponse's
+    # docstring) -- answer()'s non-streaming path already receives and
+    # discards that narration when tool_calls is present. answer_stream()
+    # still surfaces it live as AgentTokens (a caller may want to show
+    # "thinking" text), but it must not leak into the final answer.
+    fake_llm = FakeStreamingLLM(
+        [
+            (["Let me check that."], [_tool_call("call_1", "latency")]),
+            (["The latency was 220ms ⟦1⟧."], []),
+        ]
+    )
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    retriever = FakeRetriever({"latency": [_result("a", "220ms latency")]})
+    events = list(AgentChain(retriever).answer_stream("What was the latency?"))
+
+    round_1_tokens = [e.text for e in events if isinstance(e, AgentToken) and e.round_index == 1]
+    assert round_1_tokens == ["Let me check that."]
+    done = next(e for e in events if isinstance(e, AgentDone))
+    assert done.result.answer == "The latency was 220ms ⟦1⟧."
+
+
+def test_answer_stream_requires_a_provider_that_supports_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_llm = FakeLLM([ToolResponse(content="Hi there!", tool_calls=[])])
+    monkeypatch.setattr("multimodal_rag.generation.agent.get_llm", lambda: fake_llm)
+
+    agent = AgentChain(FakeRetriever({}))
+
+    with pytest.raises(NotImplementedError):
+        list(agent.answer_stream("hi"))
