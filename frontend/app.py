@@ -1056,6 +1056,17 @@ if prompt and prompt.strip():
                         search_status.write(
                             f"🔍 “{event['query']}” — {event['result_count']} result(s)"
                         )
+                        # A tool call means whatever text streamed so far this
+                        # turn belongs to a round the agent just discarded --
+                        # e.g. it answered "I don't know" before searching,
+                        # which agent.py's own safety net silently replaces
+                        # with a real search rather than returning (see
+                        # _run_rounds' "searches_performed == 0" branch).
+                        # Clearing here is what stops that stale text from
+                        # sticking around and getting the real answer's
+                        # tokens appended after it once the next round starts.
+                        accumulated_answer = ""
+                        answer_placeholder.empty()
                     elif event_type == "token":
                         accumulated_answer += event["text"]
                         answer_placeholder.markdown(accumulated_answer)

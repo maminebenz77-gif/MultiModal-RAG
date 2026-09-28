@@ -8,8 +8,12 @@ implicit sys.path behavior, which AppTest.run() does NOT provide, so
 the app raised ModuleNotFoundError under it until fixed.
 """
 
+import json
 from pathlib import Path
+from unittest import mock
 
+import httpx
+import pytest
 from streamlit.testing.v1 import AppTest
 
 _APP_PATH = str(Path(__file__).resolve().parents[2] / "frontend" / "app.py")
@@ -165,6 +169,72 @@ def test_asking_a_real_question_fails_soft_when_the_api_is_unreachable() -> None
     assert not at.exception
     assert at.session_state["turns"] == []
     assert any("Query failed" in e.value for e in at.error)
+
+
+def test_a_discarded_refusal_round_does_not_leak_into_the_live_streamed_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: agent.py's own safety net silently discards a
+    round that refuses before any search has happened (see
+    generation/agent.py's _run_rounds, the "searches_performed == 0"
+    branch) and replaces it with a real search instead of returning it --
+    but that round's tokens already streamed to the client before the
+    round finished and that decision was made. Without clearing the
+    display on the next tool_call event, the discarded refusal's text
+    stuck around and the real answer's tokens got appended after it,
+    instead of replacing it."""
+    stream_lines = [
+        json.dumps(
+            {"type": "token", "round": 1, "text": "I don't know based on the available documents."}
+        ),
+        json.dumps({"type": "tool_call", "round": 1, "query": "latency", "result_count": 1}),
+        json.dumps({"type": "token", "round": 2, "text": "The latency was 220ms."}),
+        json.dumps(
+            {
+                "type": "done",
+                "query_id": "q1",
+                "conversation_id": "c1",
+                "question": "What was the latency?",
+                "answer": "The latency was 220ms.",
+                "citations": [],
+                "refused": False,
+                "needs_clarification": False,
+                "retrieval_method": "hybrid_rrf",
+                "retrieved_chunks": [],
+            }
+        ),
+    ]
+
+    class _FakeResponse:
+        status_code = 200
+
+        def iter_lines(self):
+            return iter(stream_lines)
+
+    class _FakeStreamContextManager:
+        def __enter__(self):
+            return _FakeResponse()
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(httpx, "stream", lambda *args, **kwargs: _FakeStreamContextManager())
+
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    # Suppress the post-stream st.rerun() so the LIVE view (what this bug
+    # actually affects) can be inspected directly -- a real rerun would
+    # re-render this turn from st.session_state.turns, which is already
+    # correct (built from the "done" event's own answer field, never from
+    # the accumulated live text), masking the bug entirely.
+    with mock.patch("streamlit.rerun"):
+        at.chat_input[0].set_value("What was the latency?").run(timeout=30)
+
+    assert not at.exception
+    live_text = "".join(m.value for m in at.main.markdown)
+    assert "I don't know" not in live_text
+    assert "The latency was 220ms." in live_text
 
 
 def test_new_conversation_clears_session_history() -> None:
