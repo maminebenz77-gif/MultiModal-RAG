@@ -31,6 +31,8 @@ import httpx
 import streamlit as st
 from config import get_frontend_provider_defaults, get_frontend_settings
 
+_INGEST_REQUEST_TIMEOUT_SECONDS = 600.0
+
 _METHOD_OPTIONS: dict[str, tuple[str, bool]] = {
     "Cosine similarity": ("cosine", False),
     "MMR (diversity)": ("mmr", False),
@@ -89,11 +91,6 @@ _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".x
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "provider_catalog.json"
 _LIBRA_LOGO_PATH = Path(__file__).resolve().parents[1] / "images" / "icone_LIBRA_AI.png"
 _USER_AVATAR = "🧑"
-# The app's own mark, not a generic robot emoji -- reused from the header
-# logo (below) so the assistant is visually the product, not a stock
-# chatbot. NOT a docstring (this isn't the first statement of a def/class)
-# -- Streamlit's "magic" renders any bare top-level string as st.write(),
-# so a triple-quoted comment here would show up on the page itself.
 _ASSISTANT_AVATAR = str(_LIBRA_LOGO_PATH)
 
 
@@ -539,7 +536,7 @@ with st.sidebar:
                 response = httpx.post(
                     f"{api_base_url}/ingest",
                     files=form_fields,
-                    timeout=120.0,
+                    timeout=_INGEST_REQUEST_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -657,7 +654,7 @@ with st.sidebar:
                             "metadata_json": (None, bulk_metadata_json),
                         }
                     ),
-                    timeout=120.0,
+                    timeout=_INGEST_REQUEST_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -1019,7 +1016,6 @@ if prompt and prompt.strip():
     }
     if apply_runtime_overrides:
         query_payload["runtime_overrides"] = runtime_overrides
-
     with st.chat_message("user", avatar=_USER_AVATAR):
         st.write(prompt)
 
@@ -1033,13 +1029,6 @@ if prompt and prompt.strip():
                 "POST", f"{api_base_url}/query/stream", json=query_payload, timeout=120.0
             ) as response:
                 if response.status_code >= 400:
-                    # The body has to be read explicitly here -- a streamed
-                    # response's content isn't buffered automatically the
-                    # way a plain httpx.post()'s is, and _http_error_detail
-                    # needs it to read the JSON {"detail": ...} body FastAPI
-                    # sends for an error raised before any streaming starts
-                    # (e.g. an unknown conversation_id -- see
-                    # routers/query.py's _setup_query()).
                     response.read()
                     response.raise_for_status()
                 for line in response.iter_lines():
@@ -1075,13 +1064,4 @@ if prompt and prompt.strip():
         st.session_state.conversation_id = done_body["conversation_id"]
         st.query_params["c"] = done_body["conversation_id"]
         st.session_state.turns.append({**done_body, "question": prompt})
-        # Same reason as the feedback rerun above: the backend recorded
-        # this query (and its refusal/method) before this response came
-        # back, but the Metrics panel already rendered earlier in this
-        # same script run, before the query even started -- only a fresh
-        # rerun picks up the updated count. It also re-renders this turn
-        # from st.session_state.turns, so a refusal/clarification gets its
-        # proper st.warning/st.info styling -- the live view above always
-        # renders plain text, since refused/needs_clarification isn't known
-        # until the "done" event, by which point the text already streamed.
         st.rerun()

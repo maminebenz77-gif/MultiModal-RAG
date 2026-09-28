@@ -51,7 +51,7 @@ def test_start_all_waits_for_store_and_backend_ports(monkeypatch) -> None:
 
     assert ("127.0.0.1", 6333, 60.0) in waits
     assert ("127.0.0.1", 9200, 60.0) in waits
-    assert ("127.0.0.1", 8000, 60.0) in waits
+    assert ("127.0.0.1", 8000, start_all._BACKEND_STARTUP_TIMEOUT) in waits
     assert ("127.0.0.1", 8501, 60.0) in waits
     assert any(cmd[:3] == ["uv", "run", "uvicorn"] for cmd in popen_calls)
     assert any(cmd[:3] == ["uv", "run", "streamlit"] for cmd in popen_calls)
@@ -100,3 +100,33 @@ def test_docker_start_only_targets_qdrant_and_elasticsearch_not_api(monkeypatch)
 
     assert result is True
     assert run_calls == [["docker", "compose", "up", "-d", "qdrant", "elasticsearch"]]
+
+
+def test_local_store_startup_exposes_service_logs_when_launcher_fails(
+    monkeypatch, tmp_path
+) -> None:
+    start_script = tmp_path / "start-stores.ps1"
+    start_script.write_text("", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "qdrant.log").write_text(
+        "Qdrant panic: failed to load local shard\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(start_all, "_try_start_stores_with_docker", lambda: False)
+    monkeypatch.setattr(start_all, "LOCAL_START_SCRIPT", start_script)
+    monkeypatch.setattr(start_all, "LOCAL_RUN_DIR", run_dir)
+
+    def failing_run(*args, **kwargs):
+        raise start_all.subprocess.CalledProcessError(1, args[0])
+
+    monkeypatch.setattr(start_all.subprocess, "run", failing_run)
+
+    try:
+        start_all._start_stores()
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Local store startup failed" in message
+        assert "Qdrant panic: failed to load local shard" in message
+    else:
+        raise AssertionError("Expected local store startup failure")

@@ -27,6 +27,7 @@ succeeds, rather than accumulating collections indefinitely.
 
 import logging
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 from qdrant_client import QdrantClient, models
@@ -48,6 +49,11 @@ _DISTANCE_MAP = {
 }
 
 _DEFAULT_BATCH_SIZE = 100
+# Qdrant's default request limit is 32 MiB. Keep a margin for the request
+# envelope and JSON overhead; multimodal payloads can make one point much
+# larger than the usual text-only chunk.
+_MAX_BATCH_PAYLOAD_BYTES = 24 * 1024 * 1024
+_QDRANT_REQUEST_TIMEOUT_SECONDS = 300
 
 # Qdrant filters an UNINDEXED payload field by evaluating the condition on
 # each candidate as it walks the HNSW graph -- slower, and it loses results,
@@ -130,6 +136,37 @@ def _point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
 
 
+def _iter_point_batches(
+    chunks: list[Chunk],
+    vectors: list[EmbeddingVector],
+    doc_metadata: DocumentMetadata | None,
+    max_points: int = _DEFAULT_BATCH_SIZE,
+) -> Iterator[list[tuple[Chunk, models.PointStruct]]]:
+    batch: list[tuple[Chunk, models.PointStruct]] = []
+    batch_bytes = 2
+
+    for chunk, vector in zip(chunks, vectors, strict=True):
+        point = QdrantStore._to_point(chunk, vector, doc_metadata)
+        point_bytes = len(point.model_dump_json().encode("utf-8"))
+        if point_bytes + 2 > _MAX_BATCH_PAYLOAD_BYTES:
+            raise ValueError(
+                f"Chunk {chunk.id!r} is too large for the Qdrant request limit "
+                f"({_MAX_BATCH_PAYLOAD_BYTES} bytes)."
+            )
+        if batch and (
+            len(batch) >= max_points
+            or batch_bytes + point_bytes + 1 > _MAX_BATCH_PAYLOAD_BYTES
+        ):
+            yield batch
+            batch = []
+            batch_bytes = 2
+        batch.append((chunk, point))
+        batch_bytes += point_bytes + 1
+
+    if batch:
+        yield batch
+
+
 class UpsertBatchError(RuntimeError):
     """Raised when one or more batches failed to upsert even after
     retries. Carries the chunk_ids that DID succeed and which didn't, so
@@ -170,7 +207,11 @@ class QdrantStore(VectorStore):
         # check_compatibility=False: we run qdrant/qdrant:latest locally,
         # which can be ahead of whatever version this client was tested
         # against — the mismatch is expected, not a real problem.
-        self._client = QdrantClient(url=url, check_compatibility=False)
+        self._client = QdrantClient(
+            url=url,
+            timeout=_QDRANT_REQUEST_TIMEOUT_SECONDS,
+            check_compatibility=False,
+        )
         self._alias = collection_name
         self._pending_collection: str | None = None
         self._batch_size = batch_size
@@ -270,13 +311,12 @@ class QdrantStore(VectorStore):
         failed_ids: list[str] = []
         first_error: Exception | None = None
 
-        for start in range(0, len(chunks), self._batch_size):
-            batch_chunks = chunks[start : start + self._batch_size]
-            batch_vectors = vectors[start : start + self._batch_size]
-            points = [
-                self._to_point(chunk, vector, doc_metadata)
-                for chunk, vector in zip(batch_chunks, batch_vectors, strict=True)
-            ]
+        point_batches = _iter_point_batches(
+            chunks, vectors, doc_metadata, max_points=self._batch_size
+        )
+        for batch in point_batches:
+            points = [point for _, point in batch]
+            batch_chunks = [chunk for chunk, _ in batch]
             try:
                 self._upsert_batch(target, points)
                 succeeded_ids.extend(chunk.id for chunk in batch_chunks)
@@ -286,7 +326,11 @@ class QdrantStore(VectorStore):
                 failed_ids.extend(chunk.id for chunk in batch_chunks)
 
         if failed_ids:
-            detail = f" First error: {type(first_error).__name__}: {first_error}" if first_error else ""
+            detail = (
+                f" First error: {type(first_error).__name__}: {first_error}"
+                if first_error
+                else ""
+            )
             raise UpsertBatchError(
                 f"{len(failed_ids)} of {len(chunks)} chunks failed to upsert after "
                 f"{self._max_retries} attempts per batch; {len(succeeded_ids)} succeeded."

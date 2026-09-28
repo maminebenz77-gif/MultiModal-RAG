@@ -19,6 +19,7 @@ from multimodal_rag.stores.qdrant_store import (
     ModelMismatchError,
     QdrantStore,
     UpsertBatchError,
+    _iter_point_batches,
 )
 
 _COLLECTION = "test_collection"
@@ -419,6 +420,20 @@ def test_upsert_rejects_mismatched_lengths(store: QdrantStore) -> None:
     vectors = [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])]
     with pytest.raises(ValueError, match="same length"):
         store.upsert(chunks, vectors)
+
+
+def test_point_batches_split_by_serialized_payload_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "multimodal_rag.stores.qdrant_store._MAX_BATCH_PAYLOAD_BYTES", 1_000
+    )
+    chunks = [_chunk(f"doc.md::a::{index}", "x" * 400) for index in range(3)]
+    vectors = [_vector([1.0, 0.0, 0.0, 0.0]) for _ in chunks]
+
+    batches = list(_iter_point_batches(chunks, vectors, None))
+
+    assert [len(batch) for batch in batches] == [1, 1, 1]
 
 
 def test_reupserting_same_chunk_id_updates_rather_than_duplicates(store: QdrantStore) -> None:

@@ -4,8 +4,8 @@ Ctrl+C.
 
 Not a pytest test (pytest only collects test_*.py/*_test.py) -- this is
 a manual convenience script for live, click-around testing. See also
-wipe_db.py (clears ingested data) and stop_stores.py (stops the
-databases to free memory).
+wipe_db.py (clears ingested data) and stop_stores.py (stops the full
+local stack to free memory).
 
 Run: uv run python tests/live/start_all.py
 """
@@ -20,10 +20,27 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_START_SCRIPT = PROJECT_ROOT / ".local-services" / "scripts" / "start-stores.ps1"
+LOCAL_RUN_DIR = PROJECT_ROOT / ".local-services" / "run"
 _QDRANT_PORT = 6333
 _ELASTIC_PORT = 9200
 _BACKEND_PORT = 8000
 _FRONTEND_PORT = 8501
+_BACKEND_STARTUP_TIMEOUT = 180
+
+
+def _local_store_failure_details() -> str:
+    details: list[str] = []
+    for log_name in ("qdrant.log", "qdrant.err.log", "elasticsearch.log", "elasticsearch.err.log"):
+        log_path = LOCAL_RUN_DIR / log_name
+        if not log_path.exists():
+            continue
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        if lines:
+            details.append(f"--- {log_name} ---\n" + "\n".join(lines[-20:]))
+    return "\n".join(details)
 
 
 def _try_start_stores_with_docker() -> bool:
@@ -68,18 +85,26 @@ def _start_stores() -> str:
         )
 
     print("Starting Qdrant + Elasticsearch with .local-services...")
-    subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(LOCAL_START_SCRIPT),
-        ],
-        cwd=PROJECT_ROOT,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(LOCAL_START_SCRIPT),
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = _local_store_failure_details()
+        suffix = f"\n\n{details}" if details else ""
+        raise RuntimeError(
+            "Local store startup failed. Check the Qdrant/Elasticsearch data or "
+            "start the stack with Docker." + suffix
+        ) from exc
     return "local"
 
 
@@ -142,9 +167,15 @@ def main() -> None:
         )
 
     if not _wait_for_managed_port(
-        backend, "127.0.0.1", _BACKEND_PORT, "Backend", timeout=60.0
+        backend,
+        "127.0.0.1",
+        _BACKEND_PORT,
+        "Backend",
+        timeout=_BACKEND_STARTUP_TIMEOUT,
     ):
-        raise RuntimeError("Backend did not open port 8000 within 60s")
+        raise RuntimeError(
+            f"Backend did not open port 8000 within {_BACKEND_STARTUP_TIMEOUT}s"
+        )
 
     frontend = None
     if _is_port_open("127.0.0.1", _FRONTEND_PORT):
@@ -183,12 +214,13 @@ def main() -> None:
     print("Press Ctrl+C to stop the backend and frontend.")
     if store_mode == "docker":
         print(
-            "Databases keep running after that; use stop_stores.py to free that "
-            "memory.\n"
+            "Databases keep running after that; use stop_stores.py to stop the "
+            "full stack and free memory.\n"
         )
     else:
         print(
-            "Local stores keep running after that; use stop_stores.py to stop them.\n"
+            "Local stores keep running after that; use stop_stores.py to stop the "
+            "full stack.\n"
         )
 
     try:
@@ -224,7 +256,10 @@ def main() -> None:
                 continue
             except KeyboardInterrupt:
                 proc.kill()
-    print("Backend and frontend stopped. Stores are still running.")
+    print(
+        "Backend and frontend stopped. Stores are still running; use "
+        "stop_stores.py to stop the full stack."
+    )
 
 
 if __name__ == "__main__":

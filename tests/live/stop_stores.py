@@ -1,7 +1,8 @@
-"""Stops the Qdrant and Elasticsearch docker containers to free up
-memory. Safe: their data lives in named docker volumes, not the
-containers themselves, so `docker compose up -d` (or start_all.py)
-brings them back with everything still there.
+"""Stops all local stack services to free memory.
+
+This stops Docker services when Docker is available and also cleans up
+native processes listening on Qdrant, Elasticsearch, FastAPI, and
+Streamlit ports. Data is preserved.
 
 Not a pytest test -- a manual convenience script.
 
@@ -34,10 +35,12 @@ def _try_stop_with_docker() -> bool:
 
 
 def main() -> None:
-    if _try_stop_with_docker():
-        return
+    docker_stopped = _try_stop_with_docker()
 
     if not LOCAL_STOP_SCRIPT.exists():
+        if docker_stopped:
+            print("All Docker services stopped. Data is preserved.")
+            return
         raise FileNotFoundError(
             "Docker is not available and local stop script is missing: "
             f"{LOCAL_STOP_SCRIPT}"
@@ -55,7 +58,7 @@ def main() -> None:
         cwd=PROJECT_ROOT,
         check=True,
     )
-    print("Local Qdrant and Elasticsearch stopped.")
+    print("All local stack services stopped. Data is preserved.")
 
 
 if __name__ == "__main__":

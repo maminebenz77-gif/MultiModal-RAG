@@ -34,6 +34,7 @@ from .schema import SearchResult
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+_ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS = 300
 
 
 def _build_query(query: str, search_filter: SearchFilter | None) -> dict:
@@ -74,7 +75,9 @@ class ElasticsearchStore(KeywordStore):
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_backoff_seconds: float = _DEFAULT_RETRY_BACKOFF_SECONDS,
     ) -> None:
-        self._client = Elasticsearch(url)
+        self._client = Elasticsearch(
+            url, request_timeout=_ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS
+        )
         self._index_name = index_name
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
