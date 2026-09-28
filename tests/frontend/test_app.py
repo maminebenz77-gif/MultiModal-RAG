@@ -151,6 +151,22 @@ def test_asking_with_a_blank_question_does_not_query_or_raise() -> None:
     assert at.session_state["turns"] == []
 
 
+def test_asking_a_real_question_fails_soft_when_the_api_is_unreachable() -> None:
+    # No real API is listening (see the module docstring), so opening the
+    # POST /query/stream connection raises httpx.ConnectError immediately
+    # (before a single NDJSON line exists to read) -- same fail-soft
+    # contract as every other API call this app makes against a closed
+    # port, just caught at connection time instead of after a response.
+    at = AppTest.from_file(_APP_PATH)
+    at.run(timeout=30)
+
+    at.chat_input[0].set_value("What is this?").run(timeout=30)
+
+    assert not at.exception
+    assert at.session_state["turns"] == []
+    assert any("Query failed" in e.value for e in at.error)
+
+
 def test_new_conversation_clears_session_history() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
@@ -228,7 +244,7 @@ def test_filters_button_opens_without_exception_on_an_empty_corpus() -> None:
     at = AppTest.from_file(_APP_PATH)
     at.run(timeout=30)
 
-    next(b for b in at.main.button if b.label == "🔍 Filters").click()
+    next(b for b in at.main.button if b.label == "🔍 Narrow search").click()
     at.run(timeout=30)
 
     assert not at.exception
@@ -241,7 +257,7 @@ def test_active_filters_caption_reflects_session_state() -> None:
     at.run(timeout=30)
 
     assert not at.exception
-    assert any("Filtering by tags: runbook" in c.value for c in at.main.caption)
+    assert any("Narrowed to tags: runbook" in c.value for c in at.main.caption)
 
 
 def test_resuming_from_an_unknown_conversation_id_in_the_url_starts_fresh() -> None:
