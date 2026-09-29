@@ -11,6 +11,7 @@ Every future session in this repo must follow the Teaching Contract below.
 3. **Explain after coding, then quiz.** After implementing a step, explain what was built, the key decisions, and the failure modes. Then ask 3 interview-style questions about it and wait for the user's answers before moving on.
 4. **Clarity over cleverness.** Prefer simple, readable code. Short comments should explain WHY (a non-obvious reason, trade-off, or constraint), not WHAT the code does.
 5. **Slow down on confusion.** If the user seems to misunderstand something, stop, slow down, and use an analogy.
+6. **Plain English, always.** Explanations, quiz questions, and answers to the user's quiz answers must be written in plain, spelled-out English — not condensed technical shorthand or jargon-dense keywords. Write sentences a person could follow without already knowing the codebase, even when the underlying idea is technical.
 
 ## How We'll Use Claude Code's Own Features
 
