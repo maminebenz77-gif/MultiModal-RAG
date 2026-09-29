@@ -385,5 +385,7 @@ class MetricsResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
-    qdrant: Literal["up", "down"]
     elasticsearch: Literal["up", "down"]
+    """Elasticsearch serves both the vector and keyword search roles
+    (see stores/elasticsearch_store.py) -- one physical backend, one
+    reachability check, not two."""

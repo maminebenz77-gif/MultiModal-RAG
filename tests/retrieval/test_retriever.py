@@ -1,4 +1,4 @@
-"""Integration tests against real local Qdrant + Elasticsearch, but with
+"""Integration tests against a real local Elasticsearch, but with
 a fake embedder/reranker for exact, controlled vectors — testing MMR's
 diversity trade-off and RRF's fusion precisely requires exact control
 over similarity values that real embeddings don't offer.
@@ -16,9 +16,8 @@ from multimodal_rag.providers.schema import EmbeddingVector
 from multimodal_rag.retrieval import retriever as retriever_module
 from multimodal_rag.retrieval.retriever import Retriever
 from multimodal_rag.retrieval.schema import RetrievalMethod
-from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
+from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore, ElasticsearchVectorStore
 from multimodal_rag.stores.filters import SearchFilter
-from multimodal_rag.stores.qdrant_store import QdrantStore
 from multimodal_rag.stores.schema import SearchResult
 
 _COLLECTION = "test_retrieval"
@@ -72,26 +71,25 @@ def _chunk(
 
 
 @pytest.fixture
-def vector_store() -> Iterator[QdrantStore]:
-    s = QdrantStore(url="http://localhost:6333", collection_name=_COLLECTION)
-    s.create_collection(dimension=2, indexing_threshold=0)
-    s.publish()
+def keyword_store() -> Iterator[ElasticsearchStore]:
+    # Owns the shared client + alias/blue-green state -- see
+    # elasticsearch_store.py's module docstring for why vector_store
+    # below wraps THIS instance rather than getting its own.
+    s = ElasticsearchStore(url="http://localhost:9200", index_name=_COLLECTION)
+    ElasticsearchVectorStore(s).ensure_ready(dimension=2)
     yield s
     physical = s._current_alias_target()
     if physical is not None:
-        s._client.delete_collection(physical)
+        s._client.indices.delete(index=physical, ignore_unavailable=True)
 
 
 @pytest.fixture
-def keyword_store() -> Iterator[ElasticsearchStore]:
-    s = ElasticsearchStore(url="http://localhost:9200", index_name=_COLLECTION)
-    s.create_index()
-    yield s
-    s._client.indices.delete(index=_COLLECTION, ignore_unavailable=True)
+def vector_store(keyword_store: ElasticsearchStore) -> ElasticsearchVectorStore:
+    return ElasticsearchVectorStore(keyword_store)
 
 
 def test_cosine_returns_top_k_by_similarity(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {
@@ -111,7 +109,7 @@ def test_cosine_returns_top_k_by_similarity(
 
 
 def test_bm25_delegates_to_keyword_store(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"a-chunk": [1.0, 0.0], "b-chunk": [0.0, 1.0]})
     chunks = [
@@ -128,7 +126,7 @@ def test_bm25_delegates_to_keyword_store(
 
 
 def test_mmr_with_lambda_one_matches_pure_relevance_ranking(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {
@@ -152,7 +150,7 @@ def test_mmr_with_lambda_one_matches_pure_relevance_ranking(
 
 
 def test_mmr_with_low_lambda_prefers_diversity_over_redundant_high_relevance(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {
@@ -180,7 +178,7 @@ def test_mmr_with_low_lambda_prefers_diversity_over_redundant_high_relevance(
 
 
 def test_hybrid_rrf_favors_a_chunk_ranked_in_both_lists(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {
@@ -210,7 +208,7 @@ def test_hybrid_rrf_favors_a_chunk_ranked_in_both_lists(
 
 
 def test_rerank_reorders_results_via_the_reranker(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1], "c": [0.8, 0.2]}
@@ -231,7 +229,7 @@ def test_rerank_reorders_results_via_the_reranker(
 
 
 def test_rerank_without_a_reranker_raises(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
     chunks = [_chunk("a", "a")]
@@ -244,7 +242,7 @@ def test_rerank_without_a_reranker_raises(
 
 
 def test_resolve_parent_context_substitutes_parent_text_but_keeps_child_chunk_id(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text, much longer": [0.5, 0.5]}
@@ -263,7 +261,7 @@ def test_resolve_parent_context_substitutes_parent_text_but_keeps_child_chunk_id
 
 
 def test_resolve_parent_context_dedupes_multiple_children_of_the_same_parent(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {
@@ -295,7 +293,7 @@ def test_resolve_parent_context_dedupes_multiple_children_of_the_same_parent(
 
 
 def test_resolve_parent_context_leaves_parentless_chunks_unchanged(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "standalone text": [1.0, 0.0]})
     chunk = _chunk("a", "standalone text")
@@ -311,7 +309,7 @@ def test_resolve_parent_context_leaves_parentless_chunks_unchanged(
 
 
 def test_resolve_parent_context_off_by_default_leaves_child_text_as_is(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "child text": [1.0, 0.0], "parent text": [0.5, 0.5]}
@@ -328,7 +326,7 @@ def test_resolve_parent_context_off_by_default_leaves_child_text_as_is(
 
 
 def test_doc_ids_filter_excludes_chunks_from_other_documents(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
@@ -351,7 +349,7 @@ def test_doc_ids_filter_excludes_chunks_from_other_documents(
 
 
 def test_doc_ids_filter_does_not_match_the_display_filename(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     # Guards directly against the identity bug regressing: passing the
     # FILENAME (what doc_ids used to silently accept) must match nothing,
@@ -369,7 +367,7 @@ def test_doc_ids_filter_does_not_match_the_display_filename(
 
 
 def test_doc_ids_filter_finds_matches_the_old_post_retrieval_design_would_have_missed(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     # The concrete argument for store-level (not post-retrieval) filtering:
     # build a corpus where the chunks that match the filter are the LEAST
@@ -404,7 +402,7 @@ def test_doc_ids_filter_finds_matches_the_old_post_retrieval_design_would_have_m
 
 
 def test_doc_ids_none_means_no_filtering(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
@@ -420,7 +418,7 @@ def test_doc_ids_none_means_no_filtering(
 
 
 def test_search_filter_and_doc_ids_intersect_rather_than_stack_independently(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     """The mechanism ScopedRetriever depends on: retrieve()'s own
     search_filter parameter must compose with doc_ids via merge()
@@ -448,7 +446,7 @@ def test_search_filter_and_doc_ids_intersect_rather_than_stack_independently(
 
 
 def test_search_filter_alone_narrows_results_without_doc_ids(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "from doc a": [1.0, 0.0], "from doc b": [0.9, 0.1]}
@@ -478,7 +476,7 @@ def _patch_traced_span():
 
 
 def test_retrieve_opens_a_retriever_span_for_the_whole_call(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
     vector_store.upsert([_chunk("a", "a")], embedder.embed(["a"]))
@@ -505,8 +503,8 @@ def test_retrieve_opens_a_retriever_span_for_the_whole_call(
     }
 
 
-def test_cosine_traces_embed_query_and_qdrant_search_as_child_spans(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+def test_cosine_traces_embed_query_and_vector_search_as_child_spans(
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
     vector_store.upsert([_chunk("a", "a")], embedder.embed(["a"]))
@@ -517,13 +515,13 @@ def test_cosine_traces_embed_query_and_qdrant_search_as_child_spans(
 
     calls = mock_traced_span.call_args_list
     names = [c.args[0] for c in calls]
-    assert names == ["retrieve[cosine]", "embed_query", "qdrant_search"]
+    assert names == ["retrieve[cosine]", "embed_query", "vector_search"]
     assert calls[1].kwargs["as_type"] == "embedding"
     assert calls[2].kwargs["as_type"] == "span"
 
 
 def test_bm25_traces_elasticsearch_search_as_a_child_span(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"a-chunk": [1.0, 0.0]})
     keyword_store.index_chunks([_chunk("a", "the GPU ran out of memory")])
@@ -536,8 +534,8 @@ def test_bm25_traces_elasticsearch_search_as_a_child_span(
     assert names == ["retrieve[bm25]", "elasticsearch_search"]
 
 
-def test_hybrid_rrf_traces_embed_qdrant_and_elasticsearch(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+def test_hybrid_rrf_traces_embed_vector_and_elasticsearch(
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0]})
     chunk = _chunk("a", "a")
@@ -552,14 +550,14 @@ def test_hybrid_rrf_traces_embed_qdrant_and_elasticsearch(
     assert names == [
         "retrieve[hybrid_rrf]",
         "embed_query",
-        "qdrant_search",
+        "vector_search",
         "elasticsearch_search",
         "rrf_fuse",
     ]
 
 
 def test_rerank_traces_the_reranker_call_as_a_child_span(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1]})
     chunks = [_chunk("a", "a"), _chunk("b", "b")]
@@ -571,11 +569,11 @@ def test_rerank_traces_the_reranker_call_as_a_child_span(
         retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=2, rerank=True)
 
     names = [c.args[0] for c in mock_traced_span.call_args_list]
-    assert names == ["retrieve[cosine]", "embed_query", "qdrant_search", "rerank"]
+    assert names == ["retrieve[cosine]", "embed_query", "vector_search", "rerank"]
 
 
 def test_mmr_traces_the_selection_loop_as_a_child_span(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "a": [1.0, 0.0], "b": [0.9, 0.1]})
     chunks = [_chunk("a", "a"), _chunk("b", "b")]
@@ -587,14 +585,14 @@ def test_mmr_traces_the_selection_loop_as_a_child_span(
 
     calls = mock_traced_span.call_args_list
     names = [c.args[0] for c in calls]
-    assert names == ["retrieve[mmr]", "embed_query", "qdrant_search", "mmr_select"]
+    assert names == ["retrieve[mmr]", "embed_query", "vector_search", "mmr_select"]
     select_call = calls[3]
     assert select_call.kwargs["metadata"]["mmr_lambda"] == 0.5
     assert select_call.kwargs["metadata"]["candidates"] == 2
 
 
 def test_retrieve_attaches_a_result_summary_as_the_span_output(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "close match": [0.99, 0.01]})
     vector_store.upsert([_chunk("a", "close match")], embedder.embed(["close match"]))
@@ -604,7 +602,7 @@ def test_retrieve_attaches_a_result_summary_as_the_span_output(
         retriever.retrieve("query", method=RetrievalMethod.COSINE, top_k=1)
 
     # The LAST call is for the top-level "retrieve" span -- child spans
-    # (qdrant_search has its own output, embed_query has none) update
+    # (vector_search has its own output, embed_query has none) update
     # first, in call order.
     output = mock_update.call_args_list[-1].args[1]
     assert len(output) == 1
@@ -686,7 +684,7 @@ def _upsert_with_lineage(vector_store, chunks_and_vectors, **metadata_kwargs):
 
 
 def test_recency_tilt_breaks_a_near_tie_in_favor_of_the_newer_result(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "old text": [1.0, 0.0], "new text": [0.999, 0.001]}
@@ -717,7 +715,7 @@ def test_recency_tilt_breaks_a_near_tie_in_favor_of_the_newer_result(
 
 
 def test_recency_tilt_cannot_override_a_real_relevance_gap(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "clearly relevant": [1.0, 0.0], "barely relevant": [0.1, 0.99]}
@@ -743,7 +741,7 @@ def test_recency_tilt_cannot_override_a_real_relevance_gap(
 
 
 def test_a_result_with_no_effective_from_gets_no_boost_and_no_penalty(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "undated": [1.0, 0.0]})
     chunk = _dated_chunk("undated", "undated", "doc")
@@ -756,7 +754,7 @@ def test_a_result_with_no_effective_from_gets_no_boost_and_no_penalty(
 
 
 def test_two_current_versions_of_one_family_collapse_to_the_higher_version(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     """Not just a superseded/current problem -- two uploads that were never
     linked by supersedes_doc_id can both be "current" in the same family."""
@@ -781,7 +779,7 @@ def test_two_current_versions_of_one_family_collapse_to_the_higher_version(
 
 
 def test_untagged_documents_are_never_collapsed_into_each_other(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     """No doc_family_id must mean "its own family of one", not "the same
     family as every other untagged document"."""
@@ -797,7 +795,7 @@ def test_untagged_documents_are_never_collapsed_into_each_other(
 
 
 def test_recency_tilt_is_not_applied_after_reranking(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     """A cross-encoder reranker judges (query, text) pairs directly -- it
     never sees .score, and its own returned order isn't driven by .score
@@ -830,7 +828,7 @@ def test_recency_tilt_is_not_applied_after_reranking(
 
 
 def test_family_collapse_still_runs_on_the_full_reranked_pool_not_just_survivors(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore
 ) -> None:
     """The reason _rerank stops truncating: family collapse (unlike the
     tilt) is safe and still runs after reranking -- if it cut to top_k

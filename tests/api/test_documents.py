@@ -91,12 +91,12 @@ async def test_patch_recomputes_acl_allow_when_owner_changes_without_private(
     await client.patch(f"/documents/{doc_id}", json={"owner": "user:bob"})
 
     vector_store = client.app.state.app_state.vector_store  # type: ignore[attr-defined]
-    points, _ = vector_store._client.scroll(
-        collection_name=vector_store._alias, limit=10, with_payload=True
-    )
-    for point in points:
-        assert point.payload is not None
-        assert point.payload["acl_allow"] == ["user:bob"]
+    hits = vector_store._client.search(
+        index=vector_store._current_alias_target(), query={"match_all": {}}, size=10
+    )["hits"]["hits"]
+    assert hits
+    for hit in hits:
+        assert hit["_source"]["acl_allow"] == ["user:bob"]
 
 
 async def test_wipe_removes_all_documents_and_their_chunks(client: httpx.AsyncClient) -> None:

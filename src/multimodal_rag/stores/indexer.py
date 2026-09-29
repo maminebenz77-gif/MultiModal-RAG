@@ -2,14 +2,23 @@
 calling vector_store.upsert() and keyword_store.index_chunks() as two
 separate, uncoordinated calls stops being the only option.
 
-Not true cross-database atomicity — Qdrant and Elasticsearch have no
-shared transaction mechanism, so that's not achievable without a much
-bigger architecture (a single source-of-truth store both stores sync
-from independently, the way real search infrastructure eventually
-solves this — not proportionate to build here). What this DOES give:
-the failure becomes visible and specific (which chunk_ids are now
-inconsistent) instead of silent, plus a way to detect drift from any
-other cause via check_consistency().
+Originally written for two genuinely separate databases (Qdrant +
+Elasticsearch), which had no shared transaction mechanism -- true
+cross-store atomicity wasn't achievable without a much bigger
+architecture (a single source-of-truth store both sync from
+independently), so this instead made a partial failure visible and
+specific (which chunk_ids are now inconsistent) rather than silent, plus
+a way to detect drift from any other cause via check_consistency().
+
+Both roles are now two views onto the SAME Elasticsearch backend (see
+elasticsearch_store.py's module docstring), which narrows what
+check_consistency() can actually find -- see its own docstring, and
+tests/stores/test_indexer.py's module docstring, for what changed. This
+class still calls vector_store's write/delete before keyword_store's,
+still wraps a persistent second-call failure in IndexConsistencyError:
+that half of the original design (report a partial failure precisely,
+rather than swallowing it) is unaffected by the two roles now sharing
+one backend.
 """
 
 from typing import Any
@@ -148,7 +157,17 @@ class HybridIndexer:
         """Compare the chunk_ids actually present in each store. Catches
         drift regardless of how it happened — a failed index() call, a
         deletion that only touched one store, manual intervention,
-        anything that didn't go through this coordinator at all."""
+        anything that didn't go through this coordinator at all.
+
+        With both roles now views onto the SAME Elasticsearch backend
+        (see elasticsearch_store.py), `list_chunk_ids()` returns the
+        identical set for both by construction -- there's no second
+        database left to drift from the old way, so this will report
+        consistent far more often than it used to (see
+        tests/stores/test_indexer.py's module docstring). Left in place
+        rather than removed: it's still a real, if narrower, safety net
+        against whichever future change might make the two roles stop
+        sharing state."""
         vector_ids = set(self._vector_store.list_chunk_ids())
         keyword_ids = set(self._keyword_store.list_chunk_ids())
         return ConsistencyReport(

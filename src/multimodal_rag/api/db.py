@@ -1,5 +1,5 @@
-"""SQLite persistence for API-level state that doesn't fit in Qdrant/
-Elasticsearch, which only know about chunks: which documents have been
+"""SQLite persistence for API-level state that doesn't fit in
+Elasticsearch, which only knows about chunks: which documents have been
 ingested, a log of past queries (so /feedback has something to
 reference and /metrics has something to summarize) grouped into
 conversations (so /query can load history server-side instead of the

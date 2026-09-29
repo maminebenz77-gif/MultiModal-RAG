@@ -26,7 +26,6 @@ def _local_settings() -> Settings:
             "llm_model": "gpt-4o-mini",
             "embed_provider": "sentence_transformers",
             "embed_model": "sentence-transformers/all-MiniLM-L6-v2",
-            "qdrant_url": "http://localhost:6333",
             "elastic_url": "http://localhost:9200",
             "allow_external": True,
             "device": "cpu",

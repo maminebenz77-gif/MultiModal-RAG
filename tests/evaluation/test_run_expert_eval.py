@@ -1,5 +1,5 @@
 """Unit tests for run_expert_eval.py -- mocked throughout, no real
-Qdrant/Elasticsearch/AgentChain/Langfuse calls (tests/conftest.py's
+Elasticsearch/AgentChain/Langfuse calls (tests/conftest.py's
 autouse fixture also blanks real Langfuse credentials for the whole suite
 regardless). Mirrors the mocking style test_langfuse_experiment.py already
 uses for the same reason: this script's own logic (discovery, scoring,

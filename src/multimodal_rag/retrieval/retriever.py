@@ -4,8 +4,8 @@ method selection happens per call via the `method` parameter, not by
 swapping which Retriever you constructed.
 
 Every retrieve() call is traced (see tracing.py) -- one "retriever" span
-covering the whole call, with the actual embedder/Qdrant/Elasticsearch/
-reranker calls each as their own child span, so a trace shows real
+covering the whole call, with the actual embedder/vector-search/
+keyword-search/reranker calls each as their own child span, so a trace shows real
 per-step timing rather than one undifferentiated duration. This is a
 no-op when Langfuse isn't configured (see tracing.py's own contract), so
 it costs nothing here -- one cheap None-check per call -- when tracing
@@ -107,7 +107,7 @@ class Retriever:
                 "method": method.value,
                 "top_k": top_k,
                 "rerank": rerank,
-                # Without these, a child qdrant_search/elasticsearch_search
+                # Without these, a child vector_search/elasticsearch_search
                 # showing top_k=20 has no visible connection back to the
                 # top_k=5 this call was actually asked for -- candidate_pool
                 # is the reason the widened fetch happens at all, and
@@ -239,7 +239,7 @@ class Retriever:
         if search_filter is not None:
             trace_metadata["search_filter"] = search_filter.model_dump()
         with traced_span(
-            "qdrant_search", as_type="span", input=query, metadata=trace_metadata
+            "vector_search", as_type="span", input=query, metadata=trace_metadata
         ) as span:
             results = self._vector_store.search(query_vector, **kwargs)
             update_span_output(span, _summarize_results(results))

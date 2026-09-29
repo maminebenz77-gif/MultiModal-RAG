@@ -1,7 +1,7 @@
 """ScopedRetriever: the mandatory security filter + sqlite post-check
 that sits between a caller (or the agent) and the real Retriever.
 
-Integration-style, like test_retriever.py: real Qdrant/Elasticsearch,
+Integration-style, like test_retriever.py: a real local Elasticsearch,
 plus a real sqlite Database (tmp_path) since the post-check reads from
 it directly -- that's the whole point being tested, not something a
 mock of Database could stand in for.
@@ -21,10 +21,9 @@ from multimodal_rag.providers.schema import EmbeddingVector
 from multimodal_rag.retrieval.retriever import Retriever
 from multimodal_rag.retrieval.schema import RetrievalMethod
 from multimodal_rag.retrieval.scoped import ScopedRetriever
-from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
+from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore, ElasticsearchVectorStore
 from multimodal_rag.stores.filters import SearchFilter
 from multimodal_rag.stores.indexer import HybridIndexer
-from multimodal_rag.stores.qdrant_store import QdrantStore
 
 _COLLECTION = "test_scoped_retriever"
 
@@ -41,22 +40,21 @@ class FakeEmbedder(EmbeddingProvider):
 
 
 @pytest.fixture
-def vector_store() -> Iterator[QdrantStore]:
-    s = QdrantStore(url="http://localhost:6333", collection_name=_COLLECTION)
-    s.create_collection(dimension=2, indexing_threshold=0)
-    s.publish()
+def keyword_store() -> Iterator[ElasticsearchStore]:
+    # Owns the shared client + alias/blue-green state -- see
+    # elasticsearch_store.py's module docstring for why vector_store
+    # below wraps THIS instance rather than getting its own.
+    s = ElasticsearchStore(url="http://localhost:9200", index_name=_COLLECTION)
+    ElasticsearchVectorStore(s).ensure_ready(dimension=2)
     yield s
     physical = s._current_alias_target()
     if physical is not None:
-        s._client.delete_collection(physical)
+        s._client.indices.delete(index=physical, ignore_unavailable=True)
 
 
 @pytest.fixture
-def keyword_store() -> Iterator[ElasticsearchStore]:
-    s = ElasticsearchStore(url="http://localhost:9200", index_name=_COLLECTION)
-    s.create_index()
-    yield s
-    s._client.indices.delete(index=_COLLECTION, ignore_unavailable=True)
+def vector_store(keyword_store: ElasticsearchStore) -> ElasticsearchVectorStore:
+    return ElasticsearchVectorStore(keyword_store)
 
 
 @pytest.fixture
@@ -115,7 +113,7 @@ def _ingest(
 
 
 def test_a_public_document_is_visible_to_a_low_clearance_principal(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "public content": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -132,7 +130,7 @@ def test_a_public_document_is_visible_to_a_low_clearance_principal(
 
 
 def test_a_document_above_the_callers_clearance_is_invisible(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "secret content": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -149,7 +147,7 @@ def test_a_document_above_the_callers_clearance_is_invisible(
 
 
 def test_a_document_at_the_callers_exact_clearance_is_visible(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "c2 content": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -166,7 +164,7 @@ def test_a_document_at_the_callers_exact_clearance_is_visible(
 
 
 def test_a_private_document_is_visible_only_to_its_owner(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "alices notes": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -201,7 +199,7 @@ def test_a_private_document_is_visible_only_to_its_owner(
 
 
 def test_an_unowned_private_document_is_visible_to_nobody_including_high_clearance(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "orphaned": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -219,7 +217,7 @@ def test_an_unowned_private_document_is_visible_to_nobody_including_high_clearan
 
 
 def test_an_admin_principal_sees_everything_including_others_private_documents(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "alices private note": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -243,7 +241,7 @@ def test_an_admin_principal_sees_everything_including_others_private_documents(
 
 
 def test_post_check_drops_a_result_the_catalogue_no_longer_recognizes(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     """Simulates drift: the chunk is still in the search index, but its
     sqlite row is gone (e.g. a delete that touched the store but not the
@@ -284,7 +282,7 @@ _BOB = Principal(principal_id="user:bob", clearance="c3")
 
 
 def test_a_superseded_document_is_hidden_by_default_but_kept_for_history(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "old policy": [1.0, 0.0], "new policy": [0.9, 0.1]}
@@ -303,7 +301,7 @@ def test_a_superseded_document_is_hidden_by_default_but_kept_for_history(
 
 
 def test_asking_for_history_never_reveals_someone_elses_private_document(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     """include_superseded widens along the LIFECYCLE axis only. It must not
     become a way around access control."""
@@ -324,7 +322,7 @@ def test_asking_for_history_never_reveals_someone_elses_private_document(
 
 
 def test_the_post_check_drops_a_retired_version_the_store_has_not_caught_up_on(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     """Drift: the catalogue (the authority) already says superseded, but the
     store's copy still says current -- exactly the window after a
@@ -345,7 +343,7 @@ def test_the_post_check_drops_a_retired_version_the_store_has_not_caught_up_on(
 
 
 def test_an_admin_also_gets_current_versions_only_by_default(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder({"query": [1.0, 0.0], "old policy": [1.0, 0.0]})
     indexer = HybridIndexer(vector_store, keyword_store)
@@ -362,7 +360,7 @@ def test_an_admin_also_gets_current_versions_only_by_default(
 
 
 def test_a_chunk_with_no_status_in_the_store_is_not_treated_as_current(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     """Fail closed, same as classification: data written before lifecycle
     existed has no status, and "unknown" must not read as "current"."""
@@ -385,7 +383,7 @@ def test_a_chunk_with_no_status_in_the_store_is_not_treated_as_current(
 
 
 def test_asking_for_history_keeps_the_access_filter_in_the_store_query_itself(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     """The result-level test above passes even if the access filter is
     dropped from the store query, because the sqlite post-check would still
@@ -413,7 +411,7 @@ def test_asking_for_history_keeps_the_access_filter_in_the_store_query_itself(
 
 
 def test_a_caller_supplied_search_filter_narrows_the_results(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     embedder = FakeEmbedder(
         {"query": [1.0, 0.0], "runbook content": [1.0, 0.0], "policy content": [0.9, 0.1]}
@@ -438,7 +436,7 @@ def test_a_caller_supplied_search_filter_narrows_the_results(
 
 
 def test_a_caller_supplied_search_filter_cannot_widen_past_the_security_filter(
-    vector_store: QdrantStore, keyword_store: ElasticsearchStore, db: Database
+    vector_store: ElasticsearchVectorStore, keyword_store: ElasticsearchStore, db: Database
 ) -> None:
     # Same property merge()'s own unit tests prove in isolation (see
     # test_filters.py), now end to end through the real store: a

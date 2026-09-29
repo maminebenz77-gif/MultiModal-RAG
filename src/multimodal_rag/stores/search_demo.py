@@ -1,12 +1,14 @@
 """End-to-end demo: ingest a real sample document, chunk it structure-
 aware (so element_types/element_positions are populated), embed it,
-upsert into a real local Qdrant collection, and search it.
+upsert into a real local Elasticsearch index, and search it.
 
-indexing_threshold=0 forces Qdrant to actually build an HNSW graph even
-on our tiny sample corpus — Qdrant serves any collection below its
-default threshold (20000 vectors) via plain brute-force regardless of
-HNSW config, so without this override, changing ef_search below would
-have *no observable effect at all*.
+`indexing_threshold` is accepted (for interface parity with the
+VectorStore contract) but ignored here -- Elasticsearch's dense_vector
+kNN always builds its HNSW graph incrementally, unlike Qdrant, which
+skips it below a configurable vector-count threshold. `ef_search` maps
+onto ES's own `num_candidates` knob -- not identical to HNSW's ef
+parameter, but the same purpose (a wider candidate list examined before
+returning the top k, trading latency for recall).
 
 Honest expectation-setting: on a corpus this small, don't expect a
 dramatic recall swing between ef_search values — HNSW's approximate
@@ -36,7 +38,7 @@ def main() -> None:
         "--ef-search",
         type=int,
         default=None,
-        help="query-time HNSW ef; unset = Qdrant's default",
+        help="query-time candidate pool size (ES num_candidates); unset = this store's default",
     )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--query", default=_QUERY)
@@ -57,13 +59,13 @@ def main() -> None:
     store.create_collection(dimension=vectors[0].dimension, indexing_threshold=0)
     store.upsert(chunks, vectors)
     store.publish()
-    print(f"Upserted {len(chunks)} chunks into Qdrant collection {_COLLECTION!r}\n")
+    print(f"Upserted {len(chunks)} chunks into Elasticsearch index {_COLLECTION!r}\n")
 
     query_vector = embedder.embed([args.query])[0]
     results = store.search(query_vector, top_k=args.top_k, ef_search=args.ef_search)
 
     print(f'Query: "{args.query}"')
-    print(f"ef_search: {args.ef_search if args.ef_search is not None else '(Qdrant default)'}")
+    print(f"ef_search: {args.ef_search if args.ef_search is not None else '(this store default)'}")
     print("=" * 70)
     for rank, result in enumerate(results, start=1):
         print(f"\n#{rank}  score={result.score:.4f}  chunk_id={result.chunk_id}")

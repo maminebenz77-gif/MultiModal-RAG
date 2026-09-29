@@ -248,8 +248,8 @@ def traced_span(
     """Generic child observation -- nests under whatever's currently
     active (a `traced_query` trace, another `traced_span`, etc.). This
     is what gives retrieval real per-step timing: Retriever.retrieve()
-    (retrieval/retriever.py) wraps its actual embedder/Qdrant/
-    Elasticsearch/reranker calls in one of these each, so their
+    (retrieval/retriever.py) wraps its actual embedder/vector-search/
+    keyword-search/reranker calls in one of these each, so their
     durations are real measurements, not estimates from a callback that
     fires after the fact (the previous approach here, log_search_event,
     which this superseded -- an event has no start time to measure a

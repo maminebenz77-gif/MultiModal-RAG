@@ -1,6 +1,7 @@
 """Wipes all locally-ingested RAG data back to a clean slate: the
-api_corpus collection in Qdrant, the api_corpus index in Elasticsearch,
-and the sqlite tracking file (documents/queries/feedback).
+api_corpus index in Elasticsearch (which serves both the vector and
+keyword search roles -- see stores/elasticsearch_store.py) and the
+sqlite tracking file (documents/queries/feedback).
 
 If Docker is unavailable, this script starts local services from
 .local-services first so the wipe can still run on Windows-only setups.
@@ -21,8 +22,7 @@ from pathlib import Path
 
 from multimodal_rag.api.main import _COLLECTION_NAME, _DEFAULT_DB_PATH
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
-from multimodal_rag.stores.factory import get_keyword_store, get_vector_store
-from multimodal_rag.stores.qdrant_store import QdrantStore
+from multimodal_rag.stores.factory import get_keyword_store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_START_SCRIPT = PROJECT_ROOT / ".local-services" / "scripts" / "start-stores.ps1"
@@ -38,7 +38,7 @@ def _ensure_stores_for_local_mode() -> None:
             f"{LOCAL_START_SCRIPT}"
         )
 
-    print("Docker not found; starting local Qdrant + Elasticsearch first...")
+    print("Docker not found; starting local Elasticsearch first...")
     subprocess.run(
         [
             "powershell",
@@ -56,27 +56,22 @@ def _ensure_stores_for_local_mode() -> None:
 def main() -> None:
     _ensure_stores_for_local_mode()
 
-    # get_vector_store()/get_keyword_store() are typed to return the
-    # abstract VectorStore/KeywordStore -- this script deliberately
-    # reaches past that abstraction into store-specific internals
-    # (deleting the whole physical collection/index), which isn't part
-    # of the general interface. The casts are just to satisfy mypy about
-    # that deliberate choice; get_vector_store()/get_keyword_store()
-    # only ever construct these two concrete classes today.
-    vector_store: QdrantStore = get_vector_store(collection_name=_COLLECTION_NAME)  # type: ignore[assignment]
-    physical = vector_store._current_alias_target()
+    # get_keyword_store() is typed to return the abstract KeywordStore --
+    # this script deliberately reaches past that abstraction into
+    # store-specific internals (deleting the whole physical index behind
+    # the alias), which isn't part of the general interface. The cast is
+    # just to satisfy mypy about that deliberate choice; get_keyword_store()
+    # only ever constructs this one concrete class today.
+    store: ElasticsearchStore = get_keyword_store(index_name=_COLLECTION_NAME)  # type: ignore[assignment]
+    # _COLLECTION_NAME is an ALIAS, not a real index (see
+    # elasticsearch_store.py) -- deleting by alias name wouldn't remove
+    # the physical index behind it, so resolve to the real name first.
+    physical = store._current_alias_target()
     if physical is not None:
-        vector_store._client.delete_collection(physical)
-        print(f"Deleted Qdrant collection {physical!r}.")
+        store._client.indices.delete(index=physical, ignore_unavailable=True)
+        print(f"Deleted Elasticsearch index {physical!r} (alias {_COLLECTION_NAME!r}).")
     else:
-        print("No live Qdrant collection to delete.")
-
-    keyword_store: ElasticsearchStore = get_keyword_store(  # type: ignore[assignment]
-        index_name=_COLLECTION_NAME
-    )
-    existed = keyword_store._client.indices.exists(index=_COLLECTION_NAME)
-    keyword_store._client.indices.delete(index=_COLLECTION_NAME, ignore_unavailable=True)
-    print(f"Elasticsearch index {_COLLECTION_NAME!r} existed: {bool(existed)} -> deleted.")
+        print(f"No live index behind alias {_COLLECTION_NAME!r} to delete.")
 
     if _DEFAULT_DB_PATH.exists():
         _DEFAULT_DB_PATH.unlink()

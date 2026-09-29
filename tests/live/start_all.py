@@ -1,5 +1,5 @@
-"""Starts the whole local stack in one command: Qdrant + Elasticsearch,
-the FastAPI backend, and the Streamlit frontend -- foreground, until
+"""Starts the whole local stack in one command: Elasticsearch, the
+FastAPI backend, and the Streamlit frontend -- foreground, until
 Ctrl+C.
 
 Not a pytest test (pytest only collects test_*.py/*_test.py) -- this is
@@ -21,7 +21,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_START_SCRIPT = PROJECT_ROOT / ".local-services" / "scripts" / "start-stores.ps1"
 LOCAL_RUN_DIR = PROJECT_ROOT / ".local-services" / "run"
-_QDRANT_PORT = 6333
 _ELASTIC_PORT = 9200
 _BACKEND_PORT = 8000
 _FRONTEND_PORT = 8501
@@ -30,7 +29,7 @@ _BACKEND_STARTUP_TIMEOUT = 180
 
 def _local_store_failure_details() -> str:
     details: list[str] = []
-    for log_name in ("qdrant.log", "qdrant.err.log", "elasticsearch.log", "elasticsearch.err.log"):
+    for log_name in ("elasticsearch.log", "elasticsearch.err.log"):
         log_path = LOCAL_RUN_DIR / log_name
         if not log_path.exists():
             continue
@@ -62,7 +61,7 @@ def _try_start_stores_with_docker() -> bool:
         # stores from Compose; the backend/frontend it starts itself,
         # natively, below.
         subprocess.run(
-            ["docker", "compose", "up", "-d", "qdrant", "elasticsearch"],
+            ["docker", "compose", "up", "-d", "elasticsearch"],
             cwd=PROJECT_ROOT,
             check=True,
         )
@@ -70,7 +69,7 @@ def _try_start_stores_with_docker() -> bool:
         print(f"Docker unavailable or failed ({exc}); falling back to local services.")
         return False
 
-    print("Started Qdrant + Elasticsearch with docker compose.")
+    print("Started Elasticsearch with docker compose.")
     return True
 
 
@@ -84,7 +83,7 @@ def _start_stores() -> str:
             f"{LOCAL_START_SCRIPT}"
         )
 
-    print("Starting Qdrant + Elasticsearch with .local-services...")
+    print("Starting Elasticsearch with .local-services...")
     try:
         subprocess.run(
             [
@@ -102,7 +101,7 @@ def _start_stores() -> str:
         details = _local_store_failure_details()
         suffix = f"\n\n{details}" if details else ""
         raise RuntimeError(
-            "Local store startup failed. Check the Qdrant/Elasticsearch data or "
+            "Local store startup failed. Check the Elasticsearch data or "
             "start the stack with Docker." + suffix
         ) from exc
     return "local"
@@ -149,8 +148,6 @@ def _wait_for_managed_port(
 def main() -> None:
     store_mode = _start_stores()
 
-    if not _wait_for_port("127.0.0.1", _QDRANT_PORT, timeout=60.0):
-        raise RuntimeError("Qdrant did not open port 6333 within 60s")
     if not _wait_for_port("127.0.0.1", _ELASTIC_PORT, timeout=60.0):
         raise RuntimeError("Elasticsearch did not open port 9200 within 60s")
 

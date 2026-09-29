@@ -48,8 +48,8 @@ class ChunkMetadata(BaseModel):
     (chunking/ids.py's chunk_id()), so recording it here just makes an
     existing fact addressable. Defaults to "" so old chunks upserted
     before this field existed are visibly incomplete rather than
-    silently wrong -- see stores.qdrant_store._to_point, which
-    deliberately does NOT fall back to source_file here."""
+    silently wrong -- see stores.elasticsearch_store._chunk_document,
+    which deliberately does NOT fall back to source_file here."""
 
     element_positions: list[int] = []
     """Which Element.metadata.position values fed this chunk. Best-effort:

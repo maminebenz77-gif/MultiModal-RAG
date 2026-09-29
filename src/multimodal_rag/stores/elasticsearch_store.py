@@ -516,6 +516,19 @@ class ElasticsearchVectorStore(VectorStore):
     def __init__(self, store: ElasticsearchStore) -> None:
         self._store = store
 
+    @property
+    def _client(self) -> Elasticsearch:
+        """Passthrough onto the shared backend's client -- some callers
+        (api/routers/ingest.py's embedder-override compatibility check)
+        duck-type against a store's `_client`/`_current_alias_target` the
+        way QdrantStore exposed them directly; this keeps that duck-typing
+        working against the wrapper instead of every such caller needing
+        to know it should reach through `._store` instead."""
+        return self._store._client
+
+    def _current_alias_target(self) -> str | None:
+        return self._store._current_alias_target()
+
     def create_collection(
         self,
         dimension: int,

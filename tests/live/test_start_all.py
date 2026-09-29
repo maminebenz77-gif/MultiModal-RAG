@@ -49,7 +49,6 @@ def test_start_all_waits_for_store_and_backend_ports(monkeypatch) -> None:
 
     start_all.main()
 
-    assert ("127.0.0.1", 6333, 60.0) in waits
     assert ("127.0.0.1", 9200, 60.0) in waits
     assert ("127.0.0.1", 8000, start_all._BACKEND_STARTUP_TIMEOUT) in waits
     assert ("127.0.0.1", 8501, 60.0) in waits
@@ -75,7 +74,7 @@ def test_wait_for_managed_port_reports_early_process_exit(monkeypatch) -> None:
         raise AssertionError("Expected an early process-exit error")
 
 
-def test_docker_start_only_targets_qdrant_and_elasticsearch_not_api(monkeypatch) -> None:
+def test_docker_start_only_targets_elasticsearch_not_api(monkeypatch) -> None:
     """Regression test: docker-compose.yml also defines an `api` service --
     the separate containerized-deployment path, meant to be run with an
     override (`-f docker-compose.yml -f docker-compose.local.yml`) that
@@ -99,7 +98,7 @@ def test_docker_start_only_targets_qdrant_and_elasticsearch_not_api(monkeypatch)
     result = start_all._try_start_stores_with_docker()
 
     assert result is True
-    assert run_calls == [["docker", "compose", "up", "-d", "qdrant", "elasticsearch"]]
+    assert run_calls == [["docker", "compose", "up", "-d", "elasticsearch"]]
 
 
 def test_local_store_startup_exposes_service_logs_when_launcher_fails(
@@ -109,8 +108,8 @@ def test_local_store_startup_exposes_service_logs_when_launcher_fails(
     start_script.write_text("", encoding="utf-8")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "qdrant.log").write_text(
-        "Qdrant panic: failed to load local shard\n", encoding="utf-8"
+    (run_dir / "elasticsearch.log").write_text(
+        "Elasticsearch panic: failed to load local shard\n", encoding="utf-8"
     )
 
     monkeypatch.setattr(start_all, "_try_start_stores_with_docker", lambda: False)
@@ -127,6 +126,6 @@ def test_local_store_startup_exposes_service_logs_when_launcher_fails(
     except RuntimeError as exc:
         message = str(exc)
         assert "Local store startup failed" in message
-        assert "Qdrant panic: failed to load local shard" in message
+        assert "Elasticsearch panic: failed to load local shard" in message
     else:
         raise AssertionError("Expected local store startup failure")

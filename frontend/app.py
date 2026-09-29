@@ -424,9 +424,7 @@ with st.sidebar:
     st.caption(f"API: {api_base_url}")
     try:
         health = httpx.get(f"{api_base_url}/health", timeout=5.0).json()
-        st.caption(
-            f"Status: {health['status']} (qdrant={health['qdrant']}, es={health['elasticsearch']})"
-        )
+        st.caption(f"Status: {health['status']} (elasticsearch={health['elasticsearch']})")
     except httpx.HTTPError:
         st.caption("Status: unreachable")
 

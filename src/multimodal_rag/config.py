@@ -147,8 +147,8 @@ class Settings(BaseSettings):
     personal dev machine with no confidential documents, never on a
     profile that might ever see real company data."""
 
-    # Vector / search stores
-    qdrant_url: str
+    # Vector / search store -- Elasticsearch serves both roles (see
+    # stores/elasticsearch_store.py); there is no separate vector store URL.
     elastic_url: str
 
     # Runtime

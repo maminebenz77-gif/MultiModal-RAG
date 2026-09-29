@@ -1,6 +1,6 @@
-"""Common search result representation, shared by vector (Qdrant) and
-keyword (Elasticsearch) stores — one shape for both is what makes it
-possible to compare or later combine BM25 and vector results directly.
+"""Common search result representation, shared by the vector (kNN) and
+keyword (BM25) roles Elasticsearch serves — one shape for both is what
+makes it possible to compare or fuse BM25 and vector results directly.
 """
 
 from pydantic import BaseModel

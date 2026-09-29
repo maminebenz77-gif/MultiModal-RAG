@@ -45,7 +45,6 @@ def main() -> None:
     _try("vision", lambda: get_vision(settings))
     _try("reranker", lambda: get_reranker(settings))
     print()
-    print(f"qdrant_url       : {settings.qdrant_url}")
     print(f"elastic_url      : {settings.elastic_url}")
 
 

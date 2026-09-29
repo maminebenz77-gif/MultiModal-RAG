@@ -18,7 +18,6 @@ def _make_settings(**overrides: object) -> Settings:
         "llm_model": "internal-model",
         "embed_provider": "sentence_transformers",
         "embed_model": "all-MiniLM-L6-v2",
-        "qdrant_url": "http://10.0.0.1:6333",
         "elastic_url": "http://10.0.0.1:9200",
         "allow_external": False,
     }

@@ -5,10 +5,10 @@ ASGITransport doesn't trigger it automatically the way a real deployed
 server would.
 
 Each test gets its own temp sqlite file AND its own uniquely-named
-Qdrant collection / Elasticsearch index, torn down after -- otherwise
-every test run would keep ingesting into (and never cleaning up) one
-shared "api_corpus" collection, the exact kind of orphaned-collection
-cruft the rest of this project's store-layer tests are careful to avoid.
+Elasticsearch index, torn down after -- otherwise every test run would
+keep ingesting into (and never cleaning up) one shared "api_corpus"
+index, the exact kind of orphaned-index cruft the rest of this
+project's store-layer tests are careful to avoid.
 """
 
 import uuid
@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from multimodal_rag.api.main import create_app
-from multimodal_rag.stores.factory import get_keyword_store, get_vector_store
+from multimodal_rag.stores.factory import get_keyword_store
 
 SAMPLE_DOC = Path(__file__).resolve().parents[2] / "data" / "samples" / "chunking_demo.md"
 
@@ -47,12 +47,14 @@ async def make_client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
                 ac.app = app  # type: ignore[attr-defined]
                 yield ac
     finally:
-        vector_store = get_vector_store(collection_name=collection_name)
-        physical = vector_store._current_alias_target()
+        # get_vector_store()/get_keyword_store() with this same name would
+        # return views onto the identical shared backend (see
+        # stores/factory.py) -- only one physical index to clean up now,
+        # not two separate resources in two separate databases.
+        backend = get_keyword_store(index_name=collection_name)
+        physical = backend._current_alias_target()
         if physical is not None:
-            vector_store._client.delete_collection(physical)
-        keyword_store = get_keyword_store(index_name=collection_name)
-        keyword_store._client.indices.delete(index=collection_name, ignore_unavailable=True)
+            backend._client.indices.delete(index=physical, ignore_unavailable=True)
 
 
 @pytest.fixture

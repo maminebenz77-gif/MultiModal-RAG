@@ -1,8 +1,9 @@
-"""Comparison demo: indexes the same document into both Qdrant (vector)
-and Elasticsearch (BM25), then runs the same queries against both,
-printing ranked results side by side — so a query where lexical search
-wins and one where semantic search wins can be observed directly rather
-than assumed.
+"""Comparison demo: indexes the same document via both the vector
+(kNN) and keyword (BM25) roles Elasticsearch serves (see
+stores/elasticsearch_store.py), then runs the same queries against
+both, printing ranked results side by side — so a query where lexical
+search wins and one where semantic search wins can be observed directly
+rather than assumed.
 
 Run: `uv run python -m multimodal_rag.stores.hybrid_compare_demo`
 """
@@ -65,7 +66,7 @@ def main() -> None:
         vector_results = vector_store.search(query_vector, top_k=2)
         keyword_results = keyword_store.search(query, top_k=2)
 
-        _print_results("Vector (Qdrant, cosine)", vector_results)
+        _print_results("Vector (Elasticsearch kNN, cosine)", vector_results)
         _print_results("Keyword (Elasticsearch, BM25)", keyword_results)
         print()
 

@@ -1,5 +1,5 @@
 """Unit tests for langfuse_experiment.py -- mocked throughout, no real
-Qdrant/Elasticsearch/Langfuse calls (tests/conftest.py's autouse fixture
+Elasticsearch/Langfuse calls (tests/conftest.py's autouse fixture
 also blanks real Langfuse credentials for the whole suite regardless).
 """
 

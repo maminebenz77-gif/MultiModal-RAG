@@ -11,22 +11,25 @@ def test_optional_reranker_network_failure_does_not_block_startup(monkeypatch) -
 
     assert main._load_optional_reranker(object()) is None
 
-async def test_health_reports_ok_when_both_stores_are_reachable(client: httpx.AsyncClient) -> None:
+async def test_health_reports_ok_when_the_store_is_reachable(client: httpx.AsyncClient) -> None:
     response = await client.get("/health")
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"status": "ok", "qdrant": "up", "elasticsearch": "up"}
+    assert body == {"status": "ok", "elasticsearch": "up"}
 
 
-async def test_health_reports_degraded_when_a_store_is_unreachable(
+async def test_health_reports_degraded_when_the_store_is_unreachable(
     client: httpx.AsyncClient,
 ) -> None:
-    client.app.state.app_state.vector_store.ping = lambda: False  # type: ignore[attr-defined]
+    # vector_store and keyword_store are two role-views onto the SAME
+    # Elasticsearch backend now (see stores/elasticsearch_store.py) --
+    # /health only pings one of them (see routers/health.py), so either
+    # attribute would do; keyword_store matches what the route actually
+    # depends on.
+    client.app.state.app_state.keyword_store.ping = lambda: False  # type: ignore[attr-defined]
 
     response = await client.get("/health")
 
     body = response.json()
-    assert body["status"] == "degraded"
-    assert body["qdrant"] == "down"
-    assert body["elasticsearch"] == "up"
+    assert body == {"status": "degraded", "elasticsearch": "down"}

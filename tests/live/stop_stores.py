@@ -1,8 +1,8 @@
 """Stops all local stack services to free memory.
 
 This stops Docker services when Docker is available and also cleans up
-native processes listening on Qdrant, Elasticsearch, FastAPI, and
-Streamlit ports. Data is preserved.
+native processes listening on Elasticsearch, FastAPI, and Streamlit
+ports. Data is preserved.
 
 Not a pytest test -- a manual convenience script.
 
@@ -28,7 +28,7 @@ def _try_stop_with_docker() -> bool:
         return False
 
     print(
-        "Qdrant and Elasticsearch docker services stopped. Data is preserved -- "
+        "Elasticsearch docker service stopped. Data is preserved -- "
         "restart with docker compose up -d or start_all.py."
     )
     return True

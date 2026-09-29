@@ -84,18 +84,17 @@ def _chunk_ids(client: httpx.AsyncClient, doc_id: str) -> set[str]:
     return {c for c in store.list_chunk_ids() if c.startswith(doc_id)}
 
 
-def _store_statuses(client: httpx.AsyncClient, doc_id: str) -> dict[str, set[str]]:
-    """The `status` each search store holds for a document's chunks."""
-    state = client.app.state.app_state  # type: ignore[attr-defined]
-    vector, keyword = state.vector_store, state.keyword_store
-    points, _ = vector._client.scroll(collection_name=vector._alias, limit=500, with_payload=True)
-    hits = keyword._client.search(
-        index=keyword._index_name, query={"term": {"doc_id": doc_id}}, size=500
+def _store_statuses(client: httpx.AsyncClient, doc_id: str) -> set[str]:
+    """The `status` value stored for a document's chunks. Both
+    vector_store and keyword_store are role-views onto the SAME
+    Elasticsearch backend now (see stores/elasticsearch_store.py), so
+    there's only one place to read this from -- a plain set, not the
+    two-key dict comparing separate databases this used to be."""
+    store = client.app.state.app_state.keyword_store  # type: ignore[attr-defined]
+    hits = store._client.search(
+        index=store._alias, query={"term": {"doc_id": doc_id}}, size=500
     )["hits"]["hits"]
-    return {
-        "qdrant": {p.payload["status"] for p in points if p.payload["doc_id"] == doc_id},
-        "elasticsearch": {h["_source"]["status"] for h in hits},
-    }
+    return {h["_source"]["status"] for h in hits}
 
 
 # --------------------------------------------------------- replacing
@@ -131,10 +130,7 @@ async def test_retiring_the_old_version_re_embeds_nothing_and_updates_both_store
     old = (await _upload(client, _ALICE, "policy-2025.md")).json()
     chunks_before = _chunk_ids(client, old["doc_id"])
     assert chunks_before
-    assert _store_statuses(client, old["doc_id"]) == {
-        "qdrant": {"current"},
-        "elasticsearch": {"current"},
-    }
+    assert _store_statuses(client, old["doc_id"]) == {"current"}
 
     new = (
         await _upload(
@@ -143,14 +139,8 @@ async def test_retiring_the_old_version_re_embeds_nothing_and_updates_both_store
     ).json()
 
     assert _chunk_ids(client, old["doc_id"]) == chunks_before  # same chunks, none re-made
-    assert _store_statuses(client, old["doc_id"]) == {
-        "qdrant": {"superseded"},
-        "elasticsearch": {"superseded"},
-    }
-    assert _store_statuses(client, new["doc_id"]) == {
-        "qdrant": {"current"},
-        "elasticsearch": {"current"},
-    }
+    assert _store_statuses(client, old["doc_id"]) == {"superseded"}
+    assert _store_statuses(client, new["doc_id"]) == {"current"}
 
 
 async def test_a_re_upload_of_the_same_filename_edits_in_place_and_keeps_its_version(
@@ -235,10 +225,7 @@ async def test_a_replacement_that_fails_to_ingest_leaves_the_old_version_current
         )
 
     assert (await _document(client, _ALICE, old["doc_id"]))["metadata"]["status"] == "current"
-    assert _store_statuses(client, old["doc_id"]) == {
-        "qdrant": {"current"},
-        "elasticsearch": {"current"},
-    }
+    assert _store_statuses(client, old["doc_id"]) == {"current"}
 
 
 async def test_a_replace_request_on_a_duplicate_upload_is_reported_and_ignored(
@@ -285,10 +272,7 @@ async def test_undoing_a_replacement_restores_the_old_version_everywhere(
     assert response.status_code == 200
     assert response.json()["metadata"]["status"] == "current"
     assert response.json()["metadata"]["effective_to"] is None
-    assert _store_statuses(client, old["doc_id"]) == {
-        "qdrant": {"current"},
-        "elasticsearch": {"current"},
-    }
+    assert _store_statuses(client, old["doc_id"]) == {"current"}
 
 
 async def test_editing_a_retired_documents_tags_does_not_bring_it_back_in_the_stores(
@@ -305,10 +289,7 @@ async def test_editing_a_retired_documents_tags_does_not_bring_it_back_in_the_st
 
     await client.patch(f"/documents/{old['doc_id']}", json={"tags": ["archive"]})
 
-    assert _store_statuses(client, old["doc_id"]) == {
-        "qdrant": {"superseded"},
-        "elasticsearch": {"superseded"},
-    }
+    assert _store_statuses(client, old["doc_id"]) == {"superseded"}
 
 
 async def test_an_owner_cannot_forge_version_or_family_through_patch(

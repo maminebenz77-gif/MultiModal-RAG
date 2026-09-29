@@ -346,14 +346,11 @@ def _live_vector_dimension(vector_store: VectorStore) -> int | None:
         return None
 
     try:
-        collection = client.get_collection(current_alias_target)
+        mapping = client.indices.get_mapping(index=current_alias_target)
+        dims = mapping[current_alias_target]["mappings"]["properties"]["vector"]["dims"]
     except Exception:
         return None
-
-    params = getattr(collection.config, "params", None)
-    vectors = getattr(params, "vectors", None)
-    size = getattr(vectors, "size", None)
-    return size if isinstance(size, int) else None
+    return dims if isinstance(dims, int) else None
 
 
 @router.post("/ingest", response_model=IngestResponse)

@@ -1,8 +1,8 @@
 """Backend-neutral search filter: the shape a caller expresses a
-constraint in, translated separately by each store into whatever real
-query language it actually speaks (Qdrant's Filter/FieldCondition,
-Elasticsearch's bool.filter) -- see qdrant_store._build_query_filter and
-elasticsearch_store._build_query.
+constraint in, translated into Elasticsearch's own query language
+(bool.filter clauses) by elasticsearch_store._filter_clauses -- reused
+identically for both the BM25 query and the kNN query's own filter, so
+the translation can't drift between the two roles.
 
 Deliberately minimal: just what document-scoped retrieval needs.
 merge() (below) exists because a real second use arrived early on: a

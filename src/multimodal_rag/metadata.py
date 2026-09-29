@@ -136,11 +136,10 @@ class DocumentMetadata(BaseModel):
     superseded and cleared if that is undone. None while current."""
 
     def to_payload(self) -> dict[str, Any]:
-        """The flat dict merged into every chunk's stored payload
-        (Qdrant + Elasticsearch) -- the one place these field names are
-        spelled for that purpose, so the two backends can't drift apart.
-        See stores.qdrant_store._to_point and
-        stores.elasticsearch_store.index_chunks.
+        """The flat dict merged into every chunk's stored document
+        (Elasticsearch) -- the one place these field names are spelled
+        for that purpose, so the vector and keyword write paths can't
+        drift apart. See stores.elasticsearch_store._chunk_document.
 
         Includes `acl_allow` -- a field with NO corresponding attribute
         on this model, computed fresh from private/owner every time this
@@ -149,7 +148,7 @@ class DocumentMetadata(BaseModel):
         single array-contains check, see retrieval/scoped.py). Deriving
         it (rather than storing it as a separate field on this model)
         means it can't disagree with private/owner INSIDE this model --
-        but the copy in Qdrant/Elasticsearch can still go stale if a
+        but the copy in Elasticsearch can still go stale if a
         writer sends a partial dict and skips this method (exactly the
         PATCH /documents/{doc_id} bug this design once had). Every write
         path must therefore send the whole to_payload(), never a

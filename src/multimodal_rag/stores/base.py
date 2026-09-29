@@ -3,7 +3,7 @@
 Same ports/adapters shape as providers/chunking: downstream code depends
 only on these interfaces and multimodal_rag.stores.factory's
 get_vector_store()/get_keyword_store() — never on a concrete store class
-— so the backend (Qdrant/Elasticsearch today, maybe others later) can
+— so the backend (Elasticsearch today, maybe something else later) can
 change without touching anything that calls it.
 """
 
@@ -49,10 +49,16 @@ class VectorStore(ABC):
         (matched by list position) into whichever version is currently
         being built (or the live one, if no new version is pending).
         Refuses to mix vectors from different embedding models in one
-        call. Implementations should retry transient failures and, if a
-        batch fails persistently, keep going with the rest rather than
-        losing already-succeeded work — see qdrant_store.UpsertBatchError
-        for the concrete contract.
+        call. Implementations should retry transient failures -- see
+        ElasticsearchVectorStore.upsert(), which retries the whole bulk
+        call via retry_with_backoff(). Ideally a persistent per-item
+        failure would still let already-succeeded work stand rather than
+        losing it (Qdrant's old implementation tracked this explicitly
+        via a dedicated UpsertBatchError, batching by payload size); the
+        current Elasticsearch implementation doesn't yet distinguish
+        that from a whole-call failure -- a known, accepted gap from
+        this interface's ideal, not a promise every implementation
+        already keeps.
 
         doc_metadata, if given, is merged into every chunk's payload
         (doc_metadata.to_payload()) -- the ONLY document-level fields
@@ -161,11 +167,19 @@ class VectorStore(ABC):
 
 class KeywordStore(ABC):
     """Lexical (BM25) search — the counterpart to VectorStore. No
-    model_id concern exists here at all: there's no embedding model
-    involved, so nothing to mix or verify. Still deliberately simpler
-    than VectorStore's blue-green versioning — that responded to a
-    specific, demonstrated failure mode for Qdrant that has no
-    counterpart here.
+    model_id concern exists at the INTERFACE level: there's no embedding
+    model involved in ranking by BM25, so nothing here needs to mix or
+    verify one, and this ABC's own methods (create_index(), ensure_ready())
+    stay deliberately simpler than VectorStore's blue-green versioning,
+    which responds to a real failure mode (embedding-model changes making
+    stored vectors incompatible with new queries) that has no keyword-side
+    counterpart.
+
+    A concrete implementation MAY still end up coordinating with
+    blue-green state internally if it shares a physical backend with its
+    paired VectorStore (see elasticsearch_store.py, where both roles read
+    and write the same Elasticsearch index) -- that's an implementation
+    detail of the pairing, not something this interface itself demands.
     """
 
     @abstractmethod
