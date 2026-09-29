@@ -57,6 +57,15 @@ def test_title_and_paragraph_text(tmp_path: Path) -> None:
     assert elements[1].text == "A paragraph of body text."
 
 
+def test_heading_level_is_preserved(tmp_path: Path) -> None:
+    md_path = tmp_path / "headings.md"
+    md_path.write_text("# Document\n\n## Section\n\n### Subsection\n", encoding="utf-8")
+
+    elements = parse_markdown(md_path)
+
+    assert [element.metadata.heading_level for element in elements] == [1, 2, 3]
+
+
 def test_table_rendered_as_markdown(tmp_path: Path) -> None:
     elements = parse_markdown(_write_sample(tmp_path))
     table = elements[2]

@@ -94,4 +94,24 @@ class StructureAwareChunker(Chunker):
             current.append(el)
         if current:
             sections.append(current)
+
+        if len(sections) < 2:
+            return sections
+
+        first, following = sections[0], sections[1]
+        first_element = first[0] if first else None
+        following_element = following[0] if following else None
+        if (
+            first_element
+            and following_element
+            and first_element.type == ElementType.TITLE
+            and first_element.metadata.heading_level == 1
+            and all(element.type == ElementType.TITLE for element in first)
+            and following_element.type == ElementType.TITLE
+            and following_element.metadata.heading_level is not None
+            and following_element.metadata.heading_level > 1
+        ):
+            sections[1] = first + following
+            return sections[1:]
+
         return sections

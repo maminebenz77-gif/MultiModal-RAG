@@ -22,6 +22,8 @@ class ElementType(StrEnum):
 
 class ElementMetadata(BaseModel):
     source_file: str
+    heading_level: int | None = None
+    """Markdown/word-processing heading depth when the element is a title."""
     page: int | None = None
     slide: int | None = None
     sheet: str | None = None

@@ -56,6 +56,8 @@ class ParentChildChunker(Chunker):
                     }
                 )
                 result.append(parent)
+                if all(element_type == "title" for element_type in parent.metadata.element_types):
+                    continue
                 for child_index, piece in enumerate(self._child_splitter.split_text(parent.text)):
                     result.append(
                         Chunk(
