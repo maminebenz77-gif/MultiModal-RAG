@@ -79,7 +79,7 @@ uv run mypy .        # type-check
 
 One image, two profiles — a base `docker-compose.yml` plus one override per environment:
 
-- **Local** (`docker-compose.local.yml`) — CPU/MPS, external providers (OpenAI, litellm) allowed, points at Qdrant + Elasticsearch on `localhost`.
+- **Local** (`docker-compose.local.yml`) — CPU/MPS, external providers (OpenAI, litellm) allowed, points at Elasticsearch on `localhost`.
 - **Server** (`docker-compose.server.yml`) — NVIDIA GPU, no internet access at runtime, embedding + reranker model weights baked into the image at build time, points at the internal LLM gateway.
 
 **Local, from clean, one command:**
