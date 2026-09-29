@@ -4,12 +4,21 @@ from multimodal_rag.ingestion.schema import Element, ElementMetadata, ElementTyp
 
 
 def _el(
-    el_type: ElementType, position: int, text: str | None = None, page: int | None = None
+    el_type: ElementType,
+    position: int,
+    text: str | None = None,
+    page: int | None = None,
+    heading_level: int | None = None,
 ) -> Element:
     return Element(
         type=el_type,
         text=text,
-        metadata=ElementMetadata(source_file="doc.md", position=position, page=page),
+        metadata=ElementMetadata(
+            source_file="doc.md",
+            position=position,
+            page=page,
+            heading_level=heading_level,
+        ),
     )
 
 
@@ -30,6 +39,49 @@ def test_short_section_produces_one_parent_and_one_child() -> None:
     assert len(children) == 1
     assert parents[0].id == StructureAwareChunker().chunk(elements)[0].id
     assert children[0].parent_id == parents[0].id
+
+
+def test_leading_title_only_h1_is_merged_into_following_section() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "MAEVA", heading_level=1),
+        _el(ElementType.TITLE, 1, "Introduction", heading_level=2),
+        _el(ElementType.PARAGRAPH, 2, "MAEVA is a thermal platform."),
+    ]
+
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+
+    parents = [chunk for chunk in chunks if chunk.parent_id is None]
+    children = [chunk for chunk in chunks if chunk.parent_id is not None]
+    assert len(parents) == 1
+    assert parents[0].text == "MAEVA\n\nIntroduction\n\nMAEVA is a thermal platform."
+    assert len(children) == 1
+
+
+def test_h1_with_body_remains_a_real_section() -> None:
+    elements = [
+        _el(ElementType.TITLE, 0, "Introduction", heading_level=1),
+        _el(ElementType.PARAGRAPH, 1, "MAEVA is a thermal platform."),
+        _el(ElementType.TITLE, 2, "Architecture", heading_level=2),
+        _el(ElementType.PARAGRAPH, 3, "The architecture has three layers."),
+    ]
+
+    chunks = ParentChildChunker(child_chunk_size=200, child_chunk_overlap=0).chunk(elements)
+
+    parents = [chunk for chunk in chunks if chunk.parent_id is None]
+    assert [parent.text for parent in parents] == [
+        "Introduction\n\nMAEVA is a thermal platform.",
+        "Architecture\n\nThe architecture has three layers.",
+    ]
+
+
+def test_heading_only_parent_has_no_searchable_child() -> None:
+    elements = [_el(ElementType.TITLE, 0, "Architecture", heading_level=2)]
+
+    chunks = ParentChildChunker().chunk(elements)
+
+    assert len(chunks) == 1
+    assert chunks[0].is_parent
+    assert chunks[0].parent_id is None
 
 
 def test_long_section_produces_multiple_children_under_one_parent() -> None:

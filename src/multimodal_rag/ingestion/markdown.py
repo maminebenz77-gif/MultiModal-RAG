@@ -36,7 +36,11 @@ def parse_markdown(path: Path, summarize_tables: bool = False) -> list[Element]:
                 Element(
                     type=ElementType.TITLE,
                     text=tokens[i + 1].content,
-                    metadata=ElementMetadata(source_file=str(path), position=position),
+                    metadata=ElementMetadata(
+                        source_file=str(path),
+                        heading_level=int(token.tag[1:]),
+                        position=position,
+                    ),
                 )
             )
             position += 1

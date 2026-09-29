@@ -73,11 +73,18 @@ def parse_docx(path: Path, summarize_tables: bool = False) -> list[Element]:
             element_type = (
                 ElementType.TITLE if style_name in _TITLE_STYLES else ElementType.PARAGRAPH
             )
+            heading_level = None
+            if style_name and style_name.startswith("Heading "):
+                heading_level = int(style_name.removeprefix("Heading "))
             elements.append(
                 Element(
                     type=element_type,
                     text=text,
-                    metadata=ElementMetadata(source_file=str(path), position=position),
+                    metadata=ElementMetadata(
+                        source_file=str(path),
+                        heading_level=heading_level,
+                        position=position,
+                    ),
                 )
             )
             position += 1
