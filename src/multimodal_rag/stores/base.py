@@ -49,16 +49,16 @@ class VectorStore(ABC):
         (matched by list position) into whichever version is currently
         being built (or the live one, if no new version is pending).
         Refuses to mix vectors from different embedding models in one
-        call. Implementations should retry transient failures -- see
-        ElasticsearchVectorStore.upsert(), which retries the whole bulk
-        call via retry_with_backoff(). Ideally a persistent per-item
-        failure would still let already-succeeded work stand rather than
-        losing it (Qdrant's old implementation tracked this explicitly
-        via a dedicated UpsertBatchError, batching by payload size); the
-        current Elasticsearch implementation doesn't yet distinguish
-        that from a whole-call failure -- a known, accepted gap from
-        this interface's ideal, not a promise every implementation
-        already keeps.
+        call. Implementations should retry transient failures and let a
+        persistent per-item failure stand without losing already-
+        succeeded work -- see ElasticsearchVectorStore.upsert(), which
+        tracks success/failure per chunk_id via
+        elasticsearch_store._bulk_with_partial_failure() and raises
+        elasticsearch_store.UpsertBatchError (naming which chunk_ids
+        made it in and which didn't) if anything is still failing once
+        retries are exhausted. Same contract Qdrant's old
+        UpsertBatchError gave, ported rather than dropped when the
+        vector role moved to Elasticsearch.
 
         doc_metadata, if given, is merged into every chunk's payload
         (doc_metadata.to_payload()) -- the ONLY document-level fields

@@ -24,6 +24,7 @@ from multimodal_rag.stores.elasticsearch_store import (
     ElasticsearchStore,
     ElasticsearchVectorStore,
     ModelMismatchError,
+    UpsertBatchError,
 )
 from multimodal_rag.stores.filters import SearchFilter
 
@@ -397,21 +398,66 @@ def test_delete_chunks_with_empty_list_is_a_no_op(store: ElasticsearchStore) -> 
 def test_index_chunks_retries_transient_failure_then_succeeds(
     store: ElasticsearchStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A whole-round failure (e.g. the connection dropping mid-request,
+    not one rejected document) is retried the same way
+    retry_with_backoff would retry any other operation -- see
+    _bulk_with_partial_failure's docstring."""
     attempts = {"count": 0}
-    from elasticsearch.helpers import bulk as real_bulk
+    from elasticsearch.helpers import streaming_bulk as real_streaming_bulk
 
-    def flaky_bulk(client: Any, actions: Any) -> Any:
+    def flaky_streaming_bulk(client: Any, actions: Any, **kwargs: Any) -> Any:
         attempts["count"] += 1
         if attempts["count"] < 3:
             raise RuntimeError("transient network blip")
-        return real_bulk(client, actions)
+        yield from real_streaming_bulk(client, actions, **kwargs)
 
-    monkeypatch.setattr("multimodal_rag.stores.elasticsearch_store.bulk", flaky_bulk)
+    monkeypatch.setattr(
+        "multimodal_rag.stores.elasticsearch_store.streaming_bulk", flaky_streaming_bulk
+    )
 
     store.index_chunks([_chunk("doc.md::a::0", "hello")])
 
     assert attempts["count"] == 3
     assert store.list_chunk_ids() == ["doc.md::a::0"]
+
+
+def test_index_chunks_persistent_item_failure_raises_but_preserves_others(
+    store: ElasticsearchStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One chunk that never succeeds, no matter how many rounds are
+    tried, must not take the other, perfectly good chunk down with it --
+    the whole reason for tracking success/failure per chunk_id instead
+    of per call. Mirrors qdrant_store's old
+    test_upsert_persistent_batch_failure_raises_but_preserves_others."""
+    from elasticsearch.helpers import streaming_bulk as real_streaming_bulk
+
+    def one_chunk_always_rejected(client: Any, actions: Any, **kwargs: Any) -> Any:
+        # The "bad" chunk is never actually sent to Elasticsearch -- a
+        # real persistent failure means the write never lands, not that
+        # it lands and we just choose to report it as failed.
+        good = [a for a in actions if a["_id"] != "doc.md::bad::0"]
+        if good:
+            yield from real_streaming_bulk(client, good, **kwargs)
+        if any(a["_id"] == "doc.md::bad::0" for a in actions):
+            yield False, {
+                "update": {"_id": "doc.md::bad::0", "status": 400, "error": "simulated"}
+            }
+
+    monkeypatch.setattr(
+        "multimodal_rag.stores.elasticsearch_store.streaming_bulk", one_chunk_always_rejected
+    )
+
+    chunks = [_chunk("doc.md::good::0", "keep me"), _chunk("doc.md::bad::0", "always fails")]
+
+    with pytest.raises(UpsertBatchError) as exc_info:
+        store.index_chunks(chunks)
+
+    assert exc_info.value.succeeded_chunk_ids == ["doc.md::good::0"]
+    assert exc_info.value.failed_chunk_ids == ["doc.md::bad::0"]
+    # The good chunk is still searchable, refreshed, despite the other
+    # chunk failing every round -- a persistent per-item failure must
+    # never unwind already-succeeded work.
+    assert store.list_chunk_ids() == ["doc.md::good::0"]
 
 
 def test_pages_round_trip_through_search(store: ElasticsearchStore) -> None:
@@ -634,21 +680,53 @@ def test_upsert_retries_transient_failure_then_succeeds(
     vector_store: ElasticsearchVectorStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attempts = {"count": 0}
-    from elasticsearch.helpers import bulk as real_bulk
+    from elasticsearch.helpers import streaming_bulk as real_streaming_bulk
 
-    def flaky_bulk(client: Any, actions: Any) -> Any:
+    def flaky_streaming_bulk(client: Any, actions: Any, **kwargs: Any) -> Any:
         attempts["count"] += 1
         if attempts["count"] < 3:
             raise RuntimeError("transient network blip")
-        return real_bulk(client, actions)
+        yield from real_streaming_bulk(client, actions, **kwargs)
 
-    monkeypatch.setattr("multimodal_rag.stores.elasticsearch_store.bulk", flaky_bulk)
+    monkeypatch.setattr(
+        "multimodal_rag.stores.elasticsearch_store.streaming_bulk", flaky_streaming_bulk
+    )
 
     vector_store.upsert([_chunk("doc.md::a::0", "hello")], [_vector([1.0, 0.0, 0.0, 0.0])])
 
     assert attempts["count"] == 3
     results = vector_store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=1)
     assert results[0].chunk_id == "doc.md::a::0"
+
+
+def test_upsert_persistent_item_failure_raises_but_preserves_others(
+    vector_store: ElasticsearchVectorStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from elasticsearch.helpers import streaming_bulk as real_streaming_bulk
+
+    def one_chunk_always_rejected(client: Any, actions: Any, **kwargs: Any) -> Any:
+        good = [a for a in actions if a["_id"] != "doc.md::bad::0"]
+        if good:
+            yield from real_streaming_bulk(client, good, **kwargs)
+        if any(a["_id"] == "doc.md::bad::0" for a in actions):
+            yield False, {
+                "update": {"_id": "doc.md::bad::0", "status": 400, "error": "simulated"}
+            }
+
+    monkeypatch.setattr(
+        "multimodal_rag.stores.elasticsearch_store.streaming_bulk", one_chunk_always_rejected
+    )
+
+    chunks = [_chunk("doc.md::good::0", "keep me"), _chunk("doc.md::bad::0", "always fails")]
+    vectors = [_vector([1.0, 0.0, 0.0, 0.0]), _vector([0.0, 1.0, 0.0, 0.0])]
+
+    with pytest.raises(UpsertBatchError) as exc_info:
+        vector_store.upsert(chunks, vectors)
+
+    assert exc_info.value.succeeded_chunk_ids == ["doc.md::good::0"]
+    assert exc_info.value.failed_chunk_ids == ["doc.md::bad::0"]
+    results = vector_store.search(_vector([1.0, 0.0, 0.0, 0.0]), top_k=10)
+    assert [r.chunk_id for r in results] == ["doc.md::good::0"]
 
 
 def test_list_chunk_ids_empty_when_nothing_upserted(vector_store: ElasticsearchVectorStore) -> None:

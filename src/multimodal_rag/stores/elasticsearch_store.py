@@ -57,13 +57,29 @@ usually fine (it still matches on any of those terms) but blurs exact-
 phrase precision. A proper fix would add a second, un-analyzed
 `keyword`-typed field for exact matching — a natural next step, not
 built now.
+
+Partial-failure handling on writes: index_chunks()/upsert() don't hand
+their whole action list to elasticsearch.helpers.bulk() — that call
+defaults to raising as soon as the first chunk in a batch is rejected,
+which can leave later, perfectly fine chunks in the same call never
+even attempted. Both write paths instead go through
+_bulk_with_partial_failure(), built on the lower-level
+elasticsearch.helpers.streaming_bulk(), which reports a real
+True/False per chunk instead of one verdict for the whole request.
+Only the chunks still outstanding get resent on each retry round (the
+whole call is never unwound just because one chunk in it failed);
+whatever is still failing once retries run out is reported explicitly
+via UpsertBatchError, carrying which chunk_ids made it in and which
+didn't — the direct Elasticsearch-side equivalent of
+qdrant_store.UpsertBatchError, which this was ported from.
 """
 
+import time
 import uuid
 from typing import Any
 
 from elasticsearch import Elasticsearch, NotFoundError
-from elasticsearch.helpers import bulk
+from elasticsearch.helpers import bulk, streaming_bulk
 
 from ..chunking.schema import Chunk, ChunkElement, ChunkMetadata
 from ..metadata import DocumentMetadata
@@ -273,6 +289,78 @@ class ModelMismatchError(RuntimeError):
     confident-looking, meaningless results with no error at all
     otherwise. Identical rationale to qdrant_store.ModelMismatchError.
     """
+
+
+class UpsertBatchError(RuntimeError):
+    """Raised when one or more chunks still fail to write even after
+    retrying just the failures a few times (see
+    _bulk_with_partial_failure below). Carries the chunk_ids that DID
+    make it in and the ones that didn't, so a caller can retry just the
+    failures instead of redoing the whole call -- the already-succeeded
+    chunks are already durably stored, there's nothing to redo for
+    them. Same shape and rationale as qdrant_store.UpsertBatchError,
+    which this is the Elasticsearch-side equivalent of.
+    """
+
+    def __init__(
+        self, message: str, succeeded_chunk_ids: list[str], failed_chunk_ids: list[str]
+    ) -> None:
+        super().__init__(message)
+        self.succeeded_chunk_ids = succeeded_chunk_ids
+        self.failed_chunk_ids = failed_chunk_ids
+
+
+def _bulk_with_partial_failure(
+    client: Elasticsearch,
+    actions: list[dict[str, Any]],
+    max_retries: int,
+    backoff_seconds: float,
+) -> None:
+    """Shared by index_chunks() and upsert() -- see this module's
+    docstring section on partial-failure handling for why this exists
+    instead of a plain bulk() call.
+
+    `pending` starts as every action and only ever shrinks, one chunk_id
+    at a time, the moment that chunk_id comes back confirmed. Each round
+    resends whatever is STILL in `pending` (nothing already confirmed is
+    ever resent -- harmless either way since writes are upserts, but
+    wasteful for a large batch with one straggler) via streaming_bulk(),
+    told not to raise on a rejected item so every chunk in the round
+    gets a real attempt regardless of what happened to any other chunk
+    in it. A connection-level failure mid-round (the whole request
+    breaking, not just one document) is caught the same way
+    retry_with_backoff treats any failed attempt -- whatever wasn't
+    already confirmed this round simply stays pending for the next one.
+    """
+    pending = {action["_id"]: action for action in actions}
+    succeeded: list[str] = []
+
+    for attempt in range(max_retries):
+        try:
+            for ok, info in streaming_bulk(
+                client, list(pending.values()), raise_on_error=False, raise_on_exception=False
+            ):
+                # info is e.g. {"update": {"_id": ..., "status": ..., ...}}
+                # -- one key, named after the action's _op_type.
+                item = next(iter(info.values()))
+                if ok:
+                    chunk_id = item["_id"]
+                    succeeded.append(chunk_id)
+                    pending.pop(chunk_id, None)
+        except Exception:
+            pass  # whatever's still in `pending` gets retried below
+
+        if not pending:
+            return
+        if attempt < max_retries - 1:
+            time.sleep(backoff_seconds * (2**attempt))
+
+    raise UpsertBatchError(
+        f"{len(pending)} of {len(actions)} chunks failed to upsert after "
+        f"{max_retries} attempts; {len(succeeded)} succeeded.",
+        succeeded_chunk_ids=succeeded,
+        failed_chunk_ids=list(pending),
+    )
 
 
 class ElasticsearchStore(KeywordStore):
@@ -487,14 +575,17 @@ class ElasticsearchStore(KeywordStore):
             for chunk in chunks
         ]
 
-        def call() -> None:
-            bulk(self._client, actions)
-            # ES refreshes on its own roughly every 1s; force it so a
-            # search immediately after indexing (demos, tests, the
-            # HybridIndexer) sees the new documents.
+        try:
+            _bulk_with_partial_failure(
+                self._client, actions, self._max_retries, self._retry_backoff_seconds
+            )
+        finally:
+            # Refresh regardless of outcome -- whatever DID succeed
+            # should be searchable immediately, even if UpsertBatchError
+            # is about to be raised for the rest. ES refreshes on its
+            # own roughly every 1s; force it so a search right after
+            # indexing (demos, tests, the HybridIndexer) sees it too.
             self._client.indices.refresh(index=target)
-
-        retry_with_backoff(call, self._max_retries, self._retry_backoff_seconds)
 
     def search(
         self, query: str, top_k: int = 5, search_filter: SearchFilter | None = None
@@ -593,11 +684,15 @@ class ElasticsearchVectorStore(VectorStore):
             for chunk, vector in zip(chunks, vectors, strict=True)
         ]
 
-        def call() -> None:
-            bulk(self._store._client, actions)
+        try:
+            _bulk_with_partial_failure(
+                self._store._client,
+                actions,
+                self._store._max_retries,
+                self._store._retry_backoff_seconds,
+            )
+        finally:
             self._store._client.indices.refresh(index=target)
-
-        retry_with_backoff(call, self._store._max_retries, self._store._retry_backoff_seconds)
 
     def search(
         self,
