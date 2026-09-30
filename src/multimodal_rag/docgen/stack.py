@@ -23,6 +23,7 @@ from ..api.main import COLLECTION_NAME, DEFAULT_DB_PATH
 from ..config import get_settings
 from ..providers.base import EmbeddingProvider
 from ..providers.factory import get_embedder
+from ..retrieval.retriever import Retriever
 from ..stores.base import KeywordStore, VectorStore
 from ..stores.factory import get_keyword_store, get_vector_store
 from ..stores.indexer import HybridIndexer
@@ -34,6 +35,7 @@ class DocgenStack:
     keyword_store: KeywordStore
     embedder: EmbeddingProvider
     indexer: HybridIndexer
+    retriever: Retriever
     db: Database
 
 
@@ -60,5 +62,10 @@ def build_stack(
         keyword_store=keyword_store,
         embedder=embedder,
         indexer=HybridIndexer(vector_store, keyword_store),
+        # No reranker -- nothing in docgen asks for one, and the
+        # hybrid_rrf method's own rank fusion across vector + keyword
+        # search is doing the equivalent job inside Elasticsearch
+        # already; see Retriever.retrieve()'s rerank=False default.
+        retriever=Retriever(vector_store, keyword_store, embedder),
         db=Database(db_path),
     )
