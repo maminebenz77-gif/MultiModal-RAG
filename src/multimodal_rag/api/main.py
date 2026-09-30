@@ -27,8 +27,18 @@ from .dependencies import AppState
 from .identity import get_principal
 from .routers import conversations, documents, feedback, health, ingest, metrics, query
 
-_DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
-_COLLECTION_NAME = "api_corpus"
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
+"""Where the live app's sqlite catalogue lives. Public (not `_`-prefixed)
+because docgen/ (a standalone script, no FastAPI app) needs to point at
+this exact same file to see/write the same documents the API does --
+duplicating the literal instead of importing it would risk silently
+drifting onto a different db if this default ever changed."""
+
+COLLECTION_NAME = "api_corpus"
+"""The live app's vector/keyword index name -- public for the same
+reason as DEFAULT_DB_PATH above: docgen/ must resolve to the same
+corpus, not a fresh one."""
+
 _logger = logging.getLogger(__name__)
 
 
@@ -43,7 +53,7 @@ def _load_optional_reranker(settings):
 
 
 def create_app(
-    db_path: Path = _DEFAULT_DB_PATH, collection_name: str = _COLLECTION_NAME
+    db_path: Path = DEFAULT_DB_PATH, collection_name: str = COLLECTION_NAME
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

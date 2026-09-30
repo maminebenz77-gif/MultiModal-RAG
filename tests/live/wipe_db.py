@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from multimodal_rag.api.main import _COLLECTION_NAME, _DEFAULT_DB_PATH
+from multimodal_rag.api.main import COLLECTION_NAME, DEFAULT_DB_PATH
 from multimodal_rag.stores.elasticsearch_store import ElasticsearchStore
 from multimodal_rag.stores.factory import get_keyword_store
 
@@ -62,20 +62,20 @@ def main() -> None:
     # the alias), which isn't part of the general interface. The cast is
     # just to satisfy mypy about that deliberate choice; get_keyword_store()
     # only ever constructs this one concrete class today.
-    store: ElasticsearchStore = get_keyword_store(index_name=_COLLECTION_NAME)  # type: ignore[assignment]
-    # _COLLECTION_NAME is an ALIAS, not a real index (see
+    store: ElasticsearchStore = get_keyword_store(index_name=COLLECTION_NAME)  # type: ignore[assignment]
+    # COLLECTION_NAME is an ALIAS, not a real index (see
     # elasticsearch_store.py) -- deleting by alias name wouldn't remove
     # the physical index behind it, so resolve to the real name first.
     physical = store._current_alias_target()
     if physical is not None:
         store._client.indices.delete(index=physical, ignore_unavailable=True)
-        print(f"Deleted Elasticsearch index {physical!r} (alias {_COLLECTION_NAME!r}).")
+        print(f"Deleted Elasticsearch index {physical!r} (alias {COLLECTION_NAME!r}).")
     else:
-        print(f"No live index behind alias {_COLLECTION_NAME!r} to delete.")
+        print(f"No live index behind alias {COLLECTION_NAME!r} to delete.")
 
-    if _DEFAULT_DB_PATH.exists():
-        _DEFAULT_DB_PATH.unlink()
-        print(f"Deleted {_DEFAULT_DB_PATH}.")
+    if DEFAULT_DB_PATH.exists():
+        DEFAULT_DB_PATH.unlink()
+        print(f"Deleted {DEFAULT_DB_PATH}.")
     else:
         print("No sqlite tracking file to delete.")
 
