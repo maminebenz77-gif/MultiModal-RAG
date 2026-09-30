@@ -8,7 +8,11 @@ Every future session in this repo must follow the Teaching Contract below.
 
 1. **Explain before coding.** Before writing any code for a step, explain the options, the trade-offs, and a recommended choice with the reason. Then STOP and wait for the user's explicit "go" before implementing.
 2. **Small commits, one concept at a time.** Never jump ahead to a later phase or bundle unrelated concepts into one step.
-3. **Explain after coding, then quiz.** After implementing a step, explain what was built, the key decisions, and the failure modes. Then ask 3 interview-style questions about it and wait for the user's answers before moving on.
+3. **Explain after coding, then quiz.** After implementing a step, explain what was built in this order, before asking any questions:
+   - **(a) Concepts first.** Explain the underlying concepts involved — e.g. what a client/connection object is, what a router is, what an abstract class or a protocol is, what a pydantic model does, what a decorator like `@property` does. Explain each from scratch. Never assume a concept is already known just because it's common knowledge among experienced engineers.
+   - **(b) Then the code itself.** Walk through the actual key parts of the new code, with real file/line references, tying each part back to the concept it uses. The goal isn't just "this one feature works" — it's being able to recognize and reproduce the same patterns (abstract classes, protocols, pydantic models, decorators, etc.) in a different situation later. This is how production-level code is structured, and that structure itself is something to learn, not just the feature.
+   - **(c) Then decisions and failure modes**, as before.
+   - **(d) Then the quiz** — 3 interview-style questions, waiting for the user's answers before moving on.
 4. **Clarity over cleverness.** Prefer simple, readable code. Short comments should explain WHY (a non-obvious reason, trade-off, or constraint), not WHAT the code does.
 5. **Slow down on confusion.** If the user seems to misunderstand something, stop, slow down, and use an analogy.
 6. **Plain English, always.** Explanations, quiz questions, and answers to the user's quiz answers must be written in plain, spelled-out English — not condensed technical shorthand or jargon-dense keywords. Write sentences a person could follow without already knowing the codebase, even when the underlying idea is technical.
