@@ -364,7 +364,7 @@ def test_traced_query_still_propagates_a_real_exception_from_the_wrapped_body(
 def test_traced_span_yields_none_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: None)
 
-    with tracing.traced_span("qdrant_search") as span:
+    with tracing.traced_span("vector_search") as span:
         assert span is None
 
 
@@ -379,12 +379,12 @@ def test_traced_span_starts_an_observation_with_the_given_type_and_input(
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
 
     with tracing.traced_span(
-        "qdrant_search", as_type="span", input="a query", metadata={"top_k": 5}
+        "vector_search", as_type="span", input="a query", metadata={"top_k": 5}
     ) as span:
         assert span is fake_observation
 
     fake_client.start_as_current_observation.assert_called_once_with(
-        name="qdrant_search", as_type="span", input="a query", metadata={"top_k": 5}
+        name="vector_search", as_type="span", input="a query", metadata={"top_k": 5}
     )
 
 
@@ -398,7 +398,7 @@ def test_traced_span_yields_none_when_opening_the_observation_fails(
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
     body_ran = False
 
-    with tracing.traced_span("qdrant_search") as span:
+    with tracing.traced_span("vector_search") as span:
         body_ran = True
         assert span is None
 
@@ -414,7 +414,7 @@ def test_traced_span_swallows_a_failure_closing_the_observation(
     )
     monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
 
-    with tracing.traced_span("qdrant_search"):
+    with tracing.traced_span("vector_search"):
         pass  # must not raise on exit
 
 
