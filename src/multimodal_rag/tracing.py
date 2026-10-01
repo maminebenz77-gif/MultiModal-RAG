@@ -304,6 +304,25 @@ def update_span_output(observation: Any, output: Any) -> None:
         _logger.warning("Langfuse span-output logging failed; continuing.", exc_info=True)
 
 
+def update_span_score(
+    observation: Any, name: str, value: float, comment: str | None = None
+) -> None:
+    """Best-effort: attaches a score (e.g. an LLM-as-judge verdict) to an
+    in-flight span/observation (see traced_span), while it's still open --
+    the SDK's own create_score accepts a bare trace_id/observation_id and
+    could in principle score a span after the fact, but nothing in this
+    codebase threads those ids anywhere a later call could reach, so every
+    caller here scores its own observation before exiting. Same contract
+    as update_span_output: a no-op if `observation` is None, never raises.
+    """
+    if observation is None:
+        return
+    try:
+        observation.score(name=name, value=value, comment=comment)
+    except Exception:
+        _logger.warning("Langfuse span-score logging failed; continuing.", exc_info=True)
+
+
 @contextmanager
 def traced_generation(name: str, model: str, messages: list[dict[str, Any]]) -> Iterator[Any]:
     """Wraps one litellm.completion() call as a generation observation,
