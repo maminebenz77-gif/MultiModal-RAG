@@ -24,11 +24,11 @@ def test_retrieve_for_question_scopes_results_to_the_given_sources_tag(
     _ingest_one(stack, tmp_path, "sample.md", "docgen:task:demo")
     _ingest_one(stack, tmp_path, "chunking_demo.md", "docgen:ref:demo")
 
-    task_only = [SourceSpec(name="task_docs", tag="docgen:task:demo", required=True)]
+    task_only = [SourceSpec(role="task_docs", tag="docgen:task:demo", required=True)]
     results = retrieve_for_question(QUERY, task_only, stack.retriever)
 
     assert results  # the task doc is actually about latency benchmarking
-    assert all(r.source_name == "task_docs" for r in results)
+    assert all(r.source_role == "task_docs" for r in results)
     assert all("sample.md" == r.chunk.source for r in results)
 
 
@@ -39,19 +39,19 @@ def test_retrieve_for_question_merges_and_labels_multiple_sources(
     _ingest_one(stack, tmp_path, "chunking_demo.md", "docgen:ref:demo")
 
     both = [
-        SourceSpec(name="task_docs", tag="docgen:task:demo", required=True),
-        SourceSpec(name="reference_kb", tag="docgen:ref:demo", required=False),
+        SourceSpec(role="task_docs", tag="docgen:task:demo", required=True),
+        SourceSpec(role="reference_kb", tag="docgen:ref:demo", required=False),
     ]
     results = retrieve_for_question(QUERY, both, stack.retriever)
 
-    labels = {r.source_name for r in results}
+    labels = {r.source_role for r in results}
     assert labels == {"task_docs", "reference_kb"}
 
 
 def test_retrieve_for_question_returns_no_chunks_for_a_source_matching_nothing(
     stack: DocgenStack,
 ) -> None:
-    unused_source = [SourceSpec(name="reference_kb", tag="docgen:ref:nothing-here", required=False)]
+    unused_source = [SourceSpec(role="reference_kb", tag="docgen:ref:nothing-here", required=False)]
 
     results = retrieve_for_question(QUERY, unused_source, stack.retriever)
 

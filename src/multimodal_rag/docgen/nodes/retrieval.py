@@ -18,13 +18,13 @@ from ...retrieval.retriever import Retriever
 from ...retrieval.schema import RetrievalMethod
 from ...stores.filters import SearchFilter
 from ...stores.schema import SearchResult
-from ..sources import SourceName, SourceSpec
+from ..sources import SourceRole, SourceSpec
 
 
 @dataclass(frozen=True)
 class RetrievedChunk:
     chunk: SearchResult
-    source_name: SourceName
+    source_role: SourceRole
     """Which docgen source this came from (task_docs/reference_kb) --
     deliberately a separate field, not SearchResult.source, which
     already means something else (the chunk's source FILENAME)."""
@@ -52,6 +52,6 @@ def retrieve_for_question(
             search_filter=SearchFilter(any_of={"tags": [source.tag]}),
         )
         labeled.extend(
-            RetrievedChunk(chunk=result, source_name=source.name) for result in results
+            RetrievedChunk(chunk=result, source_role=source.role) for result in results
         )
     return labeled

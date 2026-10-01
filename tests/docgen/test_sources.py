@@ -11,7 +11,7 @@ SAMPLES_DIR = Path(__file__).resolve().parents[2] / "data" / "samples"
 def test_resolve_source_with_reuse_existing_does_no_ingestion(stack: DocgenStack) -> None:
     spec = resolve_source("reference_kb", ReuseExisting(tag="some-existing-tag"), stack)
 
-    assert spec.name == "reference_kb"
+    assert spec.role == "reference_kb"
     assert spec.tag == "some-existing-tag"
     assert spec.required is True
     assert list_known_tags(stack.db) == []  # nothing was ingested

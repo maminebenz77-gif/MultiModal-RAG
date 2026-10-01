@@ -24,14 +24,14 @@ from .ingest import ingest_folder
 from .stack import DocgenStack
 from .tags import Role, build_docgen_tag
 
-SourceName = Literal["task_docs", "reference_kb"]
+SourceRole = Literal["task_docs", "reference_kb"]
 
-_ROLE_FOR_SOURCE: dict[SourceName, Role] = {"task_docs": "task", "reference_kb": "ref"}
+_ROLE_FOR_SOURCE: dict[SourceRole, Role] = {"task_docs": "task", "reference_kb": "ref"}
 
 
 @dataclass(frozen=True)
 class SourceSpec:
-    name: SourceName
+    role: SourceRole
     tag: str
     required: bool
 
@@ -58,7 +58,7 @@ SourceChoice = ReuseExisting | IngestNew
 
 
 def resolve_source(
-    name: SourceName,
+    role: SourceRole,
     choice: SourceChoice,
     stack: DocgenStack,
     *,
@@ -73,6 +73,6 @@ def resolve_source(
     if isinstance(choice, ReuseExisting):
         tag = choice.tag
     else:
-        tag = build_docgen_tag(_ROLE_FOR_SOURCE[name], choice.label)
+        tag = build_docgen_tag(_ROLE_FOR_SOURCE[role], choice.label)
         ingest_folder(choice.folder, tag, choice.classification, stack, principal=principal)
-    return SourceSpec(name=name, tag=tag, required=required)
+    return SourceSpec(role=role, tag=tag, required=required)
