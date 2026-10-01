@@ -2,8 +2,9 @@
 calling vector_store.upsert() and keyword_store.index_chunks() as two
 separate, uncoordinated calls stops being the only option.
 
-Originally written for two genuinely separate databases (Qdrant +
-Elasticsearch), which had no shared transaction mechanism -- true
+Originally written for two genuinely separate databases (one for
+vectors, one for keyword search), which had no shared transaction
+mechanism -- true
 cross-store atomicity wasn't achievable without a much bigger
 architecture (a single source-of-truth store both sync from
 independently), so this instead made a partial failure visible and

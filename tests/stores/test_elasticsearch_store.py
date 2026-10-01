@@ -53,8 +53,8 @@ def _chunk(
         is_parent=is_parent,
         metadata=ChunkMetadata(
             source_file=source,
-            # See test_qdrant_store.py's identical _chunk() helper for why
-            # this defaults to `source`.
+            # Defaults to `source` so a test that doesn't care about the
+            # doc_id/filename distinction doesn't have to spell it out.
             doc_id=doc_id if doc_id is not None else source,
             element_positions=[0],
             element_types=["title"],
@@ -427,8 +427,7 @@ def test_index_chunks_persistent_item_failure_raises_but_preserves_others(
     """One chunk that never succeeds, no matter how many rounds are
     tried, must not take the other, perfectly good chunk down with it --
     the whole reason for tracking success/failure per chunk_id instead
-    of per call. Mirrors qdrant_store's old
-    test_upsert_persistent_batch_failure_raises_but_preserves_others."""
+    of per call."""
     from elasticsearch.helpers import streaming_bulk as real_streaming_bulk
 
     def one_chunk_always_rejected(client: Any, actions: Any, **kwargs: Any) -> Any:
@@ -737,9 +736,9 @@ def test_list_chunk_ids_returns_all_upserted_ids(vector_store: ElasticsearchVect
     chunks = [_chunk(f"doc.md::a::{i}", f"text {i}") for i in range(5)]
     # float(i) starting at i=0 would give an all-zero vector for the
     # first chunk -- ES's cosine similarity rejects zero-magnitude
-    # vectors outright ("does not support vectors with zero magnitude"),
-    # a real constraint Qdrant doesn't enforce. Never an issue with real
-    # embeddings (never all-zero by construction); +1 sidesteps it here.
+    # vectors outright ("does not support vectors with zero magnitude").
+    # Never an issue with real embeddings (never all-zero by
+    # construction); +1 sidesteps it here.
     vectors = [_vector([float(i) + 1, 0.0, 0.0, 0.0]) for i in range(5)]
     vector_store.upsert(chunks, vectors)
 

@@ -3,7 +3,7 @@
 Both `vector_store` and `keyword_store` below are two role-views onto
 the SAME shared index (see elasticsearch_store.py's module docstring) --
 this changes what "consistency" between them can actually mean. Before
-(Qdrant + Elasticsearch, two real databases), a chunk could genuinely
+(two real, separate databases), a chunk could genuinely
 exist in one and not the other. Now, writing via EITHER role touches
 the same document, so `list_chunk_ids()` returns the identical set for
 both roles by construction -- there is no longer a way for the two

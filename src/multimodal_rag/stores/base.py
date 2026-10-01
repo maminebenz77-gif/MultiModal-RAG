@@ -56,9 +56,7 @@ class VectorStore(ABC):
         elasticsearch_store._bulk_with_partial_failure() and raises
         elasticsearch_store.UpsertBatchError (naming which chunk_ids
         made it in and which didn't) if anything is still failing once
-        retries are exhausted. Same contract Qdrant's old
-        UpsertBatchError gave, ported rather than dropped when the
-        vector role moved to Elasticsearch.
+        retries are exhausted.
 
         doc_metadata, if given, is merged into every chunk's payload
         (doc_metadata.to_payload()) -- the ONLY document-level fields

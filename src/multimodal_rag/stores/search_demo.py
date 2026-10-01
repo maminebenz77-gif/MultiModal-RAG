@@ -4,8 +4,9 @@ upsert into a real local Elasticsearch index, and search it.
 
 `indexing_threshold` is accepted (for interface parity with the
 VectorStore contract) but ignored here -- Elasticsearch's dense_vector
-kNN always builds its HNSW graph incrementally, unlike Qdrant, which
-skips it below a configurable vector-count threshold. `ef_search` maps
+kNN always builds its HNSW graph incrementally; some other vector
+databases instead skip that below a configurable vector-count
+threshold. `ef_search` maps
 onto ES's own `num_candidates` knob -- not identical to HNSW's ef
 parameter, but the same purpose (a wider candidate list examined before
 returning the top k, trading latency for recall).

@@ -19,11 +19,11 @@ creates a new, uniquely-named physical index without touching the alias
 at all; upsert() populates it; publish() atomically repoints the alias
 at it (and removes the previous physical index) via one
 `indices.update_aliases()` call — ES guarantees the alias never has zero
-or two targets in between, the same atomicity Qdrant's alias swap gives.
-This is what makes a blue-green re-embed possible with no downtime and a
-real rollback if the new version turns out broken, ported directly from
-qdrant_store.py — see its module docstring for the fuller rationale.
-Once ES also stores vectors, it inherits the exact failure mode
+or two targets in between. This is what makes a blue-green re-embed
+possible with no downtime and a real rollback if the new version turns
+out broken — see docs/technical-decisions.md §7 for the fuller history
+behind this pattern. Once ES also stores vectors, it inherits the exact
+failure mode
 (embedding-model changes making stored vectors incompatible with new
 queries) that this exists to solve; a keyword-only index never had that
 problem, which is why create_index() below still has its own,
@@ -70,8 +70,7 @@ Only the chunks still outstanding get resent on each retry round (the
 whole call is never unwound just because one chunk in it failed);
 whatever is still failing once retries run out is reported explicitly
 via UpsertBatchError, carrying which chunk_ids made it in and which
-didn't — the direct Elasticsearch-side equivalent of
-qdrant_store.UpsertBatchError, which this was ported from.
+didn't.
 """
 
 import time
@@ -93,10 +92,10 @@ _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
 _ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS = 300
 
-# ES's own similarity names for dense_vector fields -- same three
-# distances qdrant_store._DISTANCE_MAP offered, so create_collection()'s
-# public contract (distance="cosine"/"euclidean"/"dot") doesn't change
-# for callers migrating off Qdrant.
+# ES's own similarity names for dense_vector fields -- kept behind this
+# map so create_collection()'s public contract (distance="cosine"/
+# "euclidean"/"dot") stays vendor-neutral, not whatever ES happens to
+# call its own similarity options.
 _ES_SIMILARITY_MAP = {
     "cosine": "cosine",
     "euclidean": "l2_norm",
@@ -105,10 +104,8 @@ _ES_SIMILARITY_MAP = {
 
 # elasticsearch.helpers.bulk() already splits a large `actions` list into
 # multiple HTTP requests on its own (chunk_size=500 actions, or
-# max_chunk_bytes=100MB, whichever comes first) -- unlike Qdrant's raw
-# client.upsert(), which sends everything in one request and needed
-# qdrant_store._iter_point_batches/_MAX_BATCH_PAYLOAD_BYTES hand-rolled
-# specifically to work around that. Nothing equivalent is needed here.
+# max_chunk_bytes=100MB, whichever comes first) -- no hand-rolled
+# batching-by-size needed here.
 
 
 def _build_query(query: str, search_filter: SearchFilter | None) -> dict:
@@ -169,8 +166,8 @@ def _index_mapping(dimension: int, distance: str, m: int, ef_construction: int) 
             "parent_id": {"type": "keyword"},
             "is_parent": {"type": "boolean"},
             # The vector role's own fields -- model_id backs
-            # ModelMismatchError below, the same invariant
-            # qdrant_store._stored_model_id() enforces.
+            # ModelMismatchError below, checked against incoming query
+            # vectors at read time (see _stored_model_id() below).
             "model_id": {"type": "keyword"},
             "vector": {
                 "type": "dense_vector",
@@ -229,8 +226,7 @@ def _chunk_document(
         "source": chunk.metadata.source_file,
         # NOT chunk.metadata.source_file (see ChunkMetadata.doc_id) --
         # that's the human-readable filename; this is the STABLE id the
-        # API hands out. See qdrant_store._to_point's identical comment
-        # -- same identity bug, fixed the same way, on this side too.
+        # API hands out.
         "doc_id": chunk.metadata.doc_id,
         "element_types": chunk.metadata.element_types,
         "elements": [e.model_dump() for e in chunk.metadata.elements],
@@ -287,7 +283,7 @@ class ModelMismatchError(RuntimeError):
     models can share a dimension count while encoding meaning in
     completely incompatible spaces, and a mismatched search would return
     confident-looking, meaningless results with no error at all
-    otherwise. Identical rationale to qdrant_store.ModelMismatchError.
+    otherwise.
     """
 
 
@@ -298,8 +294,7 @@ class UpsertBatchError(RuntimeError):
     make it in and the ones that didn't, so a caller can retry just the
     failures instead of redoing the whole call -- the already-succeeded
     chunks are already durably stored, there's nothing to redo for
-    them. Same shape and rationale as qdrant_store.UpsertBatchError,
-    which this is the Elasticsearch-side equivalent of.
+    them.
     """
 
     def __init__(
@@ -377,8 +372,7 @@ class ElasticsearchStore(KeywordStore):
         # `index_name` is an ALIAS, not a physical index -- see this
         # module's docstring. Kept as `_alias` (not `_index_name`)
         # internally so every read/write site here has to spell out
-        # which target it means, the same discipline qdrant_store's
-        # `_alias`/`_pending_collection` split enforces.
+        # which target it means.
         self._alias = index_name
         self._pending_index: str | None = None
         self._max_retries = max_retries
@@ -397,10 +391,10 @@ class ElasticsearchStore(KeywordStore):
         """The VectorStore role's entry point (see ElasticsearchVectorStore
         below, which delegates here) -- lives on this class because the
         alias/pending state it manages is shared with the keyword role.
-        `indexing_threshold` has no ES equivalent (that's a Qdrant
-        optimizer setting to delay HNSW graph construction until enough
-        points accumulate; ES builds it incrementally always) -- accepted
-        for interface compatibility, unused."""
+        `indexing_threshold` has no ES equivalent (an optimizer setting
+        some vector databases use to delay HNSW graph construction
+        until enough points accumulate; ES builds it incrementally
+        always) -- accepted for interface compatibility, unused."""
         if self._pending_index is not None:
             # An earlier create_collection() was never published -- its
             # physical index is otherwise orphaned. Not the live version
@@ -417,8 +411,7 @@ class ElasticsearchStore(KeywordStore):
 
     def publish(self) -> None:
         """Atomically repoints the alias at the pending index -- see
-        this module's docstring. Ported directly from
-        qdrant_store.QdrantStore.publish()."""
+        this module's docstring."""
         if self._pending_index is None:
             raise RuntimeError(
                 "No pending index to publish — call create_collection() (and "
@@ -448,8 +441,7 @@ class ElasticsearchStore(KeywordStore):
         return next(iter(response), None)
 
     def _write_target(self) -> str:
-        """Same target resolution as Qdrant's upsert()/
-        set_document_metadata() -- the pending index if one's being
+        """Resolves to the pending index if one's being
         built, otherwise the live alias -- so a write always lands
         wherever a concurrent ingest's chunks actually belong, never
         silently landing in the WRONG index version during a blue-green
@@ -611,10 +603,10 @@ class ElasticsearchVectorStore(VectorStore):
     def _client(self) -> Elasticsearch:
         """Passthrough onto the shared backend's client -- some callers
         (api/routers/ingest.py's embedder-override compatibility check)
-        duck-type against a store's `_client`/`_current_alias_target` the
-        way QdrantStore exposed them directly; this keeps that duck-typing
-        working against the wrapper instead of every such caller needing
-        to know it should reach through `._store` instead."""
+        duck-type against a store's `_client`/`_current_alias_target`
+        directly; this keeps that duck-typing working against the
+        wrapper instead of every such caller needing to know it should
+        reach through `._store` instead."""
         return self._store._client
 
     def _current_alias_target(self) -> str | None:
@@ -649,13 +641,13 @@ class ElasticsearchVectorStore(VectorStore):
         if self._store._current_alias_target() is not None:
             # A shared index is already live. It may have been created
             # before `dimension`'s current value or before some mapping
-            # field existed -- unlike Qdrant, ES mappings can't be
-            # altered in place for an existing dense_vector field
-            # (changing dims/similarity needs a real reindex, i.e. a
-            # fresh create_collection()+publish() blue-green cycle, not
-            # attempted automatically here). Treated as a no-op, same as
-            # qdrant_store's equivalent -- an existing deployment isn't
-            # silently rebuilt just because the service restarted.
+            # field existed -- ES mappings can't be altered in place for
+            # an existing dense_vector field (changing dims/similarity
+            # needs a real reindex, i.e. a fresh
+            # create_collection()+publish() blue-green cycle, not
+            # attempted automatically here). Treated as a no-op -- an
+            # existing deployment isn't silently rebuilt just because
+            # the service restarted.
             return
         self.create_collection(dimension=dimension)
         self.publish()
@@ -714,10 +706,9 @@ class ElasticsearchVectorStore(VectorStore):
             "field": "vector",
             "query_vector": query_vector.vector,
             "k": top_k,
-            # num_candidates is ES's recall/latency knob for kNN --
-            # analogous to Qdrant's ef_search (a wider candidate list
-            # examined before returning the top k), not an identical
-            # parameter, but serving the same purpose.
+            # num_candidates is ES's recall/latency knob for kNN,
+            # wired from this search()'s own ef_search parameter -- a
+            # wider candidate list examined before returning the top k.
             "num_candidates": max(ef_search or top_k * 4, top_k),
             "filter": {
                 "bool": {
@@ -749,8 +740,7 @@ class ElasticsearchVectorStore(VectorStore):
         """Peek at one already-stored document to find which model
         produced the live index's vectors. None if the index doesn't
         exist yet or has no documents -- nothing to compare against, so
-        nothing to reject. Same rationale as
-        qdrant_store.QdrantStore._stored_model_id()."""
+        nothing to reject."""
         try:
             response = self._store._client.search(
                 index=self._store._alias,
@@ -773,8 +763,7 @@ class ElasticsearchVectorStore(VectorStore):
             return None
         except Exception:
             # Index doesn't exist (or another retrieve-time issue) --
-            # nothing to resolve, same as "not found". Matches
-            # qdrant_store.get_by_chunk_id's identical fallback.
+            # nothing to resolve, same as "not found".
             return None
         source = document["_source"]
         return Chunk(

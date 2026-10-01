@@ -57,8 +57,9 @@ def _chunk(
         parent_id=parent_id,
         is_parent=is_parent,
         metadata=ChunkMetadata(
-            # Defaults to `source` -- see test_qdrant_store.py's identical
-            # _chunk() helper for why. The doc_ids filter tests below pass
+            # Defaults to `source` so tests that don't care about the
+            # doc_id/filename distinction don't have to spell it out.
+            # The doc_ids filter tests below pass
             # doc_id explicitly, DIFFERENT from source, to prove the
             # filter matches the real stable id, not the display filename
             # (the identity bug this field exists to fix).
