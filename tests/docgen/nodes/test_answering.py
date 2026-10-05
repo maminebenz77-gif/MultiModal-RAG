@@ -6,7 +6,9 @@ from multimodal_rag.docgen.nodes.answering import (
     MAX_RETRIES,
     accept_answer,
     escalate,
+    formulate_query,
     generate_answer_text,
+    prior_qa_pairs,
     question_by_id,
     route_after_select,
     route_after_validation,
@@ -85,7 +87,7 @@ def test_select_next_question_picks_the_first_pending_question() -> None:
 
     current = update["current"]
     assert current["question_id"] == "q2"
-    assert current["query"] == "Question q2?"
+    assert current["query"] == ""  # formulate_query fills this in once the graph runs
     assert current["chunks"] == []
     assert current["attempts"] == []
     assert current["valid"] is None
@@ -97,10 +99,10 @@ def test_select_next_question_returns_none_when_nothing_is_pending() -> None:
     assert select_next_question(state) == {"current": None}
 
 
-def test_route_after_select_goes_to_retrieve_when_a_question_was_selected() -> None:
+def test_route_after_select_goes_to_attempt_when_a_question_was_selected() -> None:
     state = _state([_question("q1")], current=_in_progress(valid=None))
 
-    assert route_after_select(state) == "retrieve"
+    assert route_after_select(state) == "attempt"
 
 
 def test_route_after_select_goes_to_end_when_nothing_was_selected() -> None:
@@ -142,20 +144,74 @@ def test_accept_answer_records_the_answer_and_marks_the_question_answered() -> N
     assert update["current"] is None
 
 
-def test_escalate_marks_the_question_escalated_and_clears_current() -> None:
-    state = _state(
-        [_question("q1", "pending")], current=_in_progress(valid=False, attempt_count=MAX_RETRIES)
-    )
+def test_escalate_marks_the_question_escalated_and_preserves_current() -> None:
+    """current is deliberately left in place -- the real ask_human
+    (a later phase) needs to show a human the chunks/attempts that led
+    to escalation, which this placeholder must not discard first."""
+    current = _in_progress(valid=False, attempt_count=MAX_RETRIES)
+    state = _state([_question("q1", "pending")], current=current)
 
     update = escalate(state)
 
     assert update["questions"][0]["status"] == "escalated"
-    assert update["current"] is None
+    assert "current" not in update  # unchanged, not cleared
 
 
 def test_question_by_id_raises_for_an_unknown_id() -> None:
     with pytest.raises(KeyError):
         question_by_id([_question("q1")], "does-not-exist")
+
+
+def test_prior_qa_pairs_includes_only_already_answered_questions_in_order() -> None:
+    state = _state(
+        [_question("q1", "answered"), _question("q2", "pending"), _question("q3", "answered")],
+        current=None,
+    )
+    state["answers"] = {
+        "q1": {"text": "Answer 1.", "attempts": [], "accepted_by": "validation"},
+        "q3": {"text": "Answer 3.", "attempts": [], "accepted_by": "validation"},
+    }
+
+    pairs = prior_qa_pairs(state)
+
+    assert pairs == [("Question q1?", "Answer 1."), ("Question q3?", "Answer 3.")]
+
+
+def test_formulate_query_includes_prior_qa_for_resolving_references() -> None:
+    llm = _FakeLLM("resolved search query")
+    prior_qa = [("What is the hosted API's latency?", "120ms on average.")]
+
+    formulate_query("How does it compare to the standard?", prior_qa, llm=llm)
+
+    prompt = llm.calls[0][0]["content"]
+    assert "What is the hosted API's latency?" in prompt
+    assert "120ms on average." in prompt
+
+
+def test_formulate_query_includes_rejected_attempts_on_a_retry() -> None:
+    llm = _FakeLLM("a different search query")
+    attempts: list[Attempt] = [
+        {"query": "latency benchmark", "chunks": [], "answer": "wrong", "reason": "not grounded"}
+    ]
+
+    formulate_query("What was the latency?", [], attempts, llm=llm)
+
+    prompt = llm.calls[0][0]["content"]
+    assert "latency benchmark" in prompt
+    assert "not grounded" in prompt
+
+
+def test_formulate_query_omits_both_optional_sections_on_a_bare_first_attempt() -> None:
+    llm = _FakeLLM("search query")
+
+    formulate_query("What was the latency?", [], None, llm=llm)
+
+    prompt = llm.calls[0][0]["content"]
+    # The task instructions mention "PRIOR QUESTIONS AND ANSWERS" in
+    # passing regardless -- check for the actual section HEADING, which
+    # only appears when prior_qa is non-empty.
+    assert "## PRIOR QUESTIONS AND ANSWERS (" not in prompt
+    assert "PREVIOUS SEARCH ATTEMPTS" not in prompt
 
 
 def test_generate_answer_text_includes_prior_rejected_attempts_in_the_prompt() -> None:
