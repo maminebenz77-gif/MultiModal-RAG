@@ -104,7 +104,9 @@ def test_graph_retries_once_then_accepts(stack: DocgenStack, tmp_path: Path) -> 
     assert "120ms" in result["answers"]["q1"]["attempts"][0]["reason"]
 
 
-def test_graph_escalates_after_exhausting_retries(stack: DocgenStack, tmp_path: Path) -> None:
+def test_graph_pauses_for_a_human_after_exhausting_retries(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
     source = _ingest_task_docs(stack, tmp_path)
     rejection = '{"valid": false, "reason": "Still not grounded."}'
     llm = _ScriptedLLM(["a search query", "a bad answer", rejection] * 3)
@@ -114,13 +116,19 @@ def test_graph_escalates_after_exhausting_retries(stack: DocgenStack, tmp_path: 
 
     assert result["questions"][0]["status"] == "escalated"
     assert "q1" not in result["answers"]
-    # current is deliberately preserved (not cleared) so a human could
-    # eventually be shown exactly what was tried and why it was rejected.
+    # current is deliberately preserved (not cleared) so ask_human can
+    # show a human exactly what was tried and why it was rejected.
     assert result["current"] is not None
     assert len(result["current"]["attempts"]) == 3
+    # Reaching the interrupt doesn't need a checkpointer -- only
+    # RESUMING it does (see test_checkpointer.py for that).
+    assert "__interrupt__" in result
+    assert result["__interrupt__"][0].value["question"] == (
+        "What was the hosted API's average latency?"
+    )
 
 
-def test_graph_escalates_instead_of_crashing_on_a_persistent_technical_failure(
+def test_graph_pauses_for_a_human_instead_of_crashing_on_a_persistent_technical_failure(
     stack: DocgenStack, tmp_path: Path
 ) -> None:
     source = _ingest_task_docs(stack, tmp_path)
@@ -131,3 +139,4 @@ def test_graph_escalates_instead_of_crashing_on_a_persistent_technical_failure(
     assert result["questions"][0]["status"] == "escalated"
     assert len(result["current"]["attempts"]) == 3
     assert all("Technical failure" in a["reason"] for a in result["current"]["attempts"])
+    assert "__interrupt__" in result

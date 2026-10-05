@@ -1,10 +1,16 @@
 """Builds and compiles the per-question subgraph: select a pending
 question, attempt an answer (formulate a search query, retrieve, draft
 an answer), validate it, and either accept it, loop back with the
-rejection reason, or -- once retries run out -- escalate (escalate()
-is a stand-in for nodes/escalation.py's real, interrupt-based
-ask_human, a later phase; "no questions left" currently goes straight
-to END instead of harmonize_answers, also later).
+rejection reason, or -- once retries run out -- escalate to a real
+human via nodes/escalation.py's ask_human, pausing with
+LangGraph's interrupt() ("no questions left" still goes straight to
+END instead of harmonize_answers, a later phase -- nothing needs to
+pause for that one).
+
+A checkpointer is only required to RESUME an interrupt (via
+Command(resume=...)), not to reach one -- so build_graph's
+checkpointer parameter defaults to None, and only real runs (and tests
+that actually resume) need to pass one.
 
 attempt_answer and validate_answer are each wrapped in a try/except AND
 given a LangGraph retry_policy: the retry_policy handles a genuinely
@@ -30,6 +36,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RetryPolicy
@@ -47,6 +54,7 @@ from .nodes.answering import (
     route_after_validation,
     select_next_question,
 )
+from .nodes.escalation import ask_human
 from .nodes.retrieval import retrieve_for_question
 from .stack import DocgenStack
 from .state import Attempt, DocGenState
@@ -55,7 +63,11 @@ from .validation import validate_answer
 _TRANSIENT_RETRY = RetryPolicy(max_attempts=3)
 
 
-def build_graph(stack: DocgenStack, llm: LLMProvider | None = None) -> CompiledStateGraph:
+def build_graph(
+    stack: DocgenStack,
+    llm: LLMProvider | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> CompiledStateGraph:
     llm = llm or get_llm()
 
     def attempt_answer_node(state: DocGenState) -> dict[str, Any]:
@@ -136,6 +148,7 @@ def build_graph(stack: DocgenStack, llm: LLMProvider | None = None) -> CompiledS
     builder.add_node("validate_answer", validate_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("accept_answer", accept_answer)
     builder.add_node("escalate", escalate)
+    builder.add_node("ask_human", ask_human)
 
     builder.add_edge(START, "select_next_question")
     builder.add_conditional_edges(
@@ -148,6 +161,7 @@ def build_graph(stack: DocgenStack, llm: LLMProvider | None = None) -> CompiledS
         {"accept": "accept_answer", "retry": "attempt_answer", "escalate": "escalate"},
     )
     builder.add_edge("accept_answer", "select_next_question")
-    builder.add_edge("escalate", END)
+    builder.add_edge("escalate", "ask_human")
+    builder.add_edge("ask_human", "select_next_question")
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

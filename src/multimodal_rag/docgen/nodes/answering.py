@@ -30,7 +30,7 @@ from typing import Any, Literal
 from ...providers.base import LLMProvider
 from ...providers.factory import get_llm
 from ...tracing import traced_span, update_span_output
-from ..state import Attempt, DocGenState, Question
+from ..state import Attempt, DocGenState, InProgress, Question
 from .retrieval import RetrievedChunk, format_chunks
 
 MAX_RETRIES = 3
@@ -197,20 +197,30 @@ def route_after_validation(state: DocGenState) -> Literal["accept", "retry", "es
     return "retry" if len(current["attempts"]) < MAX_RETRIES else "escalate"
 
 
-def accept_answer(state: DocGenState) -> dict[str, Any]:
-    current = state["current"]
-    assert current is not None
+def record_answer(
+    state: DocGenState, current: InProgress, text: str, accepted_by: Literal["validation", "human"]
+) -> dict[str, Any]:
+    """Writes the final Answer and marks the question done -- shared by
+    accept_answer (a validated answer) and nodes/escalation.py's
+    ask_human (a human-provided one), so there is one place that does
+    this instead of two near-identical copies."""
     answers = dict(state["answers"])
     answers[current["question_id"]] = {
-        "text": current["answer"],
+        "text": text,
         "attempts": current["attempts"],
-        "accepted_by": "validation",
+        "accepted_by": accepted_by,
     }
     questions = [
         {**q, "status": "answered"} if q["id"] == current["question_id"] else q
         for q in state["questions"]
     ]
     return {"answers": answers, "questions": questions, "current": None}
+
+
+def accept_answer(state: DocGenState) -> dict[str, Any]:
+    current = state["current"]
+    assert current is not None
+    return record_answer(state, current, current["answer"], "validation")
 
 
 def escalate(state: DocGenState) -> dict[str, Any]:
