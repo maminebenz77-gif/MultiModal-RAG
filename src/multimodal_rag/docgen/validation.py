@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from ..providers.base import LLMProvider
 from ..providers.factory import get_llm
 from ..tracing import traced_span, update_span_output, update_span_score
-from .nodes.retrieval import RetrievedChunk
+from .nodes.retrieval import RetrievedChunk, format_chunks
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -68,10 +68,6 @@ class ValidationResult:
     reason: str
 
 
-def _format_context(chunks: list[RetrievedChunk]) -> str:
-    return "\n\n".join(f"[{chunk.source_role}] {chunk.chunk.text}" for chunk in chunks)
-
-
 def _parse_verdict(raw: str) -> ValidationResult:
     match = _JSON_OBJECT_RE.search(raw)
     if match is None:
@@ -108,7 +104,7 @@ def validate_answer(
 
     llm = llm or get_llm()
     prompt = _GROUNDING_PROMPT.format(
-        question=question, context=_format_context(chunks), answer=answer
+        question=question, context=format_chunks(chunks), answer=answer
     )
     with traced_span("docgen_validate_answer", as_type="generation", input=prompt) as span:
         raw = llm.generate([{"role": "user", "content": prompt}])

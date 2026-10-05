@@ -55,3 +55,13 @@ def retrieve_for_question(
             RetrievedChunk(chunk=result, source_role=source.role) for result in results
         )
     return labeled
+
+
+def format_chunks(chunks: list[RetrievedChunk]) -> str:
+    """Renders retrieved chunks as prompt text, each labeled with its
+    source role -- shared by validate_answer and generate_answer_text
+    (nodes/answering.py) so a comparison question's "task" and
+    "reference" evidence are both visible and distinguishable to the
+    model, in exactly one place rather than two slightly different
+    copies."""
+    return "\n\n".join(f"[{chunk.source_role}] {chunk.chunk.text}" for chunk in chunks)

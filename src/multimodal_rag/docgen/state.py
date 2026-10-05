@@ -55,6 +55,28 @@ class Review(TypedDict):
     flagged_question_ids: list[str]
 
 
+class InProgress(TypedDict):
+    """Scratch space for the ONE question currently moving through
+    select_next_question -> retrieve -> generate_answer -> validate_answer.
+    Bundled as one object, not five separate top-level fields, because
+    all five only mean anything together, as a description of the same
+    in-flight question -- see the docgen build plan's phase 6 notes."""
+
+    question_id: str
+    query: str
+    chunks: list[RetrievedChunk]
+    answer: str
+    attempts: list[Attempt]
+    """Rejected tries so far for THIS question -- becomes Answer.attempts
+    once accepted. len(attempts) is the retry count, same reasoning as
+    Answer.attempts."""
+
+    valid: bool | None
+    """Set by the validate_answer node right before the router reads it;
+    None only ever appears briefly, between select_next_question
+    creating this record and validate_answer's first run."""
+
+
 class DocGenState(TypedDict):
     sources: list[SourceSpec]
     questions: list[Question]
@@ -63,3 +85,6 @@ class DocGenState(TypedDict):
     validation or a human) have an entry."""
     configuration: Configuration
     review: Review
+    current: InProgress | None
+    """None when no question is being actively worked on (before the
+    first one starts, and after the last one finishes)."""

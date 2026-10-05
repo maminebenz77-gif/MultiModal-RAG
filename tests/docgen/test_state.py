@@ -57,6 +57,7 @@ def _sample_state() -> DocGenState:
         "answers": {"q1": answer},
         "configuration": configuration,
         "review": review,
+        "current": None,
     }
 
 
