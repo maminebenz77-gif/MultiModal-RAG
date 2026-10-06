@@ -32,7 +32,7 @@ class Question(TypedDict):
     id: str
     text: str
     sources_required: list[SourceRole]
-    status: Literal["pending", "answered", "escalated"]
+    status: Literal["pending", "answered", "escalated", "skipped"]
 
 
 class Answer(TypedDict):
@@ -75,6 +75,14 @@ class InProgress(TypedDict):
     """Set by the validate_answer node right before the router reads it;
     None only ever appears briefly, between select_next_question
     creating this record and validate_answer's first run."""
+
+    human_guidance: str | None
+    """Set only when a human, escalated to via ask_human, chooses to
+    reformulate rather than answer directly -- steering context for the
+    NEXT formulate_query/generate_answer_text call (the original
+    Question.text is deliberately never overwritten). Persists across
+    whatever retries follow, cleared only when a fresh InProgress is
+    opened for a different question."""
 
 
 class DocGenState(TypedDict):

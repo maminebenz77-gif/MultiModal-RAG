@@ -102,7 +102,8 @@ def test_escalation_resumes_with_a_human_provided_answer(
         assert "__interrupt__" in paused
         assert paused["questions"][0]["status"] == "escalated"
 
-        result = graph.invoke(Command(resume="120ms, from a human who checked manually."), config)
+        resume = {"action": "answer", "text": "120ms, from a human who checked manually."}
+        result = graph.invoke(Command(resume=resume), config)
 
     assert "__interrupt__" not in result
     assert result["questions"][0]["status"] == "answered"
@@ -139,9 +140,62 @@ def test_escalation_resumes_after_a_simulated_process_restart(
         pending_question = snapshot.values["current"]["question_id"]
         interrupt_payload = snapshot.tasks[0].interrupts[0].value
 
-        result = graph.invoke(Command(resume="Resumed after restart: 120ms."), config)
+        resume = {"action": "answer", "text": "Resumed after restart: 120ms."}
+        result = graph.invoke(Command(resume=resume), config)
 
     assert pending_question == "q1"
     assert interrupt_payload["question"] == "What was the hosted API's average latency?"
     assert result["answers"]["q1"]["text"] == "Resumed after restart: 120ms."
     assert result["answers"]["q1"]["accepted_by"] == "human"
+
+
+def test_escalation_can_skip_the_question_entirely(stack: DocgenStack, tmp_path: Path) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    rejection = '{"valid": false, "reason": "Still not grounded."}'
+    llm = _ScriptedLLM(["a search query", "a bad answer", rejection] * 3)
+    config = {"configurable": {"thread_id": "test-thread"}}
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        paused = graph.invoke(_initial_state(source), config)
+        assert "__interrupt__" in paused
+
+        result = graph.invoke(Command(resume={"action": "skip", "text": ""}), config)
+
+    assert "__interrupt__" not in result
+    assert result["questions"][0]["status"] == "skipped"
+    assert "q1" not in result["answers"]
+    assert result["current"] is None
+
+
+def test_escalation_can_reformulate_instead_of_answering_directly(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    rejection = '{"valid": false, "reason": "Still not grounded."}'
+    accepted = '{"valid": true, "reason": "Matches the context now."}'
+    llm = _ScriptedLLM(
+        ["a search query", "a bad answer", rejection] * 3
+        + ["a human-steered search query", "120ms on average.", accepted]
+    )
+    config = {"configurable": {"thread_id": "test-thread"}}
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        paused = graph.invoke(_initial_state(source), config)
+        assert "__interrupt__" in paused
+
+        resume = {
+            "action": "reformulate",
+            "text": "Search specifically for the hosted API's row in the latency table.",
+        }
+        result = graph.invoke(Command(resume=resume), config)
+
+    assert "__interrupt__" not in result
+    assert result["questions"][0]["status"] == "answered"
+    assert result["answers"]["q1"]["text"] == "120ms on average."
+    assert result["answers"]["q1"]["accepted_by"] == "validation"
+    # The reformulated attempt gets a FRESH budget -- the 3 pre-escalation
+    # rejections belonged to the attempt that just got replaced, not to
+    # this one, so they don't carry into the final Answer's attempts.
+    assert result["answers"]["q1"]["attempts"] == []

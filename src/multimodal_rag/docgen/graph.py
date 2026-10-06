@@ -50,6 +50,7 @@ from .nodes.answering import (
     generate_answer_text,
     prior_qa_pairs,
     question_by_id,
+    route_after_human,
     route_after_select,
     route_after_validation,
     select_next_question,
@@ -76,11 +77,17 @@ def build_graph(
         question = question_by_id(state["questions"], current["question_id"])
         try:
             query = formulate_query(
-                question["text"], prior_qa_pairs(state), current["attempts"], llm
+                question["text"],
+                prior_qa_pairs(state),
+                current["attempts"],
+                current["human_guidance"],
+                llm,
             )
             sources = [s for s in state["sources"] if s.role in question["sources_required"]]
             chunks = retrieve_for_question(query, sources, stack.retriever)
-            answer = generate_answer_text(question["text"], chunks, current["attempts"], llm)
+            answer = generate_answer_text(
+                question["text"], chunks, current["attempts"], current["human_guidance"], llm
+            )
         except Exception as exc:
             attempt: Attempt = {
                 "query": current["query"],
@@ -162,6 +169,10 @@ def build_graph(
     )
     builder.add_edge("accept_answer", "select_next_question")
     builder.add_edge("escalate", "ask_human")
-    builder.add_edge("ask_human", "select_next_question")
+    builder.add_conditional_edges(
+        "ask_human",
+        route_after_human,
+        {"retry": "attempt_answer", "select_next": "select_next_question"},
+    )
 
     return builder.compile(checkpointer=checkpointer)

@@ -83,6 +83,11 @@ _RETRY_SECTION = """
 {attempts}
 """
 
+_GUIDANCE_SECTION = """
+## GUIDANCE FROM A HUMAN (follow this -- it was given specifically to help with this question)
+{guidance}
+"""
+
 
 def question_by_id(questions: list[Question], question_id: str) -> Question:
     for question in questions:
@@ -114,6 +119,7 @@ def formulate_query(
     question: str,
     prior_qa: list[tuple[str, str]],
     attempts: list[Attempt] | None = None,
+    human_guidance: str | None = None,
     llm: LLMProvider | None = None,
 ) -> str:
     """Turns a question into a search query -- run before EVERY
@@ -124,16 +130,23 @@ def formulate_query(
     On a retry, `attempts` is also shown, so the new query is actually
     steered away from what already failed, not a blind re-ask of the
     same text against the same corpus (which would just return the
-    exact same chunks every time)."""
+    exact same chunks every time). `human_guidance` is set only after
+    ask_human's "reformulate" action -- a human's own steering context,
+    separate from (and shown ahead of) automated rejection history."""
     llm = llm or get_llm()
     prior_qa_section = (
         _PRIOR_QA_SECTION.format(pairs=_format_prior_qa(prior_qa)) if prior_qa else ""
+    )
+    guidance_section = (
+        _GUIDANCE_SECTION.format(guidance=human_guidance) if human_guidance else ""
     )
     history_section = (
         _RETRY_SECTION.format(attempts=_format_attempts(attempts)) if attempts else ""
     )
     prompt = _QUERY_PROMPT.format(
-        prior_qa=prior_qa_section, history=history_section, question=question
+        prior_qa=prior_qa_section,
+        history=guidance_section + history_section,
+        question=question,
     )
     with traced_span("docgen_formulate_query", as_type="generation", input=prompt) as span:
         query = llm.generate([{"role": "user", "content": prompt}]).strip()
@@ -149,15 +162,25 @@ def generate_answer_text(
     question: str,
     chunks: list[RetrievedChunk],
     attempts: list[Attempt] | None = None,
+    human_guidance: str | None = None,
     llm: LLMProvider | None = None,
 ) -> str:
     """Drafts an answer from the retrieved chunks. Shows prior REJECTED
     attempts (query/answer/reason) when retrying, so the model doesn't
-    just repeat the same search and the same wrong answer."""
+    just repeat the same search and the same wrong answer, plus a
+    human's own guidance (set only after ask_human's "reformulate"
+    action), shown ahead of that automated history."""
     llm = llm or get_llm()
-    history = _HISTORY_HEADER.format(attempts=_format_attempts(attempts)) if attempts else ""
+    guidance_section = (
+        _GUIDANCE_SECTION.format(guidance=human_guidance) if human_guidance else ""
+    )
+    history_section = (
+        _HISTORY_HEADER.format(attempts=_format_attempts(attempts)) if attempts else ""
+    )
     prompt = _ANSWER_PROMPT.format(
-        history=history, question=question, context=format_chunks(chunks)
+        history=guidance_section + history_section,
+        question=question,
+        context=format_chunks(chunks),
     )
     with traced_span("docgen_generate_answer", as_type="generation", input=prompt) as span:
         answer = llm.generate([{"role": "user", "content": prompt}])
@@ -180,6 +203,7 @@ def select_next_question(state: DocGenState) -> dict[str, Any]:
                     "answer": "",
                     "attempts": [],
                     "valid": None,
+                    "human_guidance": None,
                 }
             }
     return {"current": None}
@@ -195,6 +219,15 @@ def route_after_validation(state: DocGenState) -> Literal["accept", "retry", "es
     if current["valid"]:
         return "accept"
     return "retry" if len(current["attempts"]) < MAX_RETRIES else "escalate"
+
+
+def route_after_human(state: DocGenState) -> Literal["retry", "select_next"]:
+    """ask_human leaves `current` populated (non-None) only for its
+    "reformulate" action -- "answer" and "skip" both clear it via
+    record_answer/escalate()'s own return, same as a normal acceptance.
+    No separate action flag needed: current's presence already says
+    which happened."""
+    return "retry" if state["current"] is not None else "select_next"
 
 
 def record_answer(

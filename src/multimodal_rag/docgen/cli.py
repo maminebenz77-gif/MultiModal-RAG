@@ -23,20 +23,45 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.types import Command, RunnableConfig
 
 from .checkpointer import build_checkpointer
 from .graph import build_graph
+from .nodes.escalation import HumanResponse
 from .sources import SourceSpec
 from .stack import build_stack
+
+_ACTION_PROMPT = """
+Choose one:
+  [a] answer directly
+  [r] reformulate -- give guidance, don't answer yourself
+  [s] skip this question entirely
+"""
+_ACTION_KEYS: dict[str, Literal["answer", "reformulate", "skip"]] = {
+    "a": "answer",
+    "r": "reformulate",
+    "s": "skip",
+}
 
 
 def _print_interrupt(interrupt: Any, thread_id: str) -> None:
     print("\nPAUSED -- a human needs to answer this question:")
     print(json.dumps(interrupt.value, indent=2, default=str))
     print(f"\nResume with: uv run python -m multimodal_rag.docgen.cli --thread-id {thread_id}")
+
+
+def _prompt_for_response() -> HumanResponse:
+    print(_ACTION_PROMPT)
+    while True:
+        choice = input("Action [a/r/s]: ").strip().lower()
+        if choice in _ACTION_KEYS:
+            break
+        print(f"Not one of {sorted(_ACTION_KEYS)!r} -- try again.")
+    action = _ACTION_KEYS[choice]
+    text = "" if action == "skip" else input("Text: ")
+    return {"action": action, "text": text}
 
 
 def _print_final(result: dict[str, Any]) -> None:
@@ -73,8 +98,8 @@ def main() -> None:
                 return
             pending = snapshot.tasks[0].interrupts[0]
             print(json.dumps(pending.value, indent=2, default=str))
-            answer = input("\nYour answer: ")
-            result = graph.invoke(Command(resume=answer), config)
+            response = _prompt_for_response()
+            result = graph.invoke(Command(resume=response), config)
 
         if "__interrupt__" in result:
             _print_interrupt(result["__interrupt__"][0], args.thread_id)

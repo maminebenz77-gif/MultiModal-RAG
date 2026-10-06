@@ -10,6 +10,7 @@ from multimodal_rag.docgen.nodes.answering import (
     generate_answer_text,
     prior_qa_pairs,
     question_by_id,
+    route_after_human,
     route_after_select,
     route_after_validation,
     select_next_question,
@@ -30,7 +31,7 @@ class _FakeLLM:
 
 
 def _question(
-    id_: str, status: Literal["pending", "answered", "escalated"] = "pending"
+    id_: str, status: Literal["pending", "answered", "escalated", "skipped"] = "pending"
 ) -> Question:
     return {
         "id": id_,
@@ -58,7 +59,9 @@ def _attempt() -> Attempt:
     return {"query": "q", "chunks": [], "answer": "a", "reason": "r"}
 
 
-def _in_progress(valid: bool | None, attempt_count: int = 0) -> InProgress:
+def _in_progress(
+    valid: bool | None, attempt_count: int = 0, human_guidance: str | None = None
+) -> InProgress:
     return {
         "question_id": "q1",
         "query": "q",
@@ -66,6 +69,7 @@ def _in_progress(valid: bool | None, attempt_count: int = 0) -> InProgress:
         "answer": "a",
         "attempts": [_attempt() for _ in range(attempt_count)],
         "valid": valid,
+        "human_guidance": human_guidance,
     }
 
 
@@ -91,6 +95,7 @@ def test_select_next_question_picks_the_first_pending_question() -> None:
     assert current["chunks"] == []
     assert current["attempts"] == []
     assert current["valid"] is None
+    assert current["human_guidance"] is None
 
 
 def test_select_next_question_returns_none_when_nothing_is_pending() -> None:
@@ -145,9 +150,10 @@ def test_accept_answer_records_the_answer_and_marks_the_question_answered() -> N
 
 
 def test_escalate_marks_the_question_escalated_and_preserves_current() -> None:
-    """current is deliberately left in place -- the real ask_human
-    (a later phase) needs to show a human the chunks/attempts that led
-    to escalation, which this placeholder must not discard first."""
+    """current is deliberately left in place -- ask_human
+    (nodes/escalation.py) needs to show a human the chunks/attempts
+    that led to escalation, which this placeholder must not discard
+    first."""
     current = _in_progress(valid=False, attempt_count=MAX_RETRIES)
     state = _state([_question("q1", "pending")], current=current)
 
@@ -155,6 +161,25 @@ def test_escalate_marks_the_question_escalated_and_preserves_current() -> None:
 
     assert update["questions"][0]["status"] == "escalated"
     assert "current" not in update  # unchanged, not cleared
+
+
+def test_route_after_human_retries_when_current_is_still_populated() -> None:
+    """ask_human's "reformulate" action leaves `current` populated --
+    no separate action flag needed, its presence alone says what to do."""
+    state = _state(
+        [_question("q1", "escalated")],
+        current=_in_progress(valid=None, human_guidance="Check the hosted API row specifically."),
+    )
+
+    assert route_after_human(state) == "retry"
+
+
+def test_route_after_human_selects_next_when_current_was_cleared() -> None:
+    """Both "answer" (via record_answer) and "skip" clear `current` --
+    either way, there's nothing left to retry."""
+    state = _state([_question("q1", "answered")], current=None)
+
+    assert route_after_human(state) == "select_next"
 
 
 def test_question_by_id_raises_for_an_unknown_id() -> None:
@@ -214,6 +239,22 @@ def test_formulate_query_omits_both_optional_sections_on_a_bare_first_attempt() 
     assert "PREVIOUS SEARCH ATTEMPTS" not in prompt
 
 
+def test_formulate_query_includes_human_guidance_after_a_reformulate() -> None:
+    llm = _FakeLLM("a steered search query")
+
+    formulate_query(
+        "What was the latency?",
+        [],
+        None,
+        "Check the hosted API row specifically, not the gateway.",
+        llm=llm,
+    )
+
+    prompt = llm.calls[0][0]["content"]
+    assert "GUIDANCE FROM A HUMAN" in prompt
+    assert "Check the hosted API row specifically, not the gateway." in prompt
+
+
 def test_generate_answer_text_includes_prior_rejected_attempts_in_the_prompt() -> None:
     llm = _FakeLLM("final answer")
     attempts: list[Attempt] = [
@@ -235,3 +276,19 @@ def test_generate_answer_text_omits_the_history_section_on_a_first_attempt() -> 
 
     prompt = llm.calls[0][0]["content"]
     assert "PREVIOUS ATTEMPTS" not in prompt
+
+
+def test_generate_answer_text_includes_human_guidance_after_a_reformulate() -> None:
+    llm = _FakeLLM("final answer")
+
+    generate_answer_text(
+        "What is the latency?",
+        [_chunk()],
+        None,
+        "By API, the human means the hosted one specifically.",
+        llm=llm,
+    )
+
+    prompt = llm.calls[0][0]["content"]
+    assert "GUIDANCE FROM A HUMAN" in prompt
+    assert "By API, the human means the hosted one specifically." in prompt
