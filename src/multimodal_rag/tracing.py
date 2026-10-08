@@ -50,6 +50,7 @@ from urllib.parse import urlparse
 
 import litellm
 from langfuse import Langfuse, ObservationTypeLiteral, propagate_attributes
+from langfuse.model import TemplateParser
 
 from .config import get_settings
 from .privacy_guard import ExternalCallBlockedError, enforce_privacy_guard
@@ -388,3 +389,53 @@ def record_generation_result(generation: Any, response: Any, output: Any) -> Non
         )
     except Exception:
         _logger.warning("Langfuse generation-result logging failed; continuing.", exc_info=True)
+
+
+def get_rendered_prompt(prompt_name: str, fallback_template: str, **variables: Any) -> str:
+    """Renders the prompt named `prompt_name` with `variables`, fetching
+    its current "production"-labeled version from Langfuse if
+    configured -- auto-seeding it from `fallback_template` the first
+    time this name is seen, so a prompt gets real version history (and
+    a UI to edit it from) the moment Langfuse is turned on, with no
+    manual setup step. Falls back to compiling `fallback_template`
+    itself whenever Langfuse isn't configured, or the fetch/seed fails
+    for any reason -- never raises, same contract as every other
+    function in this module: a broken optional integration must not be
+    able to block real work.
+
+    Both parameters are named with a prefix, not just `name`/`fallback`,
+    specifically so they can never collide with a real template
+    variable passed in `**variables` -- `name` is an entirely plausible
+    one or a prompt to actually need.
+
+    `fallback_template` (and every prompt passed through here) uses
+    Langfuse's own {{variable}} syntax, not Python's str.format() -- the
+    one templating convention a prompt needs regardless of whether it's
+    actually served from Langfuse or from this fallback, so editing one
+    in the Langfuse UI later behaves identically to the code's own
+    default. TemplateParser (langfuse.model) is what both paths below
+    compile through, so there is exactly one implementation of that
+    syntax, not two that could quietly drift apart.
+    """
+    client = get_langfuse_client()
+    if client is None:
+        return TemplateParser.compile_template(fallback_template, variables)
+    try:
+        prompt = client.get_prompt(prompt_name, label="production", fallback=fallback_template)
+    except Exception:
+        _logger.warning(
+            "Langfuse prompt fetch failed for %r; using the built-in default.",
+            prompt_name,
+            exc_info=True,
+        )
+        return TemplateParser.compile_template(fallback_template, variables)
+    if prompt.is_fallback:
+        try:
+            client.create_prompt(
+                name=prompt_name, prompt=fallback_template, labels=["production"]
+            )
+        except Exception:
+            _logger.warning(
+                "Langfuse prompt seeding failed for %r; continuing.", prompt_name, exc_info=True
+            )
+    return prompt.compile(**variables)

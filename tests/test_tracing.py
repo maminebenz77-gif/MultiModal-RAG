@@ -531,3 +531,87 @@ def test_record_generation_result_swallows_a_failure_calling_update() -> None:
     response = SimpleNamespace(usage=None)
 
     tracing.record_generation_result(generation, response, output="the answer")  # must not raise
+
+
+def test_get_rendered_prompt_compiles_the_fallback_locally_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: None)
+
+    result = tracing.get_rendered_prompt(
+        "docgen_test_prompt", "Hello {{name}}, the answer is {{answer}}.", name="Alice", answer="42"
+    )
+
+    assert result == "Hello Alice, the answer is 42."
+
+
+def test_get_rendered_prompt_leaves_single_braces_untouched() -> None:
+    # Langfuse's own templating only recognizes {{double braces}} -- a
+    # literal single-brace JSON example in a prompt must pass through
+    # unchanged, with no escaping needed (unlike Python's str.format()).
+    fallback = 'Reply as JSON: {"valid": true, "reason": "{{reason}}"}'
+
+    result = tracing.get_rendered_prompt("docgen_test_prompt", fallback, reason="why")
+
+    assert result == 'Reply as JSON: {"valid": true, "reason": "why"}'
+
+
+def test_get_rendered_prompt_uses_the_fetched_prompt_when_not_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_prompt = MagicMock(is_fallback=False)
+    fake_prompt.compile.return_value = "compiled from Langfuse"
+    fake_client.get_prompt.return_value = fake_prompt
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    result = tracing.get_rendered_prompt("docgen_test_prompt", "Hi {{name}}", name="Bob")
+
+    assert result == "compiled from Langfuse"
+    fake_client.get_prompt.assert_called_once_with(
+        "docgen_test_prompt", label="production", fallback="Hi {{name}}"
+    )
+    fake_prompt.compile.assert_called_once_with(name="Bob")
+    fake_client.create_prompt.assert_not_called()
+
+
+def test_get_rendered_prompt_seeds_langfuse_on_first_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = MagicMock()
+    fake_prompt = MagicMock(is_fallback=True)
+    fake_prompt.compile.return_value = "Hi Bob"
+    fake_client.get_prompt.return_value = fake_prompt
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    result = tracing.get_rendered_prompt("docgen_test_prompt", "Hi {{name}}", name="Bob")
+
+    assert result == "Hi Bob"
+    fake_client.create_prompt.assert_called_once_with(
+        name="docgen_test_prompt", prompt="Hi {{name}}", labels=["production"]
+    )
+
+
+def test_get_rendered_prompt_falls_back_locally_when_the_fetch_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_client.get_prompt.side_effect = ConnectionError("unreachable")
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    result = tracing.get_rendered_prompt("docgen_test_prompt", "Hi {{name}}", name="Bob")
+
+    assert result == "Hi Bob"
+
+
+def test_get_rendered_prompt_still_returns_a_result_when_seeding_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    fake_prompt = MagicMock(is_fallback=True)
+    fake_prompt.compile.return_value = "Hi Bob"
+    fake_client.get_prompt.return_value = fake_prompt
+    fake_client.create_prompt.side_effect = ConnectionError("unreachable")
+    monkeypatch.setattr(tracing, "get_langfuse_client", lambda: fake_client)
+
+    result = tracing.get_rendered_prompt("docgen_test_prompt", "Hi {{name}}", name="Bob")
+
+    assert result == "Hi Bob"
