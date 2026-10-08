@@ -46,9 +46,10 @@ def _initial_state(source: SourceSpec) -> DocGenState:
             }
         ],
         "answers": {},
-        "configuration": {"template": "", "format": "pptx", "confirmed": True},
+        "configuration": {"template": "", "format": "pptx", "confirmed": True, "max_retries": 3},
         "review": {"decision": "pending", "flagged_question_ids": []},
         "current": None,
+        "usage": {"llm_calls": 0},
     }
 
 

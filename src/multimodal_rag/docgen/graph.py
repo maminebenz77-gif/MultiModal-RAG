@@ -25,11 +25,23 @@ question's completed work. It's converted into a rejected attempt with
 the technical reason recorded, so it flows through the exact same
 retry/escalate logic a substantive rejection would.
 
+validate_node calls record_answer directly on a valid verdict rather
+than routing to a separate "accept" node -- unlike ask_human (which
+MUST stay separate from escalate(), since interrupt() raises instead
+of returning), validate_node always returns normally, so there's no
+structural reason to keep "judge" and "finalize" in two node hops.
+
+Both LLM-calling nodes track how many real calls they made in
+state["usage"]["llm_calls"] (validate_answer's ValidationResult.llm_called
+says whether its own zero-chunks short-circuit skipped the call) -- a
+running total a caller (docgen/cli.py) can show live via graph.stream()
+rather than only knowing it after the whole run finishes.
+
 Nodes that need real dependencies (a Retriever, an LLMProvider) are
 built as closures inside build_graph() -- the simplest way to hand
 them in without threading LangGraph's own config/context mechanism
 through, and it keeps nodes/answering.py's functions free of any
-graph-building or error-handling concern.
+graph-building, error-handling, or usage-tracking concern.
 """
 
 from __future__ import annotations
@@ -44,12 +56,12 @@ from langgraph.types import RetryPolicy
 from ..providers.base import LLMProvider
 from ..providers.factory import get_llm
 from .nodes.answering import (
-    accept_answer,
     escalate,
     formulate_query,
     generate_answer_text,
     prior_qa_pairs,
     question_by_id,
+    record_answer,
     route_after_human,
     route_after_select,
     route_after_validation,
@@ -75,6 +87,7 @@ def build_graph(
         current = state["current"]
         assert current is not None
         question = question_by_id(state["questions"], current["question_id"])
+        calls = 0
         try:
             query = formulate_query(
                 question["text"],
@@ -83,11 +96,13 @@ def build_graph(
                 current["human_guidance"],
                 llm,
             )
+            calls += 1
             sources = [s for s in state["sources"] if s.role in question["sources_required"]]
             chunks = retrieve_for_question(query, sources, stack.retriever)
             answer = generate_answer_text(
                 question["text"], chunks, current["attempts"], current["human_guidance"], llm
             )
+            calls += 1
         except Exception as exc:
             attempt: Attempt = {
                 "query": current["query"],
@@ -100,7 +115,8 @@ def build_graph(
                     **current,
                     "valid": False,
                     "attempts": [*current["attempts"], attempt],
-                }
+                },
+                "usage": {"llm_calls": state["usage"]["llm_calls"] + calls},
             }
         return {
             "current": {
@@ -110,7 +126,8 @@ def build_graph(
                 "answer": answer,
                 "valid": None,  # a fresh attempt, not yet judged -- clears any stale
                 # False left over from the cycle that just got retried.
-            }
+            },
+            "usage": {"llm_calls": state["usage"]["llm_calls"] + calls},
         }
 
     def validate_node(state: DocGenState) -> dict[str, Any]:
@@ -124,6 +141,9 @@ def build_graph(
         try:
             result = validate_answer(question["text"], current["answer"], current["chunks"], llm)
         except Exception as exc:
+            # Reaching the except block means validate_answer did NOT
+            # take its own zero-chunks short-circuit (that path never
+            # raises) -- a real call was attempted before this failure.
             attempt: Attempt = {
                 "query": current["query"],
                 "chunks": current["chunks"],
@@ -135,10 +155,15 @@ def build_graph(
                     **current,
                     "valid": False,
                     "attempts": [*current["attempts"], attempt],
-                }
+                },
+                "usage": {"llm_calls": state["usage"]["llm_calls"] + 1},
             }
+        usage = {"llm_calls": state["usage"]["llm_calls"] + (1 if result.llm_called else 0)}
         if result.valid:
-            return {"current": {**current, "valid": True}}
+            return {
+                **record_answer(state, current, current["answer"], "validation"),
+                "usage": usage,
+            }
         attempt = {
             "query": current["query"],
             "chunks": current["chunks"],
@@ -146,14 +171,14 @@ def build_graph(
             "reason": result.reason,
         }
         return {
-            "current": {**current, "valid": False, "attempts": [*current["attempts"], attempt]}
+            "usage": usage,
+            "current": {**current, "valid": False, "attempts": [*current["attempts"], attempt]},
         }
 
     builder = StateGraph(DocGenState)
     builder.add_node("select_next_question", select_next_question)
     builder.add_node("attempt_answer", attempt_answer_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("validate_answer", validate_node, retry_policy=_TRANSIENT_RETRY)
-    builder.add_node("accept_answer", accept_answer)
     builder.add_node("escalate", escalate)
     builder.add_node("ask_human", ask_human)
 
@@ -165,9 +190,12 @@ def build_graph(
     builder.add_conditional_edges(
         "validate_answer",
         route_after_validation,
-        {"accept": "accept_answer", "retry": "attempt_answer", "escalate": "escalate"},
+        {
+            "select_next": "select_next_question",
+            "retry": "attempt_answer",
+            "escalate": "escalate",
+        },
     )
-    builder.add_edge("accept_answer", "select_next_question")
     builder.add_edge("escalate", "ask_human")
     builder.add_conditional_edges(
         "ask_human",

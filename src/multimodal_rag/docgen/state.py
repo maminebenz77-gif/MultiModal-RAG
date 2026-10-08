@@ -48,11 +48,27 @@ class Configuration(TypedDict):
     template: str
     format: Literal["pptx", "docx"]
     confirmed: bool
+    max_retries: int
+    """How many automated attempt_answer -> validate_answer cycles a
+    question gets before escalating to a human -- per-run, not a fixed
+    constant, so a person launching a run can trade off effort against
+    document complexity (nodes.answering.DEFAULT_MAX_RETRIES is only
+    the fallback used if nothing else sets this)."""
 
 
 class Review(TypedDict):
     decision: Literal["pending", "approved", "edit_requested"]
     flagged_question_ids: list[str]
+
+
+class Usage(TypedDict):
+    llm_calls: int
+    """Every real LLM call made so far across the whole run (formulate_query,
+    generate_answer_text, validate_answer -- not validate_answer's own
+    zero-chunks short-circuit, which never calls out at all). Incremented at
+    the graph-node level (docgen/graph.py), not inside those functions
+    themselves, for the same reason error-handling lives there: it's a
+    wiring/observability concern, not what each function itself does."""
 
 
 class InProgress(TypedDict):
@@ -96,3 +112,4 @@ class DocGenState(TypedDict):
     current: InProgress | None
     """None when no question is being actively worked on (before the
     first one starts, and after the last one finishes)."""
+    usage: Usage

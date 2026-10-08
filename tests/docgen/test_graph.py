@@ -56,9 +56,10 @@ def _initial_state(source: SourceSpec) -> DocGenState:
             }
         ],
         "answers": {},
-        "configuration": {"template": "", "format": "pptx", "confirmed": True},
+        "configuration": {"template": "", "format": "pptx", "confirmed": True, "max_retries": 3},
         "review": {"decision": "pending", "flagged_question_ids": []},
         "current": None,
+        "usage": {"llm_calls": 0},
     }
 
 
@@ -79,6 +80,7 @@ def test_graph_accepts_an_answer_on_the_first_try(stack: DocgenStack, tmp_path: 
     assert result["answers"]["q1"]["text"] == "120ms on average."
     assert result["answers"]["q1"]["attempts"] == []
     assert result["current"] is None
+    assert result["usage"]["llm_calls"] == 3  # formulate_query + generate_answer + validate
 
 
 def test_graph_retries_once_then_accepts(stack: DocgenStack, tmp_path: Path) -> None:
@@ -102,6 +104,7 @@ def test_graph_retries_once_then_accepts(stack: DocgenStack, tmp_path: Path) -> 
     assert len(result["answers"]["q1"]["attempts"]) == 1
     assert result["answers"]["q1"]["attempts"][0]["answer"] == "80ms, probably."
     assert "120ms" in result["answers"]["q1"]["attempts"][0]["reason"]
+    assert result["usage"]["llm_calls"] == 6  # two full cycles of 3 calls each
 
 
 def test_graph_pauses_for_a_human_after_exhausting_retries(
@@ -126,6 +129,7 @@ def test_graph_pauses_for_a_human_after_exhausting_retries(
     assert result["__interrupt__"][0].value["question"] == (
         "What was the hosted API's average latency?"
     )
+    assert result["usage"]["llm_calls"] == 9  # three full cycles of 3 calls each
 
 
 def test_graph_pauses_for_a_human_instead_of_crashing_on_a_persistent_technical_failure(
@@ -140,3 +144,7 @@ def test_graph_pauses_for_a_human_instead_of_crashing_on_a_persistent_technical_
     assert len(result["current"]["attempts"]) == 3
     assert all("Technical failure" in a["reason"] for a in result["current"]["attempts"])
     assert "__interrupt__" in result
+    # _FailingLLM raises before ever returning -- no call is counted as
+    # having actually happened, the same way a real provider call that
+    # errors before a response comes back typically isn't billed.
+    assert result["usage"]["llm_calls"] == 0

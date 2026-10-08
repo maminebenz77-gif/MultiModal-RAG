@@ -3,13 +3,13 @@ from typing import Literal
 import pytest
 
 from multimodal_rag.docgen.nodes.answering import (
-    MAX_RETRIES,
-    accept_answer,
+    DEFAULT_MAX_RETRIES,
     escalate,
     formulate_query,
     generate_answer_text,
     prior_qa_pairs,
     question_by_id,
+    record_answer,
     route_after_human,
     route_after_select,
     route_after_validation,
@@ -78,9 +78,15 @@ def _state(questions: list[Question], current: InProgress | None) -> DocGenState
         "sources": [],
         "questions": questions,
         "answers": {},
-        "configuration": {"template": "", "format": "pptx", "confirmed": False},
+        "configuration": {
+            "template": "",
+            "format": "pptx",
+            "confirmed": False,
+            "max_retries": DEFAULT_MAX_RETRIES,
+        },
         "review": {"decision": "pending", "flagged_question_ids": []},
         "current": current,
+        "usage": {"llm_calls": 0},
     }
 
 
@@ -116,31 +122,45 @@ def test_route_after_select_goes_to_end_when_nothing_was_selected() -> None:
     assert route_after_select(state) == "end"
 
 
-def test_route_after_validation_accepts_when_valid() -> None:
-    state = _state([_question("q1")], current=_in_progress(valid=True))
+def test_route_after_validation_selects_next_when_current_was_cleared() -> None:
+    """validate_node (docgen/graph.py) calls record_answer directly on a
+    valid verdict -- that already clears `current`, same signal
+    route_after_human uses, so there's no separate "accept" outcome to
+    route to."""
+    state = _state([_question("q1", "answered")], current=None)
 
-    assert route_after_validation(state) == "accept"
+    assert route_after_validation(state) == "select_next"
 
 
 def test_route_after_validation_retries_when_invalid_and_retries_remain() -> None:
-    current = _in_progress(valid=False, attempt_count=MAX_RETRIES - 1)
+    current = _in_progress(valid=False, attempt_count=DEFAULT_MAX_RETRIES - 1)
     state = _state([_question("q1")], current=current)
 
     assert route_after_validation(state) == "retry"
 
 
 def test_route_after_validation_escalates_when_retries_are_exhausted() -> None:
-    state = _state([_question("q1")], current=_in_progress(valid=False, attempt_count=MAX_RETRIES))
+    current = _in_progress(valid=False, attempt_count=DEFAULT_MAX_RETRIES)
+    state = _state([_question("q1")], current=current)
 
     assert route_after_validation(state) == "escalate"
 
 
-def test_accept_answer_records_the_answer_and_marks_the_question_answered() -> None:
+def test_route_after_validation_honors_a_per_run_max_retries() -> None:
+    """max_retries is per-run configuration, not a fixed constant -- a
+    run configured for fewer attempts escalates sooner."""
+    current = _in_progress(valid=False, attempt_count=1)
+    state = _state([_question("q1")], current=current)
+    state["configuration"]["max_retries"] = 1
+
+    assert route_after_validation(state) == "escalate"
+
+
+def test_record_answer_marks_the_question_answered() -> None:
     current = _in_progress(valid=True, attempt_count=1)
-    current["answer"] = "final answer"
     state = _state([_question("q1", "pending")], current=current)
 
-    update = accept_answer(state)
+    update = record_answer(state, current, "final answer", "validation")
 
     assert update["answers"]["q1"]["text"] == "final answer"
     assert update["answers"]["q1"]["accepted_by"] == "validation"
@@ -154,7 +174,7 @@ def test_escalate_marks_the_question_escalated_and_preserves_current() -> None:
     (nodes/escalation.py) needs to show a human the chunks/attempts
     that led to escalation, which this placeholder must not discard
     first."""
-    current = _in_progress(valid=False, attempt_count=MAX_RETRIES)
+    current = _in_progress(valid=False, attempt_count=DEFAULT_MAX_RETRIES)
     state = _state([_question("q1", "pending")], current=current)
 
     update = escalate(state)

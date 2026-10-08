@@ -29,6 +29,7 @@ from langgraph.types import Command, RunnableConfig
 
 from .checkpointer import build_checkpointer
 from .graph import build_graph
+from .nodes.answering import DEFAULT_MAX_RETRIES
 from .nodes.escalation import HumanResponse
 from .sources import SourceSpec
 from .stack import build_stack
@@ -67,6 +68,23 @@ def _prompt_for_response() -> HumanResponse:
 def _print_final(result: dict[str, Any]) -> None:
     print("\nDONE:")
     print(json.dumps(result["answers"], indent=2, default=str))
+    print(f"Total LLM calls: {result['usage']['llm_calls']}")
+
+
+def _run_streaming(graph: Any, run_input: Any, config: RunnableConfig) -> dict[str, Any]:
+    """Drives the graph via stream() instead of invoke() so the running
+    LLM-call count can be shown live, as it actually happens, instead
+    of only being knowable once the whole run (or the run up to the
+    next pause) has already finished. The LAST yielded chunk is the
+    exact same final/paused state invoke() would have returned."""
+    last_count = 0
+    chunk: dict[str, Any] = {}
+    for chunk in graph.stream(run_input, config, stream_mode="values"):
+        count = chunk.get("usage", {}).get("llm_calls", last_count)
+        if count != last_count:
+            print(f"  ...LLM calls so far: {count}")
+            last_count = count
+    return chunk
 
 
 def main() -> None:
@@ -90,7 +108,13 @@ def main() -> None:
             # an attribute, not a key. Reconstruct the real dataclass
             # instances before this ever reaches the graph.
             initial_state["sources"] = [SourceSpec(**s) for s in initial_state["sources"]]
-            result = graph.invoke(initial_state, config)
+            # A hand-written state file shouldn't need to know about
+            # internal bookkeeping fields -- backfill sensible defaults
+            # for anything it left out, rather than a confusing KeyError
+            # deep inside the graph.
+            initial_state["configuration"].setdefault("max_retries", DEFAULT_MAX_RETRIES)
+            initial_state.setdefault("usage", {"llm_calls": 0})
+            result = _run_streaming(graph, initial_state, config)
         else:
             snapshot = graph.get_state(config)
             if not snapshot.next:
@@ -99,7 +123,7 @@ def main() -> None:
             pending = snapshot.tasks[0].interrupts[0]
             print(json.dumps(pending.value, indent=2, default=str))
             response = _prompt_for_response()
-            result = graph.invoke(Command(resume=response), config)
+            result = _run_streaming(graph, Command(resume=response), config)
 
         if "__interrupt__" in result:
             _print_interrupt(result["__interrupt__"][0], args.thread_id)

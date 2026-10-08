@@ -29,27 +29,30 @@ from typing import Any, Literal
 
 from ...providers.base import LLMProvider
 from ...providers.factory import get_llm
-from ...tracing import traced_span, update_span_output
+from ...tracing import get_rendered_prompt, traced_span, update_span_output
 from ..state import Attempt, DocGenState, InProgress, Question
 from .retrieval import RetrievedChunk, format_chunks
 
-MAX_RETRIES = 3
-"""Caps the attempt_answer -> validate_answer loop per question before
-escalating to a human -- distinct from LangGraph's own per-node
-retry_policy (docgen/graph.py), which is for a genuinely transient
-failure (a dropped connection), not a node succeeding and deliberately
-judging the result invalid, or a persistent failure that already
-survived those automatic attempts."""
+DEFAULT_MAX_RETRIES = 3
+"""Fallback used when constructing a fresh Configuration (state["configuration"]["max_retries"]
+is the real, per-run value route_after_validation reads -- see docgen/graph.py). Distinct from
+LangGraph's own per-node retry_policy (docgen/graph.py), which is for a genuinely transient
+failure (a dropped connection), not a node succeeding and deliberately judging the result
+invalid, or a persistent failure that already survived those automatic attempts."""
 
+_ANSWER_PROMPT_NAME = "docgen_answer_prompt"
+
+# {{double-braced}} -- Langfuse's own templating syntax (see
+# tracing.get_rendered_prompt), not Python's str.format().
 _ANSWER_PROMPT = """## ROLE
 You are a careful research assistant. Answer the QUESTION using only the CONTEXT given -- do \
 not use outside knowledge, and do not guess at anything the CONTEXT doesn't support.
-{history}
+{{history}}
 ## QUESTION
-{question}
+{{question}}
 
 ## CONTEXT
-{context}
+{{context}}
 
 ## ANSWER
 Write the answer directly, in plain prose. Do not repeat the question."""
@@ -59,6 +62,8 @@ _HISTORY_HEADER = """
 {attempts}
 """
 
+_QUERY_PROMPT_NAME = "docgen_query_prompt"
+
 _QUERY_PROMPT = """## ROLE
 You turn a QUESTION into a short, standalone search query for a document retrieval system.
 
@@ -67,9 +72,9 @@ Resolve any pronouns or references in the QUESTION ("it", "that", "the above", .
 PRIOR QUESTIONS AND ANSWERS below, then write a short search query focused on the concrete \
 terms someone would search a document store for. Output ONLY the search query text -- no \
 quotes, no explanation, nothing else.
-{prior_qa}{history}
+{{prior_qa}}{{history}}
 ## QUESTION
-{question}
+{{question}}
 
 ## SEARCH QUERY"""
 
@@ -143,7 +148,9 @@ def formulate_query(
     history_section = (
         _RETRY_SECTION.format(attempts=_format_attempts(attempts)) if attempts else ""
     )
-    prompt = _QUERY_PROMPT.format(
+    prompt = get_rendered_prompt(
+        _QUERY_PROMPT_NAME,
+        _QUERY_PROMPT,
         prior_qa=prior_qa_section,
         history=guidance_section + history_section,
         question=question,
@@ -177,7 +184,9 @@ def generate_answer_text(
     history_section = (
         _HISTORY_HEADER.format(attempts=_format_attempts(attempts)) if attempts else ""
     )
-    prompt = _ANSWER_PROMPT.format(
+    prompt = get_rendered_prompt(
+        _ANSWER_PROMPT_NAME,
+        _ANSWER_PROMPT,
         history=guidance_section + history_section,
         question=question,
         context=format_chunks(chunks),
@@ -213,12 +222,21 @@ def route_after_select(state: DocGenState) -> Literal["attempt", "end"]:
     return "attempt" if state["current"] is not None else "end"
 
 
-def route_after_validation(state: DocGenState) -> Literal["accept", "retry", "escalate"]:
+def route_after_validation(state: DocGenState) -> Literal["select_next", "retry", "escalate"]:
+    """validate_answer (docgen/graph.py's validate_node) already calls
+    record_answer directly on a valid verdict -- there's no separate
+    "accept" node or route needed, same reasoning as route_after_human:
+    `current` being cleared to None already says "this one is done,"
+    without a dedicated flag. `max_retries` is per-run configuration
+    (DEFAULT_MAX_RETRIES is only ever the fallback used when nothing
+    else set it -- see Configuration), not a fixed constant, so a
+    simple question can get fewer automatic retries before escalating
+    and a complex one can get more."""
     current = state["current"]
-    assert current is not None
-    if current["valid"]:
-        return "accept"
-    return "retry" if len(current["attempts"]) < MAX_RETRIES else "escalate"
+    if current is None:
+        return "select_next"
+    max_retries = state["configuration"]["max_retries"]
+    return "retry" if len(current["attempts"]) < max_retries else "escalate"
 
 
 def route_after_human(state: DocGenState) -> Literal["retry", "select_next"]:
@@ -234,9 +252,14 @@ def record_answer(
     state: DocGenState, current: InProgress, text: str, accepted_by: Literal["validation", "human"]
 ) -> dict[str, Any]:
     """Writes the final Answer and marks the question done -- shared by
-    accept_answer (a validated answer) and nodes/escalation.py's
-    ask_human (a human-provided one), so there is one place that does
-    this instead of two near-identical copies."""
+    docgen/graph.py's validate_node (on a valid verdict) and
+    nodes/escalation.py's ask_human (a human-provided one), so there is
+    one place that does this instead of two near-identical copies.
+    Deliberately not its own graph node: unlike ask_human (which MUST
+    be separate from escalate() -- see escalate()'s own docstring --
+    because interrupt() raises instead of returning), validate_node
+    always returns normally, so there's no structural reason it
+    couldn't call this directly on the "valid" branch."""
     answers = dict(state["answers"])
     answers[current["question_id"]] = {
         "text": text,
@@ -248,12 +271,6 @@ def record_answer(
         for q in state["questions"]
     ]
     return {"answers": answers, "questions": questions, "current": None}
-
-
-def accept_answer(state: DocGenState) -> dict[str, Any]:
-    current = state["current"]
-    assert current is not None
-    return record_answer(state, current, current["answer"], "validation")
 
 
 def escalate(state: DocGenState) -> dict[str, Any]:

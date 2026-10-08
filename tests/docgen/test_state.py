@@ -49,6 +49,7 @@ def _sample_state() -> DocGenState:
         "template": "templates/report.pptx",
         "format": "pptx",
         "confirmed": True,
+        "max_retries": 3,
     }
     review: Review = {"decision": "pending", "flagged_question_ids": []}
     return {
@@ -58,6 +59,7 @@ def _sample_state() -> DocGenState:
         "configuration": configuration,
         "review": review,
         "current": None,
+        "usage": {"llm_calls": 0},
     }
 
 

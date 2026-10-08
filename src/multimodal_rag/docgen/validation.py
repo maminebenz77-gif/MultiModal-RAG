@@ -22,11 +22,18 @@ from dataclasses import dataclass
 
 from ..providers.base import LLMProvider
 from ..providers.factory import get_llm
-from ..tracing import traced_span, update_span_output, update_span_score
+from ..tracing import get_rendered_prompt, traced_span, update_span_output, update_span_score
 from .nodes.retrieval import RetrievedChunk, format_chunks
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
+_PROMPT_NAME = "docgen_grounding_prompt"
+
+# {{double-braced}} -- Langfuse's own templating syntax (see
+# tracing.get_rendered_prompt), not Python's str.format(). The single
+# braces in the JSON example below are deliberately NOT escaped the
+# way a str.format() template would need -- Langfuse only ever
+# substitutes a {{...}} pair, so a lone "{" needs no escaping at all.
 _GROUNDING_PROMPT = """## ROLE
 You are a strict grading assistant. You judge whether a generated ANSWER is properly grounded \
 in the provided CONTEXT, and whether it actually addresses the QUESTION that was asked.
@@ -43,16 +50,16 @@ someone retrying with a different search could avoid the same mistake.
 ## OUTPUT FORMAT
 Respond with EXACTLY one JSON object, nothing else -- no markdown code fences, no prose before \
 or after it:
-{{"valid": <true or false>, "reason": "<one sentence>"}}
+{"valid": <true or false>, "reason": "<one sentence>"}
 
 ## QUESTION
-{question}
+{{question}}
 
 ## CONTEXT
-{context}
+{{context}}
 
 ## ANSWER
-{answer}"""
+{{answer}}"""
 
 
 class ValidationParseError(ValueError):
@@ -66,6 +73,12 @@ class ValidationParseError(ValueError):
 class ValidationResult:
     valid: bool
     reason: str
+    llm_called: bool = True
+    """False only for the zero-chunks short-circuit below -- lets a
+    caller (docgen/graph.py's usage counter) know whether this call
+    actually spent a real LLM request, without needing to re-check
+    `chunks` itself or duplicate this function's own short-circuit
+    condition at the call site."""
 
 
 def _parse_verdict(raw: str) -> ValidationResult:
@@ -99,12 +112,18 @@ def validate_answer(
     decide."""
     if not chunks:
         return ValidationResult(
-            valid=False, reason="No chunks were retrieved to support this answer."
+            valid=False,
+            reason="No chunks were retrieved to support this answer.",
+            llm_called=False,
         )
 
     llm = llm or get_llm()
-    prompt = _GROUNDING_PROMPT.format(
-        question=question, context=format_chunks(chunks), answer=answer
+    prompt = get_rendered_prompt(
+        _PROMPT_NAME,
+        _GROUNDING_PROMPT,
+        question=question,
+        context=format_chunks(chunks),
+        answer=answer,
     )
     with traced_span("docgen_validate_answer", as_type="generation", input=prompt) as span:
         raw = llm.generate([{"role": "user", "content": prompt}])

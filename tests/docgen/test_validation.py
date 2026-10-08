@@ -41,6 +41,7 @@ def test_validate_answer_short_circuits_to_invalid_when_no_chunks_were_retrieved
 
     assert result.valid is False
     assert "No chunks were retrieved" in result.reason
+    assert result.llm_called is False  # docgen/graph.py's usage counter relies on this
 
 
 def test_validate_answer_returns_valid_when_the_judge_says_so() -> None:
@@ -51,6 +52,7 @@ def test_validate_answer_returns_valid_when_the_judge_says_so() -> None:
 
     assert result.valid is True
     assert result.reason == "Fully supported."
+    assert result.llm_called is True
     assert len(llm.calls) == 1
 
 
