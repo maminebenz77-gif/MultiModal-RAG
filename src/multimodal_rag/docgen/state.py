@@ -59,6 +59,12 @@ class Configuration(TypedDict):
 class Review(TypedDict):
     decision: Literal["pending", "approved", "edit_requested"]
     flagged_question_ids: list[str]
+    guidance: str | None
+    """Set only alongside a non-empty flagged_question_ids, from a
+    human's own edit request -- read by select_next_question (not
+    here) to seed InProgress.human_guidance when one of THESE
+    questions is picked back up, the same field the per-question
+    loop's own escalation already uses for the same purpose."""
 
 
 class RequestContext(TypedDict):

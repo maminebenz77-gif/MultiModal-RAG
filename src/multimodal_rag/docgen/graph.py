@@ -27,6 +27,19 @@ question's completed work. It's converted into a rejected attempt with
 the technical reason recorded, so it flows through the exact same
 retry/escalate logic a substantive rejection would.
 
+human_review (after harmonize_answers) pauses for a final approve/edit
+decision -- a third, different use of the same interrupt()/
+response_schema mechanism ask_human and reformulate_for_confirmation
+already use. Approving goes to END for now (export, a later phase,
+replaces that edge). Requesting edits only flips the FLAGGED
+questions' status back to "pending" -- they flow through the exact
+same select_next_question -> attempt_answer -> validate_answer loop
+everything else already went through (select_next_question seeds
+their InProgress.human_guidance from the review's own feedback), and
+once nothing is pending again, harmonize_answers and human_review
+simply run again over the full, now-updated set -- nothing needed to
+special-case "this is a second pass."
+
 validate_node calls record_answer directly on a valid verdict rather
 than routing to a separate "accept" node -- unlike ask_human (which
 MUST stay separate from escalate(), since interrupt() raises instead
@@ -88,6 +101,7 @@ from .nodes.configuration import (
 from .nodes.escalation import ask_human
 from .nodes.harmonize import HarmonizeParseError, harmonize_answers_text
 from .nodes.retrieval import retrieve_for_question
+from .nodes.review import human_review, route_after_review
 from .stack import DocgenStack
 from .state import Attempt, DocGenState
 from .validation import validate_answer
@@ -248,6 +262,7 @@ def build_graph(
     builder.add_node("escalate", escalate)
     builder.add_node("ask_human", ask_human)
     builder.add_node("harmonize_answers", harmonize_node, retry_policy=_TRANSIENT_RETRY)
+    builder.add_node("human_review", human_review)
 
     builder.add_conditional_edges(
         START,
@@ -266,7 +281,12 @@ def build_graph(
         route_after_select,
         {"attempt": "attempt_answer", "end": "harmonize_answers"},
     )
-    builder.add_edge("harmonize_answers", END)
+    builder.add_edge("harmonize_answers", "human_review")
+    builder.add_conditional_edges(
+        "human_review",
+        route_after_review,
+        {"approved": END, "edit_requested": "select_next_question"},
+    )
     builder.add_edge("attempt_answer", "validate_answer")
     builder.add_conditional_edges(
         "validate_answer",

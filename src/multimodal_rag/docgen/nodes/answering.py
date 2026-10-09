@@ -201,9 +201,21 @@ def select_next_question(state: DocGenState) -> dict[str, Any]:
     """Picks the first still-pending question and opens a fresh
     InProgress record for it. Returns `{"current": None}` when none are
     left -- route_after_select is what actually decides where that
-    sends the graph."""
+    sends the graph.
+
+    A question a human just flagged in review (nodes/review.py's
+    human_review) comes back through here exactly like any other
+    pending question -- the only difference is its InProgress starts
+    with the human's edit guidance already set, the same field
+    escalation's own reformulate action already uses for the same
+    purpose."""
     for question in state["questions"]:
         if question["status"] == "pending":
+            guidance = (
+                state["review"]["guidance"]
+                if question["id"] in state["review"]["flagged_question_ids"]
+                else None
+            )
             return {
                 "current": {
                     "question_id": question["id"],
@@ -212,7 +224,7 @@ def select_next_question(state: DocGenState) -> dict[str, Any]:
                     "answer": "",
                     "attempts": [],
                     "valid": None,
-                    "human_guidance": None,
+                    "human_guidance": guidance,
                 }
             }
     return {"current": None}

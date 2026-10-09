@@ -45,6 +45,7 @@ def ask_human(state: DocGenState) -> dict[str, Any]:
     assert current is not None
     question = question_by_id(state["questions"], current["question_id"])
     payload: dict[str, Any] = {
+        "kind": "ask_human",
         "question": question["text"],
         "chunks": current["chunks"],
         "attempts": current["attempts"],

@@ -14,6 +14,8 @@ from multimodal_rag.docgen.state import DocGenState
 
 SAMPLES_DIR = Path(__file__).resolve().parents[2] / "data" / "samples"
 
+_APPROVE_REVIEW = {"action": "approve", "question_ids": [], "text": ""}
+
 
 class _ScriptedLLM:
     def __init__(self, replies: list[str]) -> None:
@@ -104,7 +106,10 @@ def test_escalation_resumes_with_a_human_provided_answer(
         assert paused["questions"][0]["status"] == "escalated"
 
         resume = {"action": "answer", "text": "120ms, from a human who checked manually."}
-        result = graph.invoke(Command(resume=resume), config)
+        paused_for_review = graph.invoke(Command(resume=resume), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert "__interrupt__" not in result
     assert result["questions"][0]["status"] == "answered"
@@ -142,7 +147,10 @@ def test_escalation_resumes_after_a_simulated_process_restart(
         interrupt_payload = snapshot.tasks[0].interrupts[0].value
 
         resume = {"action": "answer", "text": "Resumed after restart: 120ms."}
-        result = graph.invoke(Command(resume=resume), config)
+        paused_for_review = graph.invoke(Command(resume=resume), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert pending_question == "q1"
     assert interrupt_payload["question"] == "What was the hosted API's average latency?"
@@ -161,7 +169,10 @@ def test_escalation_can_skip_the_question_entirely(stack: DocgenStack, tmp_path:
         paused = graph.invoke(_initial_state(source), config)
         assert "__interrupt__" in paused
 
-        result = graph.invoke(Command(resume={"action": "skip", "text": ""}), config)
+        paused_for_review = graph.invoke(Command(resume={"action": "skip", "text": ""}), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert "__interrupt__" not in result
     assert result["questions"][0]["status"] == "skipped"
@@ -190,7 +201,10 @@ def test_escalation_can_reformulate_instead_of_answering_directly(
             "action": "reformulate",
             "text": "Search specifically for the hosted API's row in the latency table.",
         }
-        result = graph.invoke(Command(resume=resume), config)
+        paused_for_review = graph.invoke(Command(resume=resume), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert "__interrupt__" not in result
     assert result["questions"][0]["status"] == "answered"
@@ -241,7 +255,10 @@ def test_configuration_loop_interprets_confirms_and_answers_the_question(
         assert "__interrupt__" in paused
         assert "question(s)" in paused["__interrupt__"][0].value["summary"]
 
-        result = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+        paused_for_review = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert "__interrupt__" not in result
     assert result["configuration"]["confirmed"] is True
@@ -288,8 +305,80 @@ def test_configuration_loop_revises_before_confirming(
         assert "__interrupt__" in paused_again
         assert len(paused_again["questions"]) == 2
 
-        result = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+        paused_for_review = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+        assert "__interrupt__" in paused_for_review  # harmonize_answers -> human_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
 
     assert "__interrupt__" not in result
     assert set(result["answers"]) == {"q1", "q2"}
     assert result["answers"]["q2"]["text"] == "We don't have cost data."
+
+
+def _two_question_state(source: SourceSpec) -> DocGenState:
+    return {
+        "sources": [source],
+        "questions": [
+            {
+                "id": "q1",
+                "text": "What was the hosted API's average latency?",
+                "sources_required": ["task_docs"],
+                "status": "pending",
+            },
+            {
+                "id": "q2",
+                "text": "What was the hosted API's cost?",
+                "sources_required": ["task_docs"],
+                "status": "pending",
+            },
+        ],
+        "answers": {},
+        "configuration": {"template": "", "format": "pptx", "confirmed": True, "max_retries": 3},
+        "review": {"decision": "pending", "flagged_question_ids": []},
+        "current": None,
+        "usage": {"llm_calls": 0},
+    }
+
+
+def test_human_review_can_send_one_flagged_question_back_through_the_loop(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    valid = '{"valid": true, "reason": "fully grounded"}'
+    llm = _ScriptedLLM(
+        [
+            "hosted api latency",  # formulate_query q1
+            "120ms on average.",  # generate_answer q1
+            valid,  # validate q1
+            "hosted api cost",  # formulate_query q2
+            "Unknown cost.",  # generate_answer q2 (the one that'll get flagged)
+            valid,  # validate q2
+            '{"q1": "120ms on average.", "q2": "Unknown cost."}',  # harmonize (round 1)
+            "hosted api pricing per request",  # formulate_query q2, redone
+            "$0.002 per request.",  # generate_answer q2, redone
+            valid,  # validate q2, redone
+            '{"q1": "120ms on average.", "q2": "$0.002 per request."}',  # harmonize (round 2)
+        ]
+    )
+    config = {"configurable": {"thread_id": "test-thread"}}
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+
+        paused_for_review = graph.invoke(_two_question_state(source), config)
+        assert "__interrupt__" in paused_for_review
+        assert paused_for_review["__interrupt__"][0].value["kind"] == "human_review"
+
+        edit = {"action": "edit", "question_ids": ["q2"], "text": "Give a per-request price."}
+        paused_again = graph.invoke(Command(resume=edit), config)
+        assert "__interrupt__" in paused_again  # back through the loop, then reviewed again
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
+
+    assert "__interrupt__" not in result
+    # q1 was never flagged -- untouched throughout the whole redo cycle.
+    assert result["answers"]["q1"]["text"] == "120ms on average."
+    assert result["answers"]["q2"]["text"] == "$0.002 per request."
+    assert result["questions"][1]["status"] == "answered"
+    assert result["review"]["decision"] == "approved"
+    assert result["review"]["flagged_question_ids"] == []

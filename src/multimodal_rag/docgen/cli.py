@@ -32,6 +32,7 @@ from .graph import build_graph
 from .nodes.answering import DEFAULT_MAX_RETRIES
 from .nodes.configuration import ConfirmationResponse
 from .nodes.escalation import HumanResponse
+from .nodes.review import ReviewResponse
 from .sources import SourceSpec
 from .stack import build_stack
 
@@ -74,14 +75,30 @@ def _prompt_for_confirmation_response() -> ConfirmationResponse:
     return {"action": "revise", "text": text}
 
 
-def _prompt_for_pending_response(pending: Any) -> HumanResponse | ConfirmationResponse:
-    """Two different pauses exist in this graph, with two different
-    expected resume shapes -- reformulate_for_confirmation's payload
-    always has a "summary" key, ask_human's never does, so that's
-    enough to tell them apart without the caller needing to track
-    which node is paused."""
-    if "summary" in pending.value:
+def _prompt_for_review_response() -> ReviewResponse:
+    choice = input("\nApprove these answers? [y/n]: ").strip().lower()
+    if choice in ("y", "yes"):
+        return {"action": "approve", "question_ids": [], "text": ""}
+    ids = input("Question id(s) to redo (comma-separated, e.g. q1,q2): ")
+    question_ids = [qid.strip() for qid in ids.split(",") if qid.strip()]
+    text = input("Guidance for redoing them: ")
+    return {"action": "edit", "question_ids": question_ids, "text": text}
+
+
+def _prompt_for_pending_response(
+    pending: Any,
+) -> HumanResponse | ConfirmationResponse | ReviewResponse:
+    """Three different pauses exist in this graph, each with a
+    different expected resume shape -- every one's payload carries an
+    explicit "kind" tag (ask_human/confirm_configuration/human_review)
+    specifically so a caller can tell them apart without needing to
+    track which node is paused, or guess from which other keys happen
+    to be present."""
+    kind = pending.value.get("kind")
+    if kind == "confirm_configuration":
         return _prompt_for_confirmation_response()
+    if kind == "human_review":
+        return _prompt_for_review_response()
     return _prompt_for_escalation_response()
 
 

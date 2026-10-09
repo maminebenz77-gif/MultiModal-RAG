@@ -182,7 +182,9 @@ def _format_confirmation_summary(questions: list[Question], configuration: Confi
 
 def reformulate_for_confirmation(state: DocGenState) -> dict[str, Any]:
     summary = _format_confirmation_summary(state["questions"], state["configuration"])
-    response = interrupt({"summary": summary}, response_schema=ConfirmationResponse)
+    response = interrupt(
+        {"kind": "confirm_configuration", "summary": summary}, response_schema=ConfirmationResponse
+    )
     if response["action"] == "confirm":
         return {"configuration": {**state["configuration"], "confirmed": True}}
     request = state["request"]
