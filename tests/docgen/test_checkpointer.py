@@ -200,3 +200,96 @@ def test_escalation_can_reformulate_instead_of_answering_directly(
     # rejections belonged to the attempt that just got replaced, not to
     # this one, so they don't carry into the final Answer's attempts.
     assert result["answers"]["q1"]["attempts"] == []
+
+
+def _unconfirmed_state(source: SourceSpec, request_text: str) -> DocGenState:
+    return {
+        "sources": [source],
+        "questions": [],
+        "answers": {},
+        "configuration": {"template": "", "format": "pptx", "confirmed": False, "max_retries": 3},
+        "review": {"decision": "pending", "flagged_question_ids": []},
+        "current": None,
+        "usage": {"llm_calls": 0},
+        "request": {"text": request_text, "corrections": []},
+    }
+
+
+def test_configuration_loop_interprets_confirms_and_answers_the_question(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    interpretation = (
+        '{"questions": [{"text": "What was the hosted API average latency?", '
+        '"sources_required": ["task_docs"]}], "format": "pptx", "template": ""}'
+    )
+    llm = _ScriptedLLM(
+        [
+            interpretation,  # interpret_request
+            "hosted api latency",  # formulate_query
+            "120ms on average.",  # generate_answer
+            '{"valid": true, "reason": "fully grounded"}',  # validate_answer
+        ]
+    )
+    config = {"configurable": {"thread_id": "test-thread"}}
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+
+        initial_state = _unconfirmed_state(source, "What was the hosted API's latency?")
+        paused = graph.invoke(initial_state, config)
+        assert "__interrupt__" in paused
+        assert "question(s)" in paused["__interrupt__"][0].value["summary"]
+
+        result = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+
+    assert "__interrupt__" not in result
+    assert result["configuration"]["confirmed"] is True
+    assert result["questions"][0]["id"] == "q1"
+    assert result["answers"]["q1"]["text"] == "120ms on average."
+
+
+def test_configuration_loop_revises_before_confirming(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    first_draft = (
+        '{"questions": [{"text": "What was the latency?", "sources_required": ["task_docs"]}], '
+        '"format": "pptx", "template": ""}'
+    )
+    second_draft = (
+        '{"questions": [{"text": "What was the latency?", "sources_required": ["task_docs"]}, '
+        '{"text": "What did it cost?", "sources_required": ["task_docs"]}], '
+        '"format": "pptx", "template": ""}'
+    )
+    llm = _ScriptedLLM(
+        [
+            first_draft,  # interpret_request, round 1
+            second_draft,  # interpret_request, round 2 (after the correction)
+            "hosted api latency",  # formulate_query for q1
+            "120ms on average.",  # generate_answer for q1
+            '{"valid": true, "reason": "fully grounded"}',  # validate q1
+            "hosted api cost",  # formulate_query for q2
+            "We don't have cost data.",  # generate_answer for q2
+            '{"valid": true, "reason": "Honest about missing data."}',  # validate q2
+        ]
+    )
+    config = {"configurable": {"thread_id": "test-thread"}}
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+
+        initial_state = _unconfirmed_state(source, "What was the hosted API's latency?")
+        paused = graph.invoke(initial_state, config)
+        assert len(paused["questions"]) == 1
+
+        resume = {"action": "revise", "text": "Also ask what it cost."}
+        paused_again = graph.invoke(Command(resume=resume), config)
+        assert "__interrupt__" in paused_again
+        assert len(paused_again["questions"]) == 2
+
+        result = graph.invoke(Command(resume={"action": "confirm", "text": ""}), config)
+
+    assert "__interrupt__" not in result
+    assert set(result["answers"]) == {"q1", "q2"}
+    assert result["answers"]["q2"]["text"] == "We don't have cost data."

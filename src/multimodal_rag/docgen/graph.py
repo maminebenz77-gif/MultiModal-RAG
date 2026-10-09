@@ -31,6 +31,14 @@ MUST stay separate from escalate(), since interrupt() raises instead
 of returning), validate_node always returns normally, so there's no
 structural reason to keep "judge" and "finalize" in two node hops.
 
+route_at_start decides whether a run needs the configuration loop at
+all: state["configuration"]["confirmed"] already being True (every
+test from earlier phases sets this directly, with questions already
+populated) skips interpret_request/reformulate_for_confirmation/
+freeze_configuration entirely and goes straight to
+select_next_question, unchanged -- a real run starts with confirmed
+False and a request.text to interpret instead.
+
 Both LLM-calling nodes track how many real calls they made in
 state["usage"]["llm_calls"] (validate_answer's ValidationResult.llm_called
 says whether its own zero-chunks short-circuit skipped the call) -- a
@@ -46,7 +54,7 @@ graph-building, error-handling, or usage-tracking concern.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -67,6 +75,14 @@ from .nodes.answering import (
     route_after_validation,
     select_next_question,
 )
+from .nodes.configuration import (
+    InterpretParseError,
+    build_questions,
+    freeze_configuration,
+    interpret_request_text,
+    reformulate_for_confirmation,
+    route_after_confirmation,
+)
 from .nodes.escalation import ask_human
 from .nodes.retrieval import retrieve_for_question
 from .stack import DocgenStack
@@ -76,12 +92,39 @@ from .validation import validate_answer
 _TRANSIENT_RETRY = RetryPolicy(max_attempts=3)
 
 
+def _route_at_start(state: DocGenState) -> Literal["answer", "configure"]:
+    return "answer" if state["configuration"]["confirmed"] else "configure"
+
+
 def build_graph(
     stack: DocgenStack,
     llm: LLMProvider | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     llm = llm or get_llm()
+
+    def interpret_request_node(state: DocGenState) -> dict[str, Any]:
+        available_sources = sorted({source.role for source in state["sources"]})
+        try:
+            interpreted = interpret_request_text(
+                state["request"]["text"], state["request"]["corrections"], available_sources, llm
+            )
+        except InterpretParseError:
+            # The call succeeded; its output just didn't parse -- still
+            # a real, billable call.
+            return {"questions": [], "usage": {"llm_calls": state["usage"]["llm_calls"] + 1}}
+        except Exception:
+            # A provider/network failure -- no response ever came back.
+            return {"questions": [], "usage": {"llm_calls": state["usage"]["llm_calls"]}}
+        return {
+            "questions": build_questions(interpreted),
+            "configuration": {
+                **state["configuration"],
+                "format": interpreted.format,
+                "template": interpreted.template,
+            },
+            "usage": {"llm_calls": state["usage"]["llm_calls"] + 1},
+        }
 
     def attempt_answer_node(state: DocGenState) -> dict[str, Any]:
         current = state["current"]
@@ -176,13 +219,27 @@ def build_graph(
         }
 
     builder = StateGraph(DocGenState)
+    builder.add_node("interpret_request", interpret_request_node, retry_policy=_TRANSIENT_RETRY)
+    builder.add_node("reformulate_for_confirmation", reformulate_for_confirmation)
+    builder.add_node("freeze_configuration", freeze_configuration)
     builder.add_node("select_next_question", select_next_question)
     builder.add_node("attempt_answer", attempt_answer_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("validate_answer", validate_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("escalate", escalate)
     builder.add_node("ask_human", ask_human)
 
-    builder.add_edge(START, "select_next_question")
+    builder.add_conditional_edges(
+        START,
+        _route_at_start,
+        {"configure": "interpret_request", "answer": "select_next_question"},
+    )
+    builder.add_edge("interpret_request", "reformulate_for_confirmation")
+    builder.add_conditional_edges(
+        "reformulate_for_confirmation",
+        route_after_confirmation,
+        {"frozen": "freeze_configuration", "revise": "interpret_request"},
+    )
+    builder.add_edge("freeze_configuration", "select_next_question")
     builder.add_conditional_edges(
         "select_next_question", route_after_select, {"attempt": "attempt_answer", "end": END}
     )

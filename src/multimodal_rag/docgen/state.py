@@ -61,6 +61,18 @@ class Review(TypedDict):
     flagged_question_ids: list[str]
 
 
+class RequestContext(TypedDict):
+    text: str
+    """The person's original free-text description of what they want
+    answered -- never edited in place."""
+
+    corrections: list[str]
+    """Every correction given after an earlier interpret_request draft
+    was shown back and rejected, oldest first -- ADDED to, never
+    replaced: a later correction must not silently drop an earlier
+    one (the docgen build plan's own wording for this loop)."""
+
+
 class Usage(TypedDict):
     llm_calls: int
     """Every real LLM call made so far across the whole run (formulate_query,
@@ -113,3 +125,4 @@ class DocGenState(TypedDict):
     """None when no question is being actively worked on (before the
     first one starts, and after the last one finishes)."""
     usage: Usage
+    request: RequestContext

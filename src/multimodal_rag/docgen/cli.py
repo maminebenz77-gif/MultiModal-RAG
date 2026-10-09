@@ -30,17 +30,18 @@ from langgraph.types import Command, RunnableConfig
 from .checkpointer import build_checkpointer
 from .graph import build_graph
 from .nodes.answering import DEFAULT_MAX_RETRIES
+from .nodes.configuration import ConfirmationResponse
 from .nodes.escalation import HumanResponse
 from .sources import SourceSpec
 from .stack import build_stack
 
-_ACTION_PROMPT = """
+_ESCALATION_PROMPT = """
 Choose one:
   [a] answer directly
   [r] reformulate -- give guidance, don't answer yourself
   [s] skip this question entirely
 """
-_ACTION_KEYS: dict[str, Literal["answer", "reformulate", "skip"]] = {
+_ESCALATION_KEYS: dict[str, Literal["answer", "reformulate", "skip"]] = {
     "a": "answer",
     "r": "reformulate",
     "s": "skip",
@@ -48,21 +49,40 @@ _ACTION_KEYS: dict[str, Literal["answer", "reformulate", "skip"]] = {
 
 
 def _print_interrupt(interrupt: Any, thread_id: str) -> None:
-    print("\nPAUSED -- a human needs to answer this question:")
+    print("\nPAUSED -- a human needs to respond:")
     print(json.dumps(interrupt.value, indent=2, default=str))
     print(f"\nResume with: uv run python -m multimodal_rag.docgen.cli --thread-id {thread_id}")
 
 
-def _prompt_for_response() -> HumanResponse:
-    print(_ACTION_PROMPT)
+def _prompt_for_escalation_response() -> HumanResponse:
+    print(_ESCALATION_PROMPT)
     while True:
         choice = input("Action [a/r/s]: ").strip().lower()
-        if choice in _ACTION_KEYS:
+        if choice in _ESCALATION_KEYS:
             break
-        print(f"Not one of {sorted(_ACTION_KEYS)!r} -- try again.")
-    action = _ACTION_KEYS[choice]
+        print(f"Not one of {sorted(_ESCALATION_KEYS)!r} -- try again.")
+    action = _ESCALATION_KEYS[choice]
     text = "" if action == "skip" else input("Text: ")
     return {"action": action, "text": text}
+
+
+def _prompt_for_confirmation_response() -> ConfirmationResponse:
+    choice = input("\nConfirm this plan? [y/n]: ").strip().lower()
+    if choice in ("y", "yes"):
+        return {"action": "confirm", "text": ""}
+    text = input("What should change? ")
+    return {"action": "revise", "text": text}
+
+
+def _prompt_for_pending_response(pending: Any) -> HumanResponse | ConfirmationResponse:
+    """Two different pauses exist in this graph, with two different
+    expected resume shapes -- reformulate_for_confirmation's payload
+    always has a "summary" key, ask_human's never does, so that's
+    enough to tell them apart without the caller needing to track
+    which node is paused."""
+    if "summary" in pending.value:
+        return _prompt_for_confirmation_response()
+    return _prompt_for_escalation_response()
 
 
 def _print_final(result: dict[str, Any]) -> None:
@@ -122,7 +142,7 @@ def main() -> None:
                 return
             pending = snapshot.tasks[0].interrupts[0]
             print(json.dumps(pending.value, indent=2, default=str))
-            response = _prompt_for_response()
+            response = _prompt_for_pending_response(pending)
             result = _run_streaming(graph, Command(resume=response), config)
 
         if "__interrupt__" in result:
