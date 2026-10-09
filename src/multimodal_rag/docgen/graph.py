@@ -3,9 +3,11 @@ question, attempt an answer (formulate a search query, retrieve, draft
 an answer), validate it, and either accept it, loop back with the
 rejection reason, or -- once retries run out -- escalate to a real
 human via nodes/escalation.py's ask_human, pausing with
-LangGraph's interrupt() ("no questions left" still goes straight to
-END instead of harmonize_answers, a later phase -- nothing needs to
-pause for that one).
+LangGraph's interrupt(). Once no questions are left pending,
+harmonize_answers runs once over the full set, then goes straight to
+END for now -- human_review (a later phase) replaces that edge once it
+exists, the same placeholder pattern escalate()/ask_human followed
+before Phase 7 landed.
 
 A checkpointer is only required to RESUME an interrupt (via
 Command(resume=...)), not to reach one -- so build_graph's
@@ -84,6 +86,7 @@ from .nodes.configuration import (
     route_after_confirmation,
 )
 from .nodes.escalation import ask_human
+from .nodes.harmonize import HarmonizeParseError, harmonize_answers_text
 from .nodes.retrieval import retrieve_for_question
 from .stack import DocgenStack
 from .state import Attempt, DocGenState
@@ -125,6 +128,23 @@ def build_graph(
             },
             "usage": {"llm_calls": state["usage"]["llm_calls"] + 1},
         }
+
+    def harmonize_node(state: DocGenState) -> dict[str, Any]:
+        try:
+            harmonized = harmonize_answers_text(state["questions"], state["answers"], llm)
+        except HarmonizeParseError:
+            # The call succeeded; its output just didn't parse -- fail
+            # soft and keep the original answers, but still a real,
+            # billable call.
+            return {"usage": {"llm_calls": state["usage"]["llm_calls"] + 1}}
+        except Exception:
+            # A provider/network failure -- no response ever came back.
+            return {"usage": {"llm_calls": state["usage"]["llm_calls"]}}
+        answers = dict(state["answers"])
+        for question_id, text in harmonized.items():
+            if question_id in answers:
+                answers[question_id] = {**answers[question_id], "text": text}
+        return {"answers": answers, "usage": {"llm_calls": state["usage"]["llm_calls"] + 1}}
 
     def attempt_answer_node(state: DocGenState) -> dict[str, Any]:
         current = state["current"]
@@ -227,6 +247,7 @@ def build_graph(
     builder.add_node("validate_answer", validate_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("escalate", escalate)
     builder.add_node("ask_human", ask_human)
+    builder.add_node("harmonize_answers", harmonize_node, retry_policy=_TRANSIENT_RETRY)
 
     builder.add_conditional_edges(
         START,
@@ -241,8 +262,11 @@ def build_graph(
     )
     builder.add_edge("freeze_configuration", "select_next_question")
     builder.add_conditional_edges(
-        "select_next_question", route_after_select, {"attempt": "attempt_answer", "end": END}
+        "select_next_question",
+        route_after_select,
+        {"attempt": "attempt_answer", "end": "harmonize_answers"},
     )
+    builder.add_edge("harmonize_answers", END)
     builder.add_edge("attempt_answer", "validate_answer")
     builder.add_conditional_edges(
         "validate_answer",

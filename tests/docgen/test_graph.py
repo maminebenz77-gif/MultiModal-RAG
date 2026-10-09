@@ -83,6 +83,56 @@ def test_graph_accepts_an_answer_on_the_first_try(stack: DocgenStack, tmp_path: 
     assert result["usage"]["llm_calls"] == 3  # formulate_query + generate_answer + validate
 
 
+def test_graph_harmonizes_the_answer_after_the_last_question_is_answered(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    llm = _ScriptedLLM(
+        [
+            "hosted api latency",  # formulate_query
+            "120ms on average.",  # generate_answer
+            '{"valid": true, "reason": "fully grounded"}',  # validate_answer
+            '{"q1": "The hosted API averaged 120ms of latency."}',  # harmonize_answers
+        ]
+    )
+    graph = build_graph(stack, llm=llm)
+
+    result = graph.invoke(_initial_state(source))
+
+    assert result["answers"]["q1"]["text"] == "The hosted API averaged 120ms of latency."
+    # Harmonizing only rewrites the wording -- it must not touch the
+    # attempt history or who/what accepted the answer.
+    assert result["answers"]["q1"]["attempts"] == []
+    assert result["answers"]["q1"]["accepted_by"] == "validation"
+    assert result["usage"]["llm_calls"] == 4
+
+
+def test_graph_keeps_the_original_answer_when_harmonization_fails(
+    stack: DocgenStack, tmp_path: Path
+) -> None:
+    """harmonize_answers fails soft -- unlike the per-question loop, a
+    harmonization failure doesn't retry or escalate, it just keeps
+    whatever answer was already accepted. Deliberately triggered here
+    by giving the script exactly 3 replies (for the per-question loop)
+    and none for harmonize's own call, rather than relying on that as
+    an accident of some other test's script."""
+    source = _ingest_task_docs(stack, tmp_path)
+    llm = _ScriptedLLM(
+        [
+            "hosted api latency",  # formulate_query
+            "120ms on average.",  # generate_answer
+            '{"valid": true, "reason": "fully grounded"}',  # validate_answer
+            # (nothing scripted for harmonize_answers's own call)
+        ]
+    )
+    graph = build_graph(stack, llm=llm)
+
+    result = graph.invoke(_initial_state(source))
+
+    assert result["answers"]["q1"]["text"] == "120ms on average."  # unchanged
+    assert result["usage"]["llm_calls"] == 3  # harmonize's failed attempt doesn't count
+
+
 def test_graph_retries_once_then_accepts(stack: DocgenStack, tmp_path: Path) -> None:
     source = _ingest_task_docs(stack, tmp_path)
     llm = _ScriptedLLM(
