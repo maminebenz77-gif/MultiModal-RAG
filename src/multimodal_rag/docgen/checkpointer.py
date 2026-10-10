@@ -56,4 +56,11 @@ def build_checkpointer(path: Path = DEFAULT_CHECKPOINT_PATH) -> Iterator[SqliteS
     # so this is the only way to get our allowlist (rather than the
     # unrestricted default) actually used.
     with closing(sqlite3.connect(str(path), check_same_thread=False)) as conn:
+        # WAL: the API (Phase 12) is the first caller with concurrent
+        # readers/writers against this one shared file -- a status poll
+        # reading while a background run thread writes. The default
+        # rollback-journal mode allows only one writer at a time and can
+        # raise "database is locked" under that contention; WAL lets
+        # readers proceed without blocking on a concurrent writer.
+        conn.execute("PRAGMA journal_mode=WAL")
         yield SqliteSaver(conn, serde=serde)

@@ -17,7 +17,10 @@ import httpx
 from fastapi import Depends, FastAPI
 from starlette.concurrency import run_in_threadpool
 
-from ..config import PROJECT_ROOT, get_settings
+from ..config import COLLECTION_NAME, DEFAULT_DB_PATH, get_settings
+from ..docgen.checkpointer import DEFAULT_CHECKPOINT_PATH
+from ..docgen.runs_db import DEFAULT_RUNS_DB_PATH, DocgenRunsDB
+from ..docgen.stack import DocgenStack
 from ..providers.factory import get_embedder, get_reranker
 from ..retrieval.retriever import Retriever
 from ..stores.factory import get_keyword_store, get_vector_store
@@ -25,19 +28,13 @@ from ..stores.indexer import HybridIndexer
 from .db import Database
 from .dependencies import AppState
 from .identity import get_principal
-from .routers import conversations, documents, feedback, health, ingest, metrics, query
+from .routers import conversations, docgen, documents, feedback, health, ingest, metrics, query
 
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
-"""Where the live app's sqlite catalogue lives. Public (not `_`-prefixed)
-because docgen/ (a standalone script, no FastAPI app) needs to point at
-this exact same file to see/write the same documents the API does --
-duplicating the literal instead of importing it would risk silently
-drifting onto a different db if this default ever changed."""
-
-COLLECTION_NAME = "api_corpus"
-"""The live app's vector/keyword index name -- public for the same
-reason as DEFAULT_DB_PATH above: docgen/ must resolve to the same
-corpus, not a fresh one."""
+__all__ = ["COLLECTION_NAME", "DEFAULT_DB_PATH", "app", "create_app"]
+"""COLLECTION_NAME/DEFAULT_DB_PATH now LIVE in config.py (so docgen/
+can depend on them without depending on api/ -- see config.py's own
+docstring) but are re-exported here unchanged for existing callers
+(tests/live/wipe_db.py) that import them from this module."""
 
 _logger = logging.getLogger(__name__)
 
@@ -53,7 +50,10 @@ def _load_optional_reranker(settings):
 
 
 def create_app(
-    db_path: Path = DEFAULT_DB_PATH, collection_name: str = COLLECTION_NAME
+    db_path: Path = DEFAULT_DB_PATH,
+    collection_name: str = COLLECTION_NAME,
+    docgen_runs_db_path: Path = DEFAULT_RUNS_DB_PATH,
+    docgen_checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -83,6 +83,22 @@ def create_app(
             ),
             db=Database(db_path),
         )
+        # Reuses the SAME store/embedder/db instances just built above --
+        # not a second build_stack() call, which would construct its own
+        # independent embedder/stores for no benefit (identical data,
+        # double the memory). docgen is a separate module from the main
+        # app's own AppState, so it gets its own app.state attribute
+        # rather than being folded into that bundle.
+        app.state.docgen_stack = DocgenStack(
+            vector_store=vector_store,
+            keyword_store=keyword_store,
+            embedder=embedder,
+            indexer=HybridIndexer(vector_store, keyword_store),
+            retriever=Retriever(vector_store, keyword_store, embedder),
+            db=Database(db_path),
+        )
+        app.state.docgen_runs_db = DocgenRunsDB(docgen_runs_db_path)
+        app.state.docgen_checkpoint_path = docgen_checkpoint_path
         yield
 
     app = FastAPI(title="Multimodal RAG API", lifespan=lifespan)
@@ -92,6 +108,7 @@ def create_app(
     # balancer's liveness probe has no user, and it touches no
     # application data.
     identified = [Depends(get_principal)]
+    app.include_router(docgen.router, dependencies=identified)
     app.include_router(ingest.router, dependencies=identified)
     app.include_router(documents.router, dependencies=identified)
     app.include_router(query.router, dependencies=identified)

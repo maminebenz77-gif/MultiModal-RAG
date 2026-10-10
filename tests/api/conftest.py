@@ -39,7 +39,12 @@ async def make_client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
     constructed and its lifespan already entered by the time a test body
     runs, too late for that kind of setup."""
     collection_name = f"test_api_{uuid.uuid4().hex[:8]}"
-    app = create_app(db_path=tmp_path / "api_state.db", collection_name=collection_name)
+    app = create_app(
+        db_path=tmp_path / "api_state.db",
+        collection_name=collection_name,
+        docgen_runs_db_path=tmp_path / "docgen_runs.db",
+        docgen_checkpoint_path=tmp_path / "docgen_checkpoints.sqlite",
+    )
     try:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)

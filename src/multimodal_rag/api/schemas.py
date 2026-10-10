@@ -389,3 +389,100 @@ class HealthResponse(BaseModel):
     """Elasticsearch serves both the vector and keyword search roles
     (see stores/elasticsearch_store.py) -- one physical backend, one
     reachability check, not two."""
+
+
+class DocgenSourceIn(BaseModel):
+    """Mirrors docgen.sources.SourceSpec exactly, as plain data -- the
+    API never calls docgen's own resolve_source()/ReuseExisting/
+    IngestNew wizard (that stays CLI-only); the caller resolves a tag
+    themselves (an existing one, or by calling POST /ingest first) and
+    just hands it over here."""
+
+    role: Literal["task_docs", "reference_kb"]
+    tag: str
+    required: bool = True
+
+
+class CreateDocgenRunRequest(BaseModel):
+    request_text: str
+    sources: list[DocgenSourceIn]
+    title: str | None = None
+    max_retries: int = 3
+
+
+class DocgenRunAccepted(BaseModel):
+    thread_id: str
+    status: Literal["running"]
+
+
+class DocgenRunSummary(BaseModel):
+    thread_id: str
+    title: str
+    status: Literal["running", "paused", "done", "failed"]
+    created_at: datetime
+    last_error: str | None = None
+
+
+class DocgenRunListResponse(BaseModel):
+    runs: list[DocgenRunSummary]
+
+
+class DocgenQuestionOut(BaseModel):
+    id: str
+    text: str
+    sources_required: list[Literal["task_docs", "reference_kb"]]
+    status: Literal["pending", "answered", "escalated", "skipped"]
+
+
+class DocgenAnswerOut(BaseModel):
+    text: str
+    accepted_by: Literal["validation", "human"]
+
+
+class DocgenAttemptOut(BaseModel):
+    query: str
+    answer: str
+    reason: str
+
+
+class DocgenPendingOut(BaseModel):
+    """The currently-paused interrupt's payload, reshaped for a client --
+    which fields are populated depends on `kind` (see docgen's own
+    nodes/{configuration,review,escalation}.py, the only three places
+    that ever call interrupt())."""
+
+    kind: Literal["ask_human", "confirm_configuration", "human_review"]
+    summary: str | None = None
+    question: str | None = None
+    chunks: list[RetrievedChunkOut] = []
+    attempts: list[DocgenAttemptOut] = []
+    previous_guidance: str | None = None
+
+
+class DocgenRunStatusResponse(BaseModel):
+    thread_id: str
+    title: str
+    status: Literal["running", "paused", "done", "failed"]
+    pending: DocgenPendingOut | None = None
+    questions: list[DocgenQuestionOut] = []
+    answers: dict[str, DocgenAnswerOut] = {}
+    llm_calls: int = 0
+    output_path: str | None = None
+    """Set only once status == "done" -- informational; GET
+    /docgen/runs/{thread_id}/download is the real way to get the file."""
+
+    last_error: str | None = None
+
+
+class DocgenResumeRequest(BaseModel):
+    """One flat shape for all three interrupt kinds -- there's one
+    resume URL regardless of which node paused, and the three
+    TypedDicts it maps onto (ReviewResponse/HumanResponse/
+    ConfirmationResponse) already overlap in shape (action + text
+    common to all; question_ids only meaningful for ReviewResponse).
+    The router validates `action` against whichever kind is actually
+    currently pending (see routers/docgen.py)."""
+
+    action: Literal["approve", "edit", "answer", "reformulate", "skip", "confirm", "revise"]
+    text: str = ""
+    question_ids: list[str] = []

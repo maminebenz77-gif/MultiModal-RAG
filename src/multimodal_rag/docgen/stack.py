@@ -5,12 +5,20 @@ has no running app: it's a script (see docgen/cli.py), not a request
 handler.
 
 Defaults to the exact same collection name and sqlite path the live API
-uses (api.main.COLLECTION_NAME / DEFAULT_DB_PATH) so a real docgen run
+uses (config.COLLECTION_NAME / DEFAULT_DB_PATH) so a real docgen run
 reads and writes the SAME corpus AgentChain searches, not a separate
 one -- the whole point of ingestion being "into the existing vector
 database". Tests override both to a fresh, uniquely-named index and a
 temp file instead (see tests/docgen/conftest.py), the same isolation
 tests/api/conftest.py already relies on for its own store-backed tests.
+
+These two constants live in config.py, not api/main.py, specifically so
+this import doesn't have to reach into api/ at all -- api/ is the outer
+layer that imports from the rest of this package, never the reverse
+(see identity.py's own docstring for the same rule). api/main.py itself
+depends on docgen/ now too (Phase 12's new router), so the old
+docgen -> api.main direction would have been a real circular import,
+not just a style violation.
 """
 
 from __future__ import annotations
@@ -19,8 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..api.db import Database
-from ..api.main import COLLECTION_NAME, DEFAULT_DB_PATH
-from ..config import get_settings
+from ..config import COLLECTION_NAME, DEFAULT_DB_PATH, get_settings
 from ..providers.base import EmbeddingProvider
 from ..providers.factory import get_embedder
 from ..retrieval.retriever import Retriever

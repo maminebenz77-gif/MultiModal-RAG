@@ -354,6 +354,11 @@ async def test_metrics_describe_only_the_callers_own_activity(
 # the point is to force a person to decide how it's scoped, and to add a
 # test above for it.
 _PROTECTED = {
+    ("POST", "/docgen/runs"),
+    ("GET", "/docgen/runs"),
+    ("GET", "/docgen/runs/{thread_id}"),
+    ("POST", "/docgen/runs/{thread_id}/resume"),
+    ("GET", "/docgen/runs/{thread_id}/download"),
     ("POST", "/ingest"),
     ("POST", "/suggest-tags"),
     ("GET", "/documents"),

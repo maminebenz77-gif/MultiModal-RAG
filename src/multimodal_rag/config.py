@@ -35,6 +35,19 @@ warnings.filterwarnings(
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _TRUSTSTORE_INJECTED = False
 
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "api_state.db"
+"""Where the live app's sqlite catalogue lives. Lives here, not in
+api/main.py, so docgen/ (which needs this same path, to see/write the
+same documents the API does) can depend on it without depending on
+api/ -- api/ is the outer layer that imports from the rest of this
+package, never the reverse (see identity.py's own docstring for the
+same rule). api/main.py re-exports this name for backward
+compatibility with existing callers."""
+
+COLLECTION_NAME = "api_corpus"
+"""The live app's vector/keyword index name -- lives here for the same
+reason as DEFAULT_DB_PATH above."""
+
 
 def _is_truthy(raw: str | None) -> bool:
     if raw is None:

@@ -15,9 +15,12 @@ fixed one.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Request
 
+from ..docgen.runs_db import DocgenRunsDB
+from ..docgen.stack import DocgenStack
 from ..providers.base import EmbeddingProvider
 from ..retrieval.retriever import Retriever
 from ..stores.base import KeywordStore, VectorStore
@@ -62,3 +65,22 @@ def get_retriever(request: Request) -> Retriever:
 
 def get_db(request: Request) -> Database:
     return get_app_state(request).db
+
+
+def get_docgen_stack(request: Request) -> DocgenStack:
+    """Not part of AppState -- docgen is a separate module, and its
+    stack is built from the SAME underlying stores (see main.py's
+    lifespan) but kept as its own app.state attribute rather than
+    folded into the main app's own bundle."""
+    stack: DocgenStack = request.app.state.docgen_stack
+    return stack
+
+
+def get_docgen_runs_db(request: Request) -> DocgenRunsDB:
+    runs_db: DocgenRunsDB = request.app.state.docgen_runs_db
+    return runs_db
+
+
+def get_docgen_checkpoint_path(request: Request) -> Path:
+    checkpoint_path: Path = request.app.state.docgen_checkpoint_path
+    return checkpoint_path
