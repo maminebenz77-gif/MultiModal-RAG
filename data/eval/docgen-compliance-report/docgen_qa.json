@@ -1,0 +1,51 @@
+[
+  {
+    "id": "backup-retention-window",
+    "question": "What is Meridian Cloud Labs' retention window for production database backups before they are automatically deleted?",
+    "sources_required": ["task_docs"],
+    "expert_answer": "35 days. Backups are retained for 35 days from the night they are taken, after which they are automatically and permanently deleted -- there is no mechanism to extend an individual backup's retention past that window.",
+    "expect_refusal": false
+  },
+  {
+    "id": "encryption-meets-standard",
+    "question": "Does Meridian's encryption-at-rest practice satisfy the Starling Trust Framework's data protection requirements?",
+    "sources_required": ["task_docs", "reference_kb"],
+    "expert_answer": "Yes, it meets or exceeds them. Meridian encrypts all production data stores, including backups, using AES-256, which satisfies the Framework's requirement of an industry-standard algorithm with at least a 256-bit key. Its encryption keys are managed by a separate internal KMS and are never stored alongside the data they protect, which satisfies the Framework's requirement on that point as well. Keys are rotated annually (every 12 months), which is more frequent than the Framework's maximum allowed interval of 24 months, so that requirement is met too. Data in transit uses TLS 1.2 or higher on both sides, matching the Framework's requirement exactly. This is a clean pass, with no gap to report.",
+    "expect_refusal": false
+  },
+  {
+    "id": "credential-rotation-falls-short",
+    "question": "Does Meridian's credential rotation policy satisfy the Starling Trust Framework's credential rotation requirements?",
+    "sources_required": ["task_docs", "reference_kb"],
+    "expert_answer": "No, it falls short on both counts. The Framework requires workforce credentials to rotate at least every 90 days, but Meridian rotates workforce passwords every 180 days -- twice the allowed interval. The Framework also requires service account and API credentials to rotate at least every 180 days, but Meridian rotates those every 365 days -- also twice the allowed interval. The one place Meridian does meet the Framework is compromise handling: both the Framework and Meridian's own policy require rotation within 24 hours of a suspected compromise, so that specific requirement is satisfied even though the routine rotation cadence is not. This is a genuine gap that should be flagged in the report.",
+    "expect_refusal": false
+  },
+  {
+    "id": "access-control-mfa-partial-gap",
+    "question": "Does Meridian's access control policy satisfy the Starling Trust Framework's requirement that all production access, whether human or automated, be protected by MFA or an equivalent strong authentication mechanism?",
+    "sources_required": ["task_docs", "reference_kb"],
+    "expert_answer": "Only partially. For human interactive logins to production, Meridian requires MFA (a hardware security key or a TOTP authenticator app), which satisfies the Framework's requirement. But for automated and service-account access to production, Meridian relies solely on a long-lived static API key with nothing else required to authenticate -- and the Framework explicitly states that a static, long-lived shared secret used by itself does not satisfy the requirement, for either humans or automated systems. So Meridian's automated-access path falls short of the Framework even though its human-access path is compliant. Separately, Meridian's quarterly access entitlement review does satisfy the Framework's requirement to review entitlements at least once per quarter.",
+    "expect_refusal": false
+  },
+  {
+    "id": "sev1-incident-process",
+    "question": "What is Meridian's process for handling a SEV1 incident that involves actual or suspected exposure of customer data, from detection through customer notification?",
+    "sources_required": ["task_docs"],
+    "expert_answer": "An employee who suspects the exposure pages the on-call engineer through PagerDuty. The on-call engineer opens an incident bridge on the #incident-bridge Slack channel within 15 minutes of being paged, and pulls in the security team directly because the incident involves suspected data exposure. Affected customers are notified within 72 hours of the exposure being confirmed, using a pre-approved notification template, after the security team signs off that the facts are accurate. Once the incident is resolved, a written postmortem covering root cause, timeline, and follow-up action items is produced within 5 business days, and it is reviewed at the monthly engineering review meeting.",
+    "expect_refusal": false
+  },
+  {
+    "id": "vendor-data-sharing-requirements",
+    "question": "What must happen before Meridian shares customer data with a third-party vendor, and what ongoing obligation keeps that vendor eligible to keep receiving it?",
+    "sources_required": ["task_docs"],
+    "expert_answer": "Before any sharing, three things must be in place: a signed data processing agreement (DPA) reviewed by legal, the vendor being added to the approved subprocessor list maintained by legal, and data minimization -- only the specific fields the vendor actually needs are shared, never full customer records by default. On an ongoing basis, the vendor must complete an annual security review with Meridian's security team to remain on the approved list; a vendor that fails the review or misses the review window is removed from the list, and data sharing with that vendor stops until the review is redone and passed.",
+    "expect_refusal": false
+  },
+  {
+    "id": "starling-penalty-amount",
+    "question": "What financial penalty would Starling Cloud Partners impose on Meridian for failing to meet a Starling Trust Framework requirement?",
+    "sources_required": ["task_docs", "reference_kb"],
+    "expert_answer": "That isn't stated anywhere in either document set. The Framework documents describe what a partner must do to meet each requirement, and note that meeting the Framework is what keeps a partner's marketplace listing active, but none of them specify a dollar amount, fine schedule, or any other financial consequence for a failure to comply -- so there's no basis in the documents for naming a penalty.",
+    "expect_refusal": true
+  }
+]

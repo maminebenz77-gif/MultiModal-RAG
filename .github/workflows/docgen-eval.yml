@@ -1,0 +1,112 @@
+name: Docgen eval
+
+# Runs on every push -- the FIRST CI workflow in this repo (there was
+# none before this). Scoped deliberately to just the docgen eval, not
+# the whole pytest suite (a separate, larger decision this workflow
+# doesn't make on its own).
+#
+# Needs a REAL LLM endpoint reachable from a GitHub-hosted runner. This
+# project's own checked-in default (.env.local.example) points at an
+# internal company LiteLLM gateway that a GitHub-hosted runner cannot
+# reach at all -- so this workflow does NOT assume that endpoint. It
+# reads LLM_* from repository secrets instead (see "Required secrets"
+# below) and, if they aren't configured yet, skips the eval step with a
+# clear message rather than failing in a way that looks like a real
+# regression. Embeddings default to the free local
+# sentence-transformers model specifically so this workflow needs ONE
+# secret family (LLM_*), not two -- see EMBED_MODEL below.
+#
+# Required secrets (Settings -> Secrets and variables -> Actions):
+#   DOCGEN_EVAL_LLM_BASE_URL  -- an OpenAI-compatible endpoint this
+#                                runner can actually reach (a public
+#                                provider, or your own litellm gateway
+#                                exposed to the internet -- NOT the
+#                                internal-only endpoint .env.local.example
+#                                documents for local development).
+#   DOCGEN_EVAL_LLM_MODEL     -- the model name that endpoint serves.
+#   DOCGEN_EVAL_LLM_API_KEY   -- its API key.
+# Optional secrets (Langfuse sync is skipped gracefully without them,
+# exactly like running the eval locally with no .env Langfuse settings):
+#   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST,
+#   LANGFUSE_ALLOW_CLOUD_HOST
+
+on:
+  push:
+
+jobs:
+  docgen-eval:
+    runs-on: ubuntu-latest
+
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:9.4.1
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      ELASTIC_URL: http://localhost:9200
+      LLM_PROVIDER: litellm
+      LLM_MODEL: ${{ secrets.DOCGEN_EVAL_LLM_MODEL }}
+      LLM_BASE_URL: ${{ secrets.DOCGEN_EVAL_LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.DOCGEN_EVAL_LLM_API_KEY }}
+      # Local, free, no API key, no external network dependency beyond a
+      # one-time model download from the public Hugging Face Hub (which,
+      # unlike the internal LiteLLM gateway, a GitHub-hosted runner CAN
+      # reach) -- so this workflow only needs LLM_* secrets configured,
+      # not an embedding provider's too.
+      EMBED_PROVIDER: sentence_transformers
+      EMBED_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+      LANGFUSE_ALLOW_CLOUD_HOST: ${{ secrets.LANGFUSE_ALLOW_CLOUD_HOST }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether the required LLM secrets are configured
+        id: secret_check
+        run: |
+          if [ -z "$LLM_BASE_URL" ] || [ -z "$LLM_MODEL" ] || [ -z "$LLM_API_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOCGEN_EVAL_LLM_BASE_URL/LLM_MODEL/LLM_API_KEY secrets are not set -- skipping the docgen eval rather than failing. See this file's own header comment, or data/eval/README.md, for what to configure."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.secret_check.outputs.configured == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        if: steps.secret_check.outputs.configured == 'true'
+        run: uv python install
+
+      - name: Install dependencies
+        if: steps.secret_check.outputs.configured == 'true'
+        run: uv sync
+
+      - name: Wait for Elasticsearch
+        if: steps.secret_check.outputs.configured == 'true'
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:9200/_cluster/health && exit 0
+            sleep 2
+          done
+          echo "Elasticsearch never became healthy" >&2
+          exit 1
+
+      - name: Run the docgen eval
+        if: steps.secret_check.outputs.configured == 'true'
+        run: uv run python -m multimodal_rag.evaluation.run_docgen_eval
