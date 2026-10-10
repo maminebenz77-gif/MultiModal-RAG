@@ -31,13 +31,12 @@ practices against a partner's security standard -- two different document sets, 
 1. In the sidebar's **Start a new run**, type the request:
    *"Compare Meridian Cloud Labs' current security practices against the Starling Trust
    Framework's requirements, and call out where we fall short."*
-2. Under **Task documents (required)**, choose **Ingest a new file**, upload each file in
-   `documents/task/` one at a time (label them all e.g. `meridian-practices`, classification
-   `public`), clicking **Ingest & use as source** after the first -- the rest can reuse the same
-   tag by picking **Reuse an existing tag** and selecting it, or just ingest each under its own
-   label; either way ends with the same `docgen:task:...` tag selected.
+2. Under **Task documents (required)**, choose **Ingest a new folder**, click the uploader and
+   pick the whole `documents/task/` folder (your OS's native folder picker opens -- every file
+   inside it gets listed at once), label it `meridian-practices`, classification `public`, then
+   click **Ingest & use as source**.
 3. Check **Include this source** under **Reference/comparison (optional)**, choose **Ingest a
-   new file**, and upload the four files from `documents/reference/` the same way, under a
+   new folder**, and pick the whole `documents/reference/` folder the same way, under a
    `starling-framework` label.
 4. Click **Start run**. *(Talking point: this is the exact same `/ingest` pipeline the main
    chat page's own sidebar uses -- docgen doesn't have a separate upload path, it just adds a

@@ -63,3 +63,39 @@ def test_starting_a_run_without_a_task_source_shows_a_warning() -> None:
 
     assert not at.exception
     assert any("Task documents source is required" in w.value for w in at.sidebar.warning)
+
+
+def test_task_docs_folder_upload_accepts_multiple_files_and_filters_junk() -> None:
+    """Regression: the source picker originally used a plain single-file
+    st.file_uploader, so a whole folder couldn't be selected at all --
+    this locks in the fix (accept_multiple_files="directory", same
+    junk-filtering convention as app.py's own bulk-folder ingest)."""
+    at = AppTest.from_file(_PAGE_PATH)
+    at.run(timeout=30)
+
+    at.sidebar.radio(key="task_docs_choice").set_value("Ingest a new folder")
+    at.run(timeout=30)
+
+    uploader = at.sidebar.file_uploader(key="task_docs_upload")
+    uploader.set_value(
+        [
+            ("real-doc.md", b"content", "text/markdown"),
+            ("another-doc.md", b"more content", "text/markdown"),
+            # A technically-valid extension is what makes these actually
+            # reach the uploader widget at all (Streamlit's own `type=`
+            # check rejects an extensionless file like .DS_Store before
+            # the script's own logic ever runs) -- same junk examples
+            # app.py's own bulk-ingest test uses, for the same reason.
+            ("~$report.docx", b"junk", "application/octet-stream"),
+            (".hidden.md", b"junk", "text/markdown"),
+        ]
+    )
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("2 file(s) ready to ingest" in c.value for c in at.sidebar.caption)
+    assert any("Will skip 2 file(s)" in c.value for c in at.sidebar.caption)
+    ingest_button = next(
+        b for b in at.sidebar.button if b.label == "Ingest & use as source" and not b.disabled
+    )
+    assert ingest_button is not None

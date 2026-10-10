@@ -40,6 +40,24 @@ _SOURCE_ROLES: dict[str, str] = {
     "reference_kb": "Reference/comparison",
 }
 
+# Same junk-filtering convention as app.py's own bulk-folder ingest --
+# accept_multiple_files="directory" hands back EVERY file in the
+# chosen folder, including OS/Office cruft (.DS_Store, a ~$-prefixed
+# Word lock file) that Streamlit's own `type=` allowlist can't catch
+# since some of it has a technically-valid extension.
+_JUNK_PREFIXES = ("~$", ".")
+_JUNK_NAMES = {"thumbs.db", "desktop.ini"}
+_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".csv", ".xlsx"}
+
+
+def _is_junk_file(filename: str) -> bool:
+    name = Path(filename).name
+    if name.startswith(_JUNK_PREFIXES):
+        return True
+    if name.lower() in _JUNK_NAMES:
+        return True
+    return Path(name).suffix.lower() not in _ALLOWED_EXTENSIONS
+
 
 def _http_error_detail(exc: httpx.HTTPError) -> str:
     """Duplicated from app.py rather than imported -- the two pages
@@ -98,30 +116,43 @@ if "docgen_thread_id" not in st.session_state:
     st.session_state.docgen_thread_id = st.query_params.get("t")
 
 
-def _ingest_source(role: str, label: str, uploaded_file, classification_label: str) -> str | None:
-    """Ingests one file under a fresh docgen:<role>:<label> tag via the
-    EXISTING /ingest endpoint -- no new ingestion path, just a tag
-    convention this page follows. Returns the tag on success."""
+def _ingest_source(
+    role: str, label: str, uploaded_files: list, classification_label: str
+) -> str | None:
+    """Ingests every file in uploaded_files (a whole folder's worth,
+    already junk-filtered by the caller) under ONE fresh
+    docgen:<role>:<label> tag via the EXISTING /ingest endpoint -- one
+    label for the whole batch, since a docgen source is a single named
+    set of documents, not per-file metadata. No new ingestion path,
+    just this tag convention and a per-file loop, same as app.py's own
+    bulk-folder ingest. Returns the tag if at least one file ingested
+    successfully."""
     prefix = "task" if role == "task_docs" else "ref"
     tag = f"docgen:{prefix}:{label.strip()}"
-    try:
-        metadata_json = json.dumps(
-            {"classification": _CLASSIFICATION_OPTIONS[classification_label], "tags": [tag]}
-        )
-        response = httpx.post(
-            f"{api_base_url}/ingest",
-            files={
-                "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type),
-                "metadata_json": (None, metadata_json),
-            },
-            timeout=600.0,
-        )
-        response.raise_for_status()
-        st.toast(f"Ingested {uploaded_file.name} under tag {tag!r}.")
-        return tag
-    except httpx.HTTPError as exc:
-        st.error(f"Ingest failed: {_http_error_detail(exc)}")
-        return None
+    metadata_json = json.dumps(
+        {"classification": _CLASSIFICATION_OPTIONS[classification_label], "tags": [tag]}
+    )
+    ingested = 0
+    failures: list[str] = []
+    for uploaded_file in uploaded_files:
+        try:
+            response = httpx.post(
+                f"{api_base_url}/ingest",
+                files={
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type),
+                    "metadata_json": (None, metadata_json),
+                },
+                timeout=600.0,
+            )
+            response.raise_for_status()
+            ingested += 1
+        except httpx.HTTPError as exc:
+            failures.append(f"{uploaded_file.name}: {_http_error_detail(exc)}")
+    if ingested:
+        st.toast(f"Ingested {ingested} file(s) under tag {tag!r}.")
+    if failures:
+        st.error("Some files failed to ingest:\n" + "\n".join(failures))
+    return tag if ingested else None
 
 
 def _source_picker(role: str, tag_options: list[str], *, required: bool) -> None:
@@ -135,7 +166,7 @@ def _source_picker(role: str, tag_options: list[str], *, required: bool) -> None
 
     choice = st.radio(
         "Where from?",
-        ["Reuse an existing tag", "Ingest a new file"],
+        ["Reuse an existing tag", "Ingest a new folder"],
         key=f"{role}_choice",
         horizontal=True,
     )
@@ -149,18 +180,31 @@ def _source_picker(role: str, tag_options: list[str], *, required: bool) -> None
         )
         st.session_state[state_key] = selected
     else:
-        uploaded = st.file_uploader(
-            "File", type=["pdf", "docx", "pptx", "md", "csv", "xlsx"], key=f"{role}_upload"
+        uploaded_files = st.file_uploader(
+            "Folder",
+            type=["pdf", "docx", "pptx", "md", "csv", "xlsx"],
+            accept_multiple_files="directory",
+            key=f"{role}_upload",
+            help="Opens your OS's native folder picker -- every supported file inside "
+            "gets ingested under one tag for this source.",
         )
+        good_files = [f for f in (uploaded_files or []) if not _is_junk_file(f.name)]
+        if uploaded_files:
+            skipped = len(uploaded_files) - len(good_files)
+            if skipped:
+                st.caption(f"Will skip {skipped} file(s) that aren't real documents.")
+            st.caption(f"{len(good_files)} file(s) ready to ingest.")
         label = st.text_input("Label for the new tag", key=f"{role}_label")
         classification_label = st.selectbox(
             "Classification", options=list(_CLASSIFICATION_OPTIONS), key=f"{role}_classification"
         )
-        if st.button("Ingest & use as source", key=f"{role}_ingest_button"):
-            if uploaded is None or not label.strip():
-                st.warning("Choose a file and a label first.")
+        if st.button(
+            "Ingest & use as source", key=f"{role}_ingest_button", disabled=not good_files
+        ):
+            if not label.strip():
+                st.warning("Choose a label first.")
             else:
-                tag = _ingest_source(role, label, uploaded, classification_label)
+                tag = _ingest_source(role, label, good_files, classification_label)
                 if tag:
                     st.session_state[state_key] = tag
         if st.session_state[state_key]:
