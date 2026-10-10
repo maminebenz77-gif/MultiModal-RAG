@@ -82,7 +82,9 @@ def test_resuming_does_not_warn_about_unregistered_checkpoint_types(
 
     with caplog.at_level(logging.WARNING):
         with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-            graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+            graph = build_graph(
+                stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+            )
             graph.invoke(_initial_state(source), config)
             graph.get_state(config)  # the step that actually deserializes `current`
 
@@ -99,7 +101,9 @@ def test_escalation_resumes_with_a_human_provided_answer(
     config = {"configurable": {"thread_id": "test-thread"}}
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
 
         paused = graph.invoke(_initial_state(source), config)
         assert "__interrupt__" in paused
@@ -133,7 +137,9 @@ def test_escalation_resumes_after_a_simulated_process_restart(
     db_path = tmp_path / "checkpoints.sqlite"
 
     with build_checkpointer(db_path) as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
         paused = graph.invoke(_initial_state(source), config)
         assert "__interrupt__" in paused
     # The `with` block has exited -- that connection is closed. Nothing
@@ -141,7 +147,9 @@ def test_escalation_resumes_after_a_simulated_process_restart(
     # file on disk.
 
     with build_checkpointer(db_path) as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
         snapshot = graph.get_state(config)
         pending_question = snapshot.values["current"]["question_id"]
         interrupt_payload = snapshot.tasks[0].interrupts[0].value
@@ -165,7 +173,9 @@ def test_escalation_can_skip_the_question_entirely(stack: DocgenStack, tmp_path:
     config = {"configurable": {"thread_id": "test-thread"}}
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
         paused = graph.invoke(_initial_state(source), config)
         assert "__interrupt__" in paused
 
@@ -193,7 +203,9 @@ def test_escalation_can_reformulate_instead_of_answering_directly(
     config = {"configurable": {"thread_id": "test-thread"}}
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
         paused = graph.invoke(_initial_state(source), config)
         assert "__interrupt__" in paused
 
@@ -248,7 +260,9 @@ def test_configuration_loop_interprets_confirms_and_answers_the_question(
     config = {"configurable": {"thread_id": "test-thread"}}
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
 
         initial_state = _unconfirmed_state(source, "What was the hosted API's latency?")
         paused = graph.invoke(initial_state, config)
@@ -266,9 +280,7 @@ def test_configuration_loop_interprets_confirms_and_answers_the_question(
     assert result["answers"]["q1"]["text"] == "120ms on average."
 
 
-def test_configuration_loop_revises_before_confirming(
-    stack: DocgenStack, tmp_path: Path
-) -> None:
+def test_configuration_loop_revises_before_confirming(stack: DocgenStack, tmp_path: Path) -> None:
     source = _ingest_task_docs(stack, tmp_path)
     first_draft = (
         '{"questions": [{"text": "What was the latency?", "sources_required": ["task_docs"]}], '
@@ -294,7 +306,9 @@ def test_configuration_loop_revises_before_confirming(
     config = {"configurable": {"thread_id": "test-thread"}}
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(
+            stack, llm=llm, checkpointer=checkpointer, output_dir=tmp_path / "output"
+        )
 
         initial_state = _unconfirmed_state(source, "What was the hosted API's latency?")
         paused = graph.invoke(initial_state, config)
@@ -361,9 +375,10 @@ def test_human_review_can_send_one_flagged_question_back_through_the_loop(
         ]
     )
     config = {"configurable": {"thread_id": "test-thread"}}
+    output_dir = tmp_path / "output"
 
     with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
-        graph = build_graph(stack, llm=llm, checkpointer=checkpointer)
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer, output_dir=output_dir)
 
         paused_for_review = graph.invoke(_two_question_state(source), config)
         assert "__interrupt__" in paused_for_review
@@ -382,3 +397,29 @@ def test_human_review_can_send_one_flagged_question_back_through_the_loop(
     assert result["questions"][1]["status"] == "answered"
     assert result["review"]["decision"] == "approved"
     assert result["review"]["flagged_question_ids"] == []
+
+
+def test_approving_review_generates_the_document(stack: DocgenStack, tmp_path: Path) -> None:
+    source = _ingest_task_docs(stack, tmp_path)
+    llm = _ScriptedLLM(
+        [
+            "hosted api latency",  # formulate_query
+            "120ms on average.",  # generate_answer
+            '{"valid": true, "reason": "fully grounded"}',  # validate_answer
+            '{"q1": "The hosted API averaged 120ms of latency."}',  # harmonize_answers
+        ]
+    )
+    config = {"configurable": {"thread_id": "test-thread"}}
+    output_dir = tmp_path / "output"
+
+    with build_checkpointer(tmp_path / "checkpoints.sqlite") as checkpointer:
+        graph = build_graph(stack, llm=llm, checkpointer=checkpointer, output_dir=output_dir)
+
+        paused_for_review = graph.invoke(_initial_state(source), config)
+        assert "__interrupt__" in paused_for_review
+
+        result = graph.invoke(Command(resume=_APPROVE_REVIEW), config)
+
+    assert "__interrupt__" not in result
+    assert result["output_path"] == str(output_dir / "docgen-report.pptx")
+    assert Path(result["output_path"]).exists()

@@ -30,8 +30,9 @@ retry/escalate logic a substantive rejection would.
 human_review (after harmonize_answers) pauses for a final approve/edit
 decision -- a third, different use of the same interrupt()/
 response_schema mechanism ask_human and reformulate_for_confirmation
-already use. Approving goes to END for now (export, a later phase,
-replaces that edge). Requesting edits only flips the FLAGGED
+already use. Approving runs generate_document (nodes/export.py, the
+last node, deterministic -- no LLM call) and then ends. Requesting
+edits only flips the FLAGGED
 questions' status back to "pending" -- they flow through the exact
 same select_next_question -> attempt_answer -> validate_answer loop
 everything else already went through (select_next_question seeds
@@ -69,6 +70,7 @@ graph-building, error-handling, or usage-tracking concern.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -99,6 +101,7 @@ from .nodes.configuration import (
     route_after_confirmation,
 )
 from .nodes.escalation import ask_human
+from .nodes.export import DEFAULT_OUTPUT_DIR, generate_document
 from .nodes.harmonize import HarmonizeParseError, harmonize_answers_text
 from .nodes.retrieval import retrieve_for_question
 from .nodes.review import human_review, route_after_review
@@ -117,6 +120,7 @@ def build_graph(
     stack: DocgenStack,
     llm: LLMProvider | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
 ) -> CompiledStateGraph:
     llm = llm or get_llm()
 
@@ -252,6 +256,12 @@ def build_graph(
             "current": {**current, "valid": False, "attempts": [*current["attempts"], attempt]},
         }
 
+    def generate_document_node(state: DocGenState) -> dict[str, Any]:
+        path = generate_document(
+            state["questions"], state["answers"], state["configuration"], output_dir
+        )
+        return {"output_path": str(path)}
+
     builder = StateGraph(DocGenState)
     builder.add_node("interpret_request", interpret_request_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("reformulate_for_confirmation", reformulate_for_confirmation)
@@ -263,6 +273,7 @@ def build_graph(
     builder.add_node("ask_human", ask_human)
     builder.add_node("harmonize_answers", harmonize_node, retry_policy=_TRANSIENT_RETRY)
     builder.add_node("human_review", human_review)
+    builder.add_node("generate_document", generate_document_node)
 
     builder.add_conditional_edges(
         START,
@@ -285,8 +296,9 @@ def build_graph(
     builder.add_conditional_edges(
         "human_review",
         route_after_review,
-        {"approved": END, "edit_requested": "select_next_question"},
+        {"approved": "generate_document", "edit_requested": "select_next_question"},
     )
+    builder.add_edge("generate_document", END)
     builder.add_edge("attempt_answer", "validate_answer")
     builder.add_conditional_edges(
         "validate_answer",

@@ -105,6 +105,8 @@ def _prompt_for_pending_response(
 def _print_final(result: dict[str, Any]) -> None:
     print("\nDONE:")
     print(json.dumps(result["answers"], indent=2, default=str))
+    if result.get("output_path"):
+        print(f"Document written to: {result['output_path']}")
     print(f"Total LLM calls: {result['usage']['llm_calls']}")
 
 

@@ -132,3 +132,7 @@ class DocGenState(TypedDict):
     first one starts, and after the last one finishes)."""
     usage: Usage
     request: RequestContext
+    output_path: str | None
+    """Set once by generate_document, the last node -- None for the
+    whole rest of the run, including every paused interrupt before
+    it."""
