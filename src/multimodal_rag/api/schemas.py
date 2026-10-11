@@ -459,6 +459,16 @@ class DocgenPendingOut(BaseModel):
     previous_guidance: str | None = None
 
 
+class DocgenRequestOut(BaseModel):
+    text: str
+    corrections: list[str] = []
+
+
+class DocgenConfigurationOut(BaseModel):
+    format: Literal["pptx", "docx"]
+    template: str
+
+
 class DocgenRunStatusResponse(BaseModel):
     thread_id: str
     title: str
@@ -466,6 +476,14 @@ class DocgenRunStatusResponse(BaseModel):
     pending: DocgenPendingOut | None = None
     questions: list[DocgenQuestionOut] = []
     answers: dict[str, DocgenAnswerOut] = {}
+    request: DocgenRequestOut | None = None
+    """The original free-text request plus every correction given so
+    far -- lets a caller render the configuration back-and-forth as a
+    conversation (request, each correction) instead of only ever
+    showing the latest resulting plan with no context for how it got
+    there."""
+
+    configuration: DocgenConfigurationOut | None = None
     llm_calls: int = 0
     output_path: str | None = None
     """Set only once status == "done" -- informational; GET

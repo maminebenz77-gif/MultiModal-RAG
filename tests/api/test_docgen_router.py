@@ -112,6 +112,15 @@ async def test_full_run_confirm_to_approve_to_download(
     paused = await _poll_until_not_running(client, thread_id)
     assert paused["status"] == "paused"
     assert paused["pending"]["kind"] == "confirm_configuration"
+    # Lets the frontend render the configuration back-and-forth as a
+    # conversation (request + each correction), and the resolved
+    # output format/template, instead of only the flat backend summary
+    # text.
+    assert paused["request"] == {
+        "text": "What was the hosted API's average latency?",
+        "corrections": [],
+    }
+    assert paused["configuration"]["format"] == "pptx"
 
     resumed = await client.post(
         f"/docgen/runs/{thread_id}/resume",

@@ -12,11 +12,15 @@ chat's.
 Same boundary rule as app.py: talks to the API only over HTTP (httpx),
 never imports `multimodal_rag` directly.
 
-No autorefresh/polling loop -- docgen segments run for minutes, so an
-auto-poll would mean every open tab continuously re-fetches for a job
-explicitly meant to be checked back on later. A manual "Refresh"
-button, plus the free fetch that already happens on a normal page
-load, is enough.
+Auto-refresh ONLY while a segment is actively running (st_autorefresh,
+a small timer-driven rerun -- see its one call site below) -- a run
+that's paused or done isn't going to change on its own, so polling it
+would be pure waste; one that's running will, and a user watching a
+spinner that only updates on manual click (the ORIGINAL design here)
+reads as broken, not as "being careful with resources." Reported
+directly by a live user test: after starting a run, the page kept
+showing "running" long after it had actually paused, until a manual
+refresh revealed it.
 """
 
 import json
@@ -28,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import httpx
 import streamlit as st
 from config import get_frontend_settings
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="LIBRA AI -- Docgen", layout="wide")
 
@@ -35,9 +40,25 @@ api_base_url = get_frontend_settings().api_base_url
 
 _CLASSIFICATION_OPTIONS: dict[str, str] = {"Public": "public", "C1": "c1", "C2": "c2", "C3": "c3"}
 
+# User-facing labels for the two source roles -- "task_docs"/
+# "reference_kb" are internal identifiers a backend engineer would
+# recognize, not something to show someone filling out this form.
+# Reused everywhere a role name would otherwise leak into the UI (the
+# source picker, the question list, the confirmation plan).
+#
+# A real, caught-live bug lives in this exact spot: a bare
+# triple-quoted string placed AFTER a module-level assignment, the
+# convention this whole project otherwise uses for inline
+# documentation, is invisible in a normal Python module -- but
+# Streamlit's "magic" output auto-displays any bare top-level
+# expression in the main script, so that convention silently rendered
+# this explanation text onto the live page. Plain `#` comments don't
+# trigger magic; every other note in this file must stay a `#`
+# comment or a real docstring attached to a function/class, never a
+# bare string sitting at module level on its own.
 _SOURCE_ROLES: dict[str, str] = {
-    "task_docs": "Task documents",
-    "reference_kb": "Reference/comparison",
+    "task_docs": "Documents to analyze",
+    "reference_kb": "Reference documents",
 }
 
 # Same junk-filtering convention as app.py's own bulk-folder ingest --
@@ -286,29 +307,81 @@ def _resume(
             timeout=30.0,
         )
         response.raise_for_status()
-        st.toast("Submitted -- refresh in a moment to see what happens next.")
+        st.toast("Submitted -- working on it now.")
         st.rerun()
     except httpx.HTTPError as exc:
         st.error(f"Resume failed: {_http_error_detail(exc)}")
 
 
+def _format_sources(roles: list[str]) -> str:
+    return ", ".join(_SOURCE_ROLES.get(role, role) for role in roles) or "no sources"
+
+
+def _render_plan(run: dict) -> None:
+    """The CURRENT proposed plan, as structured data (run["questions"]/
+    run["configuration"]) -- never the backend's own flat summary
+    string. That string IS still generated server-side (for a caller
+    with no richer UI), but rendering it verbatim via st.markdown was a
+    real, reported bug: a single "\\n" is not a markdown paragraph
+    break, so the output-format line ran onto the same visual line as
+    the last question with no space between them. Structured data
+    sidesteps that by construction -- each piece is its own markdown
+    call, not one joined string."""
+    questions = run["questions"]
+    if not questions:
+        st.write("I wasn't able to turn that into any questions yet.")
+        return
+    st.markdown(f"Here's the plan -- **{len(questions)} question(s)**:")
+    for i, question in enumerate(questions, start=1):
+        st.markdown(f"{i}. {question['text']}")
+        st.caption(f"Using: {_format_sources(question['sources_required'])}")
+    configuration = run.get("configuration")
+    if configuration:
+        template = configuration["template"] or "the default template"
+        st.caption(f"Output: a **{configuration['format']}** file, using {template}.")
+
+
+def _render_configuration_conversation(thread_id: str, run: dict) -> None:
+    """Renders the free-text request, every correction given so far,
+    and the resulting plan as a conversation -- reported directly by a
+    live user test: submitting a correction (e.g. "also use the
+    reference docs") produced no visible acknowledgment at all, just
+    the next plan appearing with no connection back to what was asked
+    for. request/corrections come from the backend's own
+    RequestContext (never discarded, only appended to), so this is a
+    real history, not a guess at one."""
+    request = run.get("request")
+    if request:
+        with st.chat_message("user"):
+            st.write(request["text"])
+        for correction in request["corrections"]:
+            with st.chat_message("user"):
+                st.caption("Correction")
+                st.write(correction)
+    with st.chat_message("assistant"):
+        _render_plan(run)
+
+    col1, col2 = st.columns(2)
+    if col1.button("Confirm", key="confirm_btn", type="primary"):
+        _resume(thread_id, "confirm")
+    with col2.popover("Revise instead"):
+        correction_text = st.text_area("What should change?", key="revise_text")
+        if st.button("Submit revision", key="revise_submit"):
+            _resume(thread_id, "revise", text=correction_text)
+
+
 def _render_pending(thread_id: str, run: dict) -> None:
     pending = run["pending"]
     kind = pending["kind"]
-    st.subheader("Waiting for you")
 
     if kind == "confirm_configuration":
-        st.markdown(pending["summary"])
-        col1, col2 = st.columns(2)
-        if col1.button("Confirm", key="confirm_btn", type="primary"):
-            _resume(thread_id, "confirm")
-        with col2.popover("Revise instead"):
-            correction = st.text_area("What should change?", key="revise_text")
-            if st.button("Submit revision", key="revise_submit"):
-                _resume(thread_id, "revise", text=correction)
+        st.subheader("Confirm the plan")
+        _render_configuration_conversation(thread_id, run)
+        return
 
-    elif kind == "human_review":
-        st.markdown(pending["summary"])
+    st.subheader("Waiting for you")
+    if kind == "human_review":
+        st.caption("Review the answers above, then decide:")
         col1, col2 = st.columns(2)
         if col1.button("Approve", key="approve_btn", type="primary"):
             _resume(thread_id, "approve")
@@ -357,6 +430,13 @@ def _render_pending(thread_id: str, run: dict) -> None:
             _resume(thread_id, action, text=text)
 
 
+_STATUS_BADGES = {
+    "running": "🔄 running",
+    "paused": "⏸️ waiting on you",
+    "done": "✅ done",
+    "failed": "❌ failed",
+}
+
 thread_id = st.session_state.docgen_thread_id
 if not thread_id:
     st.info("Start a run from the sidebar, or select an existing one.")
@@ -365,17 +445,32 @@ else:
     if run is None:
         st.error(f"Could not load run {thread_id!r}.")
     else:
+        # Only while a segment is actually in flight -- a paused or
+        # finished run isn't going to change on its own, so there's
+        # nothing to re-fetch early for.
+        if run["status"] == "running":
+            st_autorefresh(interval=3000, key=f"docgen_autorefresh_{thread_id}")
+
         header_col, refresh_col = st.columns([5, 1])
-        header_col.subheader(f"{run['title']} -- {run['status']}")
+        header_col.subheader(f"{run['title']} -- {_STATUS_BADGES[run['status']]}")
         if refresh_col.button("Refresh"):
             st.rerun()
 
-        if run["questions"]:
+        pending_kind = (run.get("pending") or {}).get("kind")
+        # confirm_configuration gets its own conversation render below
+        # (via _render_pending), which already shows the full plan --
+        # repeating it here would just be the same questions twice,
+        # once with no answers at all yet.
+        if run["questions"] and pending_kind != "confirm_configuration":
             question_count = len(run["questions"])
-            with st.expander(f"{question_count} question(s)", expanded=run["status"] == "done"):
+            with st.expander(
+                f"{question_count} question(s)",
+                expanded=run["status"] in ("done", "failed") or pending_kind == "human_review",
+            ):
                 for question in run["questions"]:
                     answer = run["answers"].get(question["id"])
                     st.markdown(f"**[{question['status']}] {question['text']}**")
+                    st.caption(f"Using: {_format_sources(question['sources_required'])}")
                     if answer:
                         st.write(answer["text"])
 
@@ -410,4 +505,4 @@ else:
                     "Download document", data=content, file_name=filename, mime=content_type
                 )
         else:
-            st.caption("Still running -- check back in a moment.")
+            st.caption("Still running -- this page updates on its own, no need to refresh.")

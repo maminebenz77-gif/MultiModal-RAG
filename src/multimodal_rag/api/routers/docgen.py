@@ -54,8 +54,10 @@ from ..schemas import (
     CreateDocgenRunRequest,
     DocgenAnswerOut,
     DocgenAttemptOut,
+    DocgenConfigurationOut,
     DocgenPendingOut,
     DocgenQuestionOut,
+    DocgenRequestOut,
     DocgenResumeRequest,
     DocgenRunAccepted,
     DocgenRunListResponse,
@@ -257,6 +259,20 @@ def _status_response(
         qid: DocgenAnswerOut(text=a["text"], accepted_by=a["accepted_by"])
         for qid, a in values.get("answers", {}).items()
     }
+    request_values = values.get("request")
+    request_out = (
+        DocgenRequestOut(text=request_values["text"], corrections=request_values["corrections"])
+        if request_values
+        else None
+    )
+    configuration_values = values.get("configuration")
+    configuration_out = (
+        DocgenConfigurationOut(
+            format=configuration_values["format"], template=configuration_values["template"]
+        )
+        if configuration_values
+        else None
+    )
     return DocgenRunStatusResponse(
         thread_id=thread_id,
         title=run.title,
@@ -264,6 +280,8 @@ def _status_response(
         pending=_pending_out(interrupt.value) if interrupt is not None else None,
         questions=questions,
         answers=answers,
+        request=request_out,
+        configuration=configuration_out,
         llm_calls=values.get("usage", {}).get("llm_calls", 0),
         output_path=values.get("output_path"),
         last_error=run.last_error,
