@@ -23,6 +23,7 @@ showing "running" long after it had actually paused, until a manual
 refresh revealed it.
 """
 
+import base64
 import json
 import sys
 from pathlib import Path
@@ -96,6 +97,37 @@ def _http_error_detail(exc: httpx.HTTPError) -> str:
     if isinstance(body, str) and body.strip():
         return f"{exc} -- {body.strip()}"
     return str(exc)
+
+
+def _location_suffix(pages: list[int], slides: list[int]) -> str:
+    """Also duplicated from app.py, same reasoning as _http_error_detail
+    -- renders a chunk's real location (a page or slide number) next to
+    its source filename."""
+    if pages:
+        return f", page {', '.join(str(p) for p in pages)}"
+    if slides:
+        return f", slide {', '.join(str(s) for s in slides)}"
+    return ""
+
+
+def _render_chunk_element(element: dict) -> None:
+    """A chunk's REAL constituent parts (title/paragraph/table/image),
+    not its flattened text -- a table renders as an actual table
+    (markdown), an image as an actual image, same as the main chat
+    page's own chunk detail view. Without this, a retrieved excerpt
+    that's mostly a table or a picture looked cut off or garbled when
+    shown as flattened text instead -- reported directly as "not all
+    the chunk is shown"."""
+    element_type = element["type"]
+    if element_type in ("image", "chart"):
+        if element.get("image_base64"):
+            st.image(base64.b64decode(element["image_base64"]))
+        if element.get("description"):
+            st.caption(element["description"])
+    elif element_type == "title":
+        st.markdown(f"**{element.get('text') or ''}**")
+    else:
+        st.markdown(element.get("text") or "")
 
 
 def _distinct_tags() -> list[str]:
@@ -400,34 +432,71 @@ def _render_pending(thread_id: str, run: dict) -> None:
                     _resume(thread_id, "edit", text=guidance, question_ids=question_ids)
 
     elif kind == "ask_human":
+        st.write(
+            "It tried this question several times and couldn't put together an answer "
+            "it was confident is actually backed by the documents. It needs your help "
+            "to move on."
+        )
         st.markdown(f"**Question:** {pending['question']}")
-        if pending["attempts"]:
-            with st.expander(f"{len(pending['attempts'])} rejected attempt(s) so far"):
-                for attempt in pending["attempts"]:
-                    st.markdown(f"- *{attempt['answer']}* -- {attempt['reason']}")
-        if pending["chunks"]:
-            with st.expander(f"{len(pending['chunks'])} retrieved chunk(s)"):
-                for chunk in pending["chunks"]:
-                    st.caption(chunk["source"])
-                    st.text(chunk["text"])
+
+        if pending.get("previous_guidance"):
+            st.info(
+                f"You already gave it a hint on an earlier try: “{pending['previous_guidance']}”"
+            )
+
+        attempts = pending.get("attempts") or []
+        if attempts:
+            with st.expander(f"What it already tried ({len(attempts)} attempt(s))"):
+                for i, attempt in enumerate(attempts, start=1):
+                    st.markdown(f"**Attempt {i}:** {attempt['answer'] or '_(no usable answer)_'}")
+                    st.caption(f"Rejected because: {attempt['reason']}")
+                    if i < len(attempts):
+                        st.divider()
+
+        chunks = pending.get("chunks") or []
+        if chunks:
+            with st.expander(
+                f"What it found in the documents ({len(chunks)} excerpt(s))", expanded=True
+            ):
+                for i, chunk in enumerate(chunks, start=1):
+                    location = _location_suffix(chunk["pages"], chunk["slides"])
+                    st.caption(f"{chunk['source']}{location}")
+                    if chunk.get("elements"):
+                        for element in chunk["elements"]:
+                            _render_chunk_element(element)
+                    else:
+                        st.write(chunk["text"])
+                    if i < len(chunks):
+                        st.divider()
+        else:
+            st.warning(
+                "It didn't find anything relevant in the documents for this question at all."
+            )
+
+        st.divider()
+        st.markdown("**What would you like to do?**")
         action = st.radio(
-            "How do you want to handle this?",
+            "What would you like to do?",
             ["answer", "reformulate", "skip"],
             key="ask_human_action",
+            label_visibility="collapsed",
             format_func=lambda a: {
-                "answer": "Answer it myself",
-                "reformulate": "Give guidance, let it try again",
-                "skip": "Skip this question",
+                "answer": "I'll answer this question myself",
+                "reformulate": "Give it a hint (e.g. where to look) and let it try again",
+                "skip": "Skip this question -- leave it unanswered in the final document",
             }[a],
         )
         text = ""
         if action != "skip":
             text = st.text_area(
-                "Your answer" if action == "answer" else "Guidance for the next attempt",
+                "Your answer" if action == "answer" else "Your hint for the next attempt",
                 key="ask_human_text",
             )
         if st.button("Submit", key="ask_human_submit", type="primary"):
-            _resume(thread_id, action, text=text)
+            if action != "skip" and not text.strip():
+                st.warning("Write something first.")
+            else:
+                _resume(thread_id, action, text=text)
 
 
 _STATUS_BADGES = {

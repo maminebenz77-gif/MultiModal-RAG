@@ -7,6 +7,8 @@ actually catches that if a future edit breaks it.
 
 from pathlib import Path
 
+import httpx
+import pytest
 from streamlit.testing.v1 import AppTest
 
 _PAGE_PATH = str(Path(__file__).resolve().parents[2] / "frontend" / "pages" / "1_Docgen.py")
@@ -99,3 +101,75 @@ def test_task_docs_folder_upload_accepts_multiple_files_and_filters_junk() -> No
         b for b in at.sidebar.button if b.label == "Ingest & use as source" and not b.disabled
     )
     assert ingest_button is not None
+
+
+def _fake_get(url: str, **kwargs) -> httpx.Response:
+    request = httpx.Request("GET", url)
+    if url.endswith("/documents"):
+        return httpx.Response(200, json={"documents": []}, request=request)
+    if url.endswith("/docgen/runs"):
+        return httpx.Response(200, json={"runs": []}, request=request)
+    return httpx.Response(
+        200,
+        request=request,
+        json={
+            "thread_id": "escalated-thread",
+            "title": "Test run",
+            "status": "paused",
+            "pending": {
+                "kind": "ask_human",
+                "question": "What is the penalty amount?",
+                "chunks": [
+                    {
+                        "chunk_id": "c1",
+                        "score": 0.5,
+                        "text": "fallback flattened text, should not be shown",
+                        "source": "standard.md",
+                        "doc_id": "d1",
+                        "pages": [3],
+                        "slides": [],
+                        "elements": [
+                            {"type": "title", "text": "Penalty Schedule"},
+                            {"type": "paragraph", "text": "No fees are defined in this section."},
+                        ],
+                    }
+                ],
+                "attempts": [
+                    {"query": "penalty", "answer": "I don't know.", "reason": "Not grounded."}
+                ],
+                "previous_guidance": "Check the appendix for fee tables.",
+            },
+            "questions": [],
+            "answers": {},
+            "request": None,
+            "configuration": None,
+            "llm_calls": 3,
+            "output_path": None,
+            "last_error": None,
+        },
+    )
+
+
+def test_ask_human_pause_renders_rich_chunk_content_and_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the original ask_human render showed only a chunk's
+    FLATTENED text (st.text(chunk["text"])), never its real elements --
+    a table or image in the retrieved excerpt looked cut off or
+    garbled. Also locks in that previous guidance and past attempts
+    are shown in plain language, not a raw developer-facing dump."""
+    monkeypatch.setattr(httpx, "get", _fake_get)
+
+    at = AppTest.from_file(_PAGE_PATH)
+    at.query_params["t"] = "escalated-thread"
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert any("needs your help" in m.value for m in at.markdown)
+    assert any("Penalty Schedule" in m.value for m in at.markdown)
+    assert any("No fees are defined" in m.value for m in at.markdown)
+    # The flattened fallback text must NOT appear -- elements take
+    # priority over it whenever they're present.
+    assert not any("fallback flattened text" in m.value for m in at.markdown)
+    assert any("Check the appendix for fee tables" in i.value for i in at.info)
+    assert any("Rejected because" in c.value for c in at.caption)
